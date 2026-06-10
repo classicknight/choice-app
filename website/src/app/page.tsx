@@ -1,6 +1,9 @@
 import Image from "next/image";
 import styles from "./page.module.css";
 
+const appStoreUrl = "https://apps.apple.com/";
+const googlePlayUrl = "https://play.google.com/store";
+
 const phases = [
   {
     number: "01",
@@ -157,6 +160,17 @@ export default function Home() {
               </a>
             </div>
 
+            <div className={styles.storeActions}>
+              <a className={styles.storeButton} href={appStoreUrl} target="_blank" rel="noreferrer">
+                <span className={styles.storeKicker}>iPhone</span>
+                <span className={styles.storeLabel}>App Store</span>
+              </a>
+              <a className={styles.storeButton} href={googlePlayUrl} target="_blank" rel="noreferrer">
+                <span className={styles.storeKicker}>Android</span>
+                <span className={styles.storeLabel}>Google Play</span>
+              </a>
+            </div>
+
             <div className={styles.heroMetaRow}>
               <span>09:00 ein Match</span>
               <span>bis 21:00 entscheiden</span>
@@ -288,18 +302,6 @@ export default function Home() {
               Weniger gleichzeitige Chats, weniger offene Schleifen und mehr Klarheit darüber, ob ihr wirklich zueinander
               passt.
             </p>
-          </article>
-
-          <article className={styles.visualHeartCard}>
-            <div className={styles.visualHeartFrame}>
-              <Image
-                src="/choice-heart.png"
-                alt="Choice Herz"
-                fill
-                sizes="(max-width: 1080px) 100vw, 520px"
-                className={styles.visualHeartImage}
-              />
-            </div>
           </article>
         </div>
       </section>
