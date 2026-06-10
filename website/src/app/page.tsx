@@ -1,3 +1,4 @@
+import Image from "next/image";
 import styles from "./page.module.css";
 
 const phases = [
@@ -137,6 +138,22 @@ export default function Home() {
           </div>
 
           <div className={styles.heroStack}>
+            <article className={styles.heroImageCard}>
+              <div className={styles.heroImageFrame}>
+                <Image
+                  src="/choice-heart.png"
+                  alt="Das Choice Herz"
+                  fill
+                  sizes="(max-width: 1080px) 100vw, 420px"
+                  className={styles.heroImage}
+                />
+              </div>
+              <div className={styles.heroImageMeta}>
+                <span className={styles.heroImageTag}>Choice Award</span>
+                <p className={styles.heroImageText}>Ein System mit eigenem Finale statt einfach nur einem weiteren Chat.</p>
+              </div>
+            </article>
+
             <article className={styles.scheduleCard}>
               <div className={styles.scheduleHeader}>
                 <span className={styles.scheduleLabel}>Heute</span>
@@ -188,6 +205,49 @@ export default function Home() {
               <p className={styles.cardBody}>{item.body}</p>
             </article>
           ))}
+        </div>
+      </section>
+
+      <section className={styles.section} id="visuell">
+        <div className={styles.visualGrid}>
+          <article className={styles.visualPhoneCard}>
+            <div className={styles.visualPhoneFrame}>
+              <div className={styles.visualPhoneTop}>
+                <span className={styles.visualPhoneBrand}>Choice</span>
+                <span className={styles.visualPhoneTime}>09:00</span>
+              </div>
+              <div className={styles.visualPhoneBody}>
+                <div className={styles.visualBubbleLeft}>Choice zeigt dir genau eine Person.</div>
+                <div className={styles.visualBubbleRight}>Bis 21 Uhr entscheidet ihr, ob es morgen weitergeht.</div>
+                <div className={styles.visualPhaseRow}>
+                  <span>Phase 1</span>
+                  <span>Phase 2</span>
+                  <span>Phase 3</span>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article className={styles.visualInfoCard}>
+            <span className={styles.cardLabel}>Weniger Beliebigkeit</span>
+            <h3 className={styles.cardTitle}>Choice reduziert die Oberfläche, damit das Entscheidende sichtbarer wird.</h3>
+            <p className={styles.cardBody}>
+              Weniger gleichzeitige Chats, weniger offene Schleifen und mehr Klarheit darüber, ob ihr wirklich zueinander
+              passt.
+            </p>
+          </article>
+
+          <article className={styles.visualHeartCard}>
+            <div className={styles.visualHeartFrame}>
+              <Image
+                src="/choice-heart.png"
+                alt="Choice Herz"
+                fill
+                sizes="(max-width: 1080px) 100vw, 520px"
+                className={styles.visualHeartImage}
+              />
+            </div>
+          </article>
         </div>
       </section>
 

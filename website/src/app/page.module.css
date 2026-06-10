@@ -108,8 +108,8 @@
 .headline {
   max-width: 10ch;
   color: #fcf7ff;
-  font-size: clamp(3.4rem, 8vw, 6.6rem);
-  line-height: 0.92;
+  font-size: clamp(2.8rem, 6vw, 5.2rem);
+  line-height: 0.95;
   letter-spacing: -0.065em;
   font-weight: 800;
 }
@@ -117,8 +117,8 @@
 .lead {
   max-width: 60ch;
   color: rgba(233, 224, 244, 0.82);
-  font-size: 1.08rem;
-  line-height: 1.72;
+  font-size: 1rem;
+  line-height: 1.68;
 }
 
 .heroActions {
@@ -182,6 +182,65 @@
   gap: 14px;
 }
 
+.heroImageCard,
+.visualPhoneCard,
+.visualInfoCard,
+.visualHeartCard {
+  position: relative;
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.heroImageCard {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 0.8fr);
+  gap: 18px;
+  align-items: center;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 80% 20%, rgba(255, 86, 144, 0.14), transparent 22%),
+    rgba(12, 10, 18, 0.92);
+}
+
+.heroImageFrame {
+  position: relative;
+  min-height: 210px;
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.heroImage,
+.visualHeartImage {
+  object-fit: cover;
+}
+
+.heroImageMeta {
+  display: grid;
+  gap: 10px;
+}
+
+.heroImageTag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #9fe1ff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.heroImageText {
+  color: rgba(235, 227, 246, 0.8);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
 .scheduleCard,
 .statCard,
 .quoteCard,
@@ -240,7 +299,7 @@
 
 .scheduleTitle {
   color: #fff8ff;
-  font-size: 1.6rem;
+  font-size: 1.38rem;
   line-height: 1.1;
   letter-spacing: -0.04em;
 }
@@ -252,8 +311,8 @@
 .ctaBody,
 .quoteText {
   color: rgba(228, 219, 241, 0.8);
-  font-size: 0.99rem;
-  line-height: 1.68;
+  font-size: 0.94rem;
+  line-height: 1.64;
 }
 
 .statGrid {
@@ -270,7 +329,7 @@
 .statValue {
   display: block;
   color: #fcf7ff;
-  font-size: clamp(1.9rem, 3vw, 2.6rem);
+  font-size: clamp(1.7rem, 2.6vw, 2.2rem);
   line-height: 1;
   font-weight: 800;
 }
@@ -302,8 +361,8 @@
 .ctaTitle {
   max-width: 16ch;
   color: #fcf7ff;
-  font-size: clamp(2.1rem, 5vw, 3.5rem);
-  line-height: 1.02;
+  font-size: clamp(1.8rem, 4vw, 2.8rem);
+  line-height: 1.05;
   letter-spacing: -0.055em;
 }
 
@@ -341,9 +400,115 @@
 .phaseTitle,
 .faqQuestion {
   color: #fff8ff;
-  font-size: 1.34rem;
+  font-size: 1.18rem;
   line-height: 1.18;
   font-weight: 800;
+}
+
+.visualGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 16px;
+}
+
+.visualPhoneCard {
+  grid-row: span 2;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(69, 209, 255, 0.14), transparent 28%),
+    rgba(13, 11, 20, 0.96);
+}
+
+.visualPhoneFrame {
+  position: relative;
+  min-height: 470px;
+  padding: 18px;
+  border-radius: 30px;
+  background:
+    linear-gradient(180deg, rgba(27, 23, 37, 0.96), rgba(9, 8, 15, 0.98));
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.visualPhoneTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.visualPhoneBrand {
+  color: #a4e6ff;
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.visualPhoneTime {
+  color: rgba(249, 223, 234, 0.84);
+  font-size: 0.88rem;
+}
+
+.visualPhoneBody {
+  display: grid;
+  gap: 14px;
+}
+
+.visualBubbleLeft,
+.visualBubbleRight {
+  max-width: 78%;
+  padding: 14px 16px;
+  border-radius: 20px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.visualBubbleLeft {
+  background: rgba(255, 255, 255, 0.05);
+  color: #f6f0ff;
+}
+
+.visualBubbleRight {
+  margin-left: auto;
+  background: linear-gradient(135deg, rgba(255, 92, 149, 0.96), rgba(255, 62, 122, 0.9));
+  color: #fff8fc;
+}
+
+.visualPhaseRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 16px;
+}
+
+.visualPhaseRow span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(240, 232, 251, 0.84);
+  font-size: 0.86rem;
+}
+
+.visualInfoCard {
+  padding: 24px;
+}
+
+.visualHeartCard {
+  padding: 18px;
+  background:
+    radial-gradient(circle at bottom right, rgba(255, 88, 145, 0.12), transparent 24%),
+    rgba(12, 10, 18, 0.92);
+}
+
+.visualHeartFrame {
+  position: relative;
+  min-height: 260px;
+  border-radius: 22px;
+  overflow: hidden;
 }
 
 .comparisonWrap {
@@ -376,7 +541,7 @@
   align-items: flex-start;
   gap: 10px;
   color: rgba(229, 221, 241, 0.8);
-  font-size: 0.98rem;
+  font-size: 0.94rem;
   line-height: 1.55;
 }
 
@@ -417,7 +582,7 @@
 
 .phaseTime {
   color: rgba(246, 214, 229, 0.75);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
 }
 
 .faqList {
@@ -471,7 +636,8 @@
   .heroLayout,
   .principlesGrid,
   .comparisonGrid,
-  .phaseRail {
+  .phaseRail,
+  .visualGrid {
     grid-template-columns: 1fr;
   }
 
@@ -507,8 +673,21 @@
     width: min(72vw, 320px);
   }
 
+  .heroImageCard {
+    grid-template-columns: 1fr;
+  }
+
+  .heroImageFrame,
+  .visualHeartFrame {
+    min-height: 220px;
+  }
+
   .statGrid {
     grid-template-columns: 1fr;
+  }
+
+  .visualPhoneFrame {
+    min-height: 400px;
   }
 
   .section,
