@@ -1,4 +1,5 @@
 import Image from "next/image";
+import { SiteFooter } from "../components/SiteFooter";
 import styles from "./page.module.css";
 
 const appStoreUrl = "https://apps.apple.com/";
@@ -414,6 +415,8 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      <SiteFooter />
     </main>
   );
 }

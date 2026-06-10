@@ -1,0 +1,140 @@
+.page {
+  width: min(900px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 28px 0 72px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 28px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #a9e6ff;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.backLink {
+  color: rgba(243, 234, 255, 0.8);
+  font-size: 0.92rem;
+}
+
+.card {
+  padding: 28px;
+  border-radius: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(76, 214, 255, 0.08), transparent 26%),
+    radial-gradient(circle at bottom left, rgba(255, 74, 130, 0.08), transparent 24%),
+    rgba(14, 11, 20, 0.94);
+}
+
+.eyebrow {
+  color: #97e1ff;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin-top: 10px;
+  color: #fcf7ff;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.04;
+  letter-spacing: -0.05em;
+}
+
+.intro {
+  margin-top: 14px;
+  color: rgba(230, 221, 242, 0.78);
+  font-size: 0.98rem;
+  line-height: 1.65;
+}
+
+.section {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.section:first-of-type {
+  margin-top: 32px;
+}
+
+.sectionTitle {
+  color: #fff8ff;
+  font-size: 1.12rem;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.text,
+.list,
+.info {
+  margin-top: 12px;
+  color: rgba(226, 218, 239, 0.78);
+  font-size: 0.95rem;
+  line-height: 1.7;
+}
+
+.info {
+  display: grid;
+  gap: 6px;
+}
+
+.list {
+  padding-left: 18px;
+}
+
+.list li + li {
+  margin-top: 8px;
+}
+
+.note {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(234, 227, 245, 0.8);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.link {
+  color: #9fe1ff;
+}
+
+.footerSpace {
+  margin-top: 22px;
+}
+
+@media (max-width: 720px) {
+  .page {
+    width: min(100% - 24px, 900px);
+    padding: 18px 0 56px;
+  }
+
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .card {
+    padding: 20px;
+    border-radius: 26px;
+  }
+}

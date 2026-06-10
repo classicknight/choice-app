@@ -1,0 +1,53 @@
+.footer {
+  padding-top: 24px;
+}
+
+.inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 4px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.brandBlock {
+  display: grid;
+  gap: 6px;
+}
+
+.brand {
+  color: #f8f2ff;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.copy {
+  color: rgba(226, 218, 239, 0.62);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.nav a {
+  color: rgba(248, 242, 255, 0.84);
+  font-size: 0.9rem;
+}
+
+.nav a:hover {
+  color: #ffffff;
+}
+
+@media (max-width: 720px) {
+  .inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
