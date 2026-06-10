@@ -8,8 +8,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Choice",
-  description: "Choice ist eine Dating-App mit klaren Phasen, mehr Absicht und weniger endlosem Swipen.",
+  title: "Choice — Everyday a match",
+  description: "Choice ist eine Dating-App mit einem Match am Tag, klaren Phasen und mehr Klarheit statt endlosem Swipen.",
 };
 
 export default function RootLayout({
