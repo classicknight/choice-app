@@ -162,36 +162,59 @@
   color: #f6eeff;
 }
 
-.storeButton {
+.storeBadge {
   display: inline-flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
-  min-height: 62px;
-  min-width: 168px;
-  padding: 12px 16px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  align-items: center;
+  gap: 12px;
+  min-height: 72px;
+  min-width: 210px;
+  padding: 12px 18px;
+  border-radius: 18px;
+  background: #060608;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
 }
 
-.storeButton:hover {
+.storeBadge:hover {
   transform: translateY(-1px);
-  background: rgba(255, 255, 255, 0.06);
+  background: #0b0b0e;
 }
 
-.storeKicker {
-  color: rgba(161, 227, 255, 0.78);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+.storeIconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: #fff;
+  flex: 0 0 auto;
+}
+
+.storeIconSvg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.storeCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.storeOverline {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.74rem;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-.storeLabel {
-  color: #fff8ff;
-  font-size: 1rem;
+.storeHeadline {
+  color: #fff;
+  font-size: 1.55rem;
+  line-height: 1;
   font-weight: 700;
 }
 
@@ -764,6 +787,10 @@
   .heroImageFrame,
   .visualHeartFrame {
     min-height: 220px;
+  }
+
+  .storeBadge {
+    min-width: 100%;
   }
 
   .statGrid {

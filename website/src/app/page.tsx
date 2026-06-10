@@ -4,6 +4,28 @@ import styles from "./page.module.css";
 const appStoreUrl = "https://apps.apple.com/";
 const googlePlayUrl = "https://play.google.com/store";
 
+function AppleBadgeIcon() {
+  return (
+    <svg viewBox="0 0 24 30" aria-hidden="true" className={styles.storeIconSvg}>
+      <path
+        fill="currentColor"
+        d="M20.19 15.92c.04 4.18 3.67 5.57 3.71 5.59-.03.1-.58 1.99-1.9 3.93-1.14 1.67-2.32 3.34-4.18 3.38-1.83.03-2.42-1.08-4.52-1.08-2.1 0-2.76 1.05-4.49 1.11-1.8.07-3.18-1.81-4.33-3.47-2.35-3.39-4.14-9.58-1.73-13.77 1.19-2.08 3.32-3.39 5.64-3.42 1.76-.03 3.42 1.19 4.49 1.19 1.07 0 3.09-1.47 5.2-1.25.88.04 3.36.36 4.95 2.69-.13.08-2.96 1.73-2.93 5.1ZM16.99 3.99C17.95 2.82 18.6 1.2 18.42-.41c-1.39.06-3.08.93-4.07 2.1-.89 1.02-1.67 2.66-1.46 4.22 1.55.12 3.14-.79 4.1-1.92Z"
+      />
+    </svg>
+  );
+}
+
+function GooglePlayBadgeIcon() {
+  return (
+    <svg viewBox="0 0 40 44" aria-hidden="true" className={styles.storeIconSvg}>
+      <path fill="#34A853" d="M4 4.8 24.7 25.5 4 46.2c-.4-.3-.7-.8-.7-1.4V6.2c0-.6.3-1.1.7-1.4Z" />
+      <path fill="#4285F4" d="M31.4 18.6 24.7 25.5 17.1 17.9l9-9 5.3 9.7Z" />
+      <path fill="#FBBC04" d="M36.7 15.5c1.5.8 1.5 2.1 0 2.9l-5.3 3-6.7-6.9 6.7-6.9 5.3 3.1Z" />
+      <path fill="#EA4335" d="m17.1 33.1 7.6-7.6 6.7 6.9-5.3 3.1c-2 1.2-4.6 1-6.3-.7l-2.7-1.7Z" />
+    </svg>
+  );
+}
+
 const phases = [
   {
     number: "01",
@@ -161,13 +183,23 @@ export default function Home() {
             </div>
 
             <div className={styles.storeActions}>
-              <a className={styles.storeButton} href={appStoreUrl} target="_blank" rel="noreferrer">
-                <span className={styles.storeKicker}>iPhone</span>
-                <span className={styles.storeLabel}>App Store</span>
+              <a className={styles.storeBadge} href={appStoreUrl} target="_blank" rel="noreferrer" aria-label="Download on the App Store">
+                <span className={styles.storeIconWrap}>
+                  <AppleBadgeIcon />
+                </span>
+                <span className={styles.storeCopy}>
+                  <span className={styles.storeOverline}>Download on the</span>
+                  <span className={styles.storeHeadline}>App Store</span>
+                </span>
               </a>
-              <a className={styles.storeButton} href={googlePlayUrl} target="_blank" rel="noreferrer">
-                <span className={styles.storeKicker}>Android</span>
-                <span className={styles.storeLabel}>Google Play</span>
+              <a className={styles.storeBadge} href={googlePlayUrl} target="_blank" rel="noreferrer" aria-label="Get it on Google Play">
+                <span className={styles.storeIconWrap}>
+                  <GooglePlayBadgeIcon />
+                </span>
+                <span className={styles.storeCopy}>
+                  <span className={styles.storeOverline}>GET IT ON</span>
+                  <span className={styles.storeHeadline}>Google Play</span>
+                </span>
               </a>
             </div>
 
