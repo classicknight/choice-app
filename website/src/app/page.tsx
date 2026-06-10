@@ -81,6 +81,33 @@ const comparisons = [
   },
 ];
 
+const featuredPeople = [
+  {
+    name: "Mila",
+    age: 26,
+    city: "Berlin",
+    image:
+      "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=1200&q=80",
+    note: "Espresso, Flohmärkte, späte Spaziergänge.",
+  },
+  {
+    name: "Lina",
+    age: 24,
+    city: "Köln",
+    image:
+      "https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?auto=format&fit=crop&w=1200&q=80",
+    note: "Galerien, lange Texte und spontane Zugtickets.",
+  },
+  {
+    name: "Zoë",
+    age: 27,
+    city: "Hamburg",
+    image:
+      "https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=1200&q=80",
+    note: "Läuft gern am Wasser und bleibt dann zu lange auf einen Flat White.",
+  },
+];
+
 const faqs = [
   {
     question: "Warum nur ein Match am Tag?",
@@ -203,6 +230,32 @@ export default function Home() {
               <span className={styles.cardLabel}>{item.label}</span>
               <h3 className={styles.cardTitle}>{item.title}</h3>
               <p className={styles.cardBody}>{item.body}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.section} id="menschen">
+        <div className={styles.sectionIntro}>
+          <p className={styles.sectionEyebrow}>Menschen statt Feed</p>
+          <h2 className={styles.sectionTitle}>Choice soll nach echten Personen aussehen, nicht nach endloser Auswahl.</h2>
+        </div>
+
+        <div className={styles.peopleGrid}>
+          {featuredPeople.map((person) => (
+            <article key={person.name} className={styles.personCard}>
+              <div className={styles.personImageWrap}>
+                <img src={person.image} alt={`${person.name} aus ${person.city}`} className={styles.personImage} />
+              </div>
+              <div className={styles.personMeta}>
+                <div className={styles.personTopRow}>
+                  <h3 className={styles.personName}>
+                    {person.name}, {person.age}
+                  </h3>
+                  <span className={styles.personCity}>{person.city}</span>
+                </div>
+                <p className={styles.personNote}>{person.note}</p>
+              </div>
             </article>
           ))}
         </div>

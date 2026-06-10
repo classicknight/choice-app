@@ -108,7 +108,7 @@
 .headline {
   max-width: 10ch;
   color: #fcf7ff;
-  font-size: clamp(2.8rem, 6vw, 5.2rem);
+  font-size: clamp(2.5rem, 5.3vw, 4.6rem);
   line-height: 0.95;
   letter-spacing: -0.065em;
   font-weight: 800;
@@ -361,8 +361,8 @@
 .ctaTitle {
   max-width: 16ch;
   color: #fcf7ff;
-  font-size: clamp(1.8rem, 4vw, 2.8rem);
-  line-height: 1.05;
+  font-size: clamp(1.6rem, 3.4vw, 2.45rem);
+  line-height: 1.08;
   letter-spacing: -0.055em;
 }
 
@@ -400,9 +400,68 @@
 .phaseTitle,
 .faqQuestion {
   color: #fff8ff;
-  font-size: 1.18rem;
+  font-size: 1.08rem;
   line-height: 1.18;
   font-weight: 800;
+}
+
+.peopleGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.personCard {
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.personImageWrap {
+  position: relative;
+  aspect-ratio: 0.92;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.personImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.personMeta {
+  padding: 18px 18px 20px;
+}
+
+.personTopRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.personName {
+  color: #fff8ff;
+  font-size: 1.08rem;
+  line-height: 1.1;
+  font-weight: 800;
+}
+
+.personCity {
+  color: rgba(156, 226, 255, 0.82);
+  font-size: 0.82rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.personNote {
+  margin-top: 10px;
+  color: rgba(226, 218, 239, 0.78);
+  font-size: 0.92rem;
+  line-height: 1.55;
 }
 
 .visualGrid {
@@ -635,6 +694,7 @@
 @media (max-width: 1080px) {
   .heroLayout,
   .principlesGrid,
+  .peopleGrid,
   .comparisonGrid,
   .phaseRail,
   .visualGrid {
