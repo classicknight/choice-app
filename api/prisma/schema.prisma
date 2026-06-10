@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuthProvider {
+  EMAIL
+  PHONE
+  APPLE
+}
+
+enum VerificationChannel {
+  EMAIL
+  PHONE
+}
+
+enum VerificationPurpose {
+  SIGN_UP
+  LOGIN
+  PHONE_CONFIRM
+  EMAIL_CONFIRM
+  PASSWORD_RESET
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  CONSUMED
+}
+
+enum MatchStatus {
+  PENDING
+  ACTIVE
+  KEPT
+  DISCARDED
+  EXPIRED
+}
+
+enum ParticipantDecision {
+  UNDECIDED
+  KEEP
+  DISCARD
+}
+
+enum MessageKind {
+  TEXT
+  SYSTEM
+}
+
+model User {
+  id                String                  @id @default(cuid())
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+  email             String?                 @unique
+  phoneNumber       String?                 @unique
+  passwordHash      String?
+  authProvider      AuthProvider            @default(EMAIL)
+  emailVerifiedAt   DateTime?
+  phoneVerifiedAt   DateTime?
+  profileCompleted  Boolean                 @default(false)
+  profile           Profile?
+  verificationCodes VerificationChallenge[]
+  matchesAsA        Match[]                 @relation("MatchUserA")
+  matchesAsB        Match[]                 @relation("MatchUserB")
+  sentMessages      Message[]
+  chatMembers       ChatMember[]
+}
+
+model Profile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  firstName         String
+  age               Int
+  city              String
+  selfDescription   String              @default("")
+  pronouns          String
+  identity          String
+  lookingFor        String
+  datingIntent      String
+  ageRangeMin       Int
+  ageRangeMax       Int
+  interests         String[]
+  dealbreaker       String?
+  matchTime         String
+  conversationStyle String
+  avatarUrl         String?
+  photoUrls         String[]
+  introVideoUrl     String?
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationChallenge {
+  id             String              @id @default(cuid())
+  userId         String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  channel        VerificationChannel
+  purpose        VerificationPurpose
+  target         String
+  codeHash       String
+  expiresAt      DateTime
+  status         VerificationStatus  @default(PENDING)
+  attempts       Int                 @default(0)
+  lastSentAt     DateTime?
+  user           User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([target, purpose, status])
+}
+
+model Match {
+  id               String              @id @default(cuid())
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  scheduledFor     DateTime
+  activatedAt      DateTime?
+  closedAt         DateTime?
+  status           MatchStatus         @default(PENDING)
+  userAId          String
+  userBId          String
+  userADecision    ParticipantDecision @default(UNDECIDED)
+  userBDecision    ParticipantDecision @default(UNDECIDED)
+  compatibility    Float?
+  rationale        Json?
+  userA            User                @relation("MatchUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB            User                @relation("MatchUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  chat             Chat?
+
+  @@unique([scheduledFor, userAId, userBId])
+  @@index([status, scheduledFor])
+}
+
+model Chat {
+  id           String       @id @default(cuid())
+  matchId      String       @unique
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  archivedAt   DateTime?
+  match        Match        @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  members      ChatMember[]
+  messages     Message[]
+}
+
+model ChatMember {
+  id         String   @id @default(cuid())
+  chatId      String
+  userId      String
+  joinedAt    DateTime @default(now())
+  lastReadAt  DateTime?
+  chat        Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+}
+
+model Message {
+  id         String      @id @default(cuid())
+  chatId      String
+  senderId    String
+  createdAt   DateTime    @default(now())
+  kind        MessageKind @default(TEXT)
+  body        String
+  metadata    Json?
+  chat        Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender      User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+}

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: choice-website
+    runtime: static
+    rootDir: website
+    buildCommand: npm install && npm run build
+    staticPublishPath: out
+    buildFilter:
+      paths:
+        - website/**
