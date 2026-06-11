@@ -1,0 +1,355 @@
+.page {
+  min-height: 100vh;
+  padding: 56px 24px 72px;
+}
+
+.shell {
+  width: min(1240px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 24px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.eyebrow {
+  margin-bottom: 10px;
+  color: #9ad7ff;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.title {
+  max-width: 860px;
+  color: #f7f1ff;
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+}
+
+.lead {
+  max-width: 760px;
+  margin-top: 14px;
+  color: rgba(234, 224, 246, 0.78);
+  font-size: 1rem;
+  line-height: 1.72;
+}
+
+.backLink {
+  flex-shrink: 0;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: #f7f1ff;
+  font-size: 0.92rem;
+}
+
+.authCard,
+.section {
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 28px;
+  background: rgba(17, 12, 24, 0.86);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+}
+
+.authGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  color: rgba(244, 238, 251, 0.92);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.field input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  color: #fff6ff;
+  background: rgba(255, 255, 255, 0.03);
+  font: inherit;
+}
+
+.field input:focus {
+  outline: none;
+  border-color: rgba(255, 121, 171, 0.62);
+  box-shadow: 0 0 0 4px rgba(255, 121, 171, 0.12);
+}
+
+.authActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.authHint,
+.emptyState,
+.resolutionText {
+  color: rgba(229, 221, 239, 0.68);
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.error,
+.notice {
+  margin-top: 14px;
+  padding: 13px 15px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+}
+
+.error {
+  color: #ffd6de;
+  background: rgba(255, 92, 133, 0.12);
+}
+
+.notice {
+  color: #d9f7eb;
+  background: rgba(76, 190, 136, 0.12);
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.summaryCard {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.summaryCardAccent {
+  border-color: rgba(110, 198, 255, 0.22);
+  background: rgba(28, 134, 238, 0.08);
+}
+
+.summaryCardAlert {
+  border-color: rgba(255, 107, 140, 0.2);
+  background: rgba(238, 44, 44, 0.08);
+}
+
+.summaryLabel {
+  display: block;
+  color: rgba(226, 216, 239, 0.66);
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.summaryValue {
+  display: block;
+  margin-top: 10px;
+  color: #fff5ff;
+  font-size: 2rem;
+  letter-spacing: -0.06em;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.sectionEyebrow {
+  margin-bottom: 8px;
+  color: #9ad7ff;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.sectionTitle {
+  color: #fbf7ff;
+  font-size: clamp(1.4rem, 2vw, 1.85rem);
+  letter-spacing: -0.04em;
+}
+
+.reportList {
+  display: grid;
+  gap: 14px;
+}
+
+.reportCard {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.reportTop {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.reportBadge {
+  display: inline-flex;
+  margin-bottom: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(154, 215, 255, 0.12);
+  color: #b5e0ff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.reportTitle {
+  color: #fff7ff;
+  font-size: 1.05rem;
+  line-height: 1.45;
+}
+
+.reportMeta {
+  color: rgba(225, 214, 239, 0.58);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.reportContent {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  color: rgba(235, 226, 245, 0.84);
+  font-size: 0.93rem;
+  line-height: 1.65;
+}
+
+.inlineActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.primaryButton,
+.secondaryButton,
+.dangerButton {
+  border: none;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.primaryButton {
+  padding: 14px 22px;
+  color: #fff8fd;
+  background: linear-gradient(135deg, #d22a73, #ff5c8f);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.dangerButton:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.secondaryButton {
+  padding: 11px 16px;
+  color: #f3ecfb;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.dangerButton {
+  padding: 11px 16px;
+  color: #ffdbe5;
+  background: rgba(238, 44, 44, 0.12);
+  border: 1px solid rgba(238, 44, 44, 0.24);
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+}
+
+.table th,
+.table td {
+  padding: 16px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  color: rgba(213, 200, 230, 0.6);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.table td {
+  color: rgba(247, 240, 255, 0.9);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.cellSubline {
+  margin-top: 4px;
+  color: rgba(219, 209, 233, 0.58);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 1080px) {
+  .summaryGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .authGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding: 28px 16px 56px;
+  }
+
+  .header,
+  .authActions,
+  .reportTop {
+    flex-direction: column;
+  }
+
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .backLink,
+  .primaryButton {
+    width: 100%;
+    text-align: center;
+  }
+}

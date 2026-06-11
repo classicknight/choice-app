@@ -61,6 +61,23 @@ type DeleteAccountResult = {
   ok: true;
 };
 
+type RemoteAccountStateResult = {
+  ok: true;
+  account: {
+    userId: string;
+    isPremium: boolean;
+    premiumActivatedAt: string | null;
+    penaltyPoints: number;
+    suspendedAt: string | null;
+    accountPaused: boolean;
+  };
+};
+
+type CreateReportResult = {
+  ok: true;
+  reportId: string;
+};
+
 type HydratedProfileResult = {
   profile: RegistrationProfile;
   photoUrls: string[];
@@ -489,4 +506,47 @@ export async function deleteRemoteAccount(userId: string): Promise<DeleteAccount
   }
 
   return deleteJson<DeleteAccountResult>(`/profiles/${encodeURIComponent(userId)}`);
+}
+
+export async function fetchRemoteAccountState(userId: string): Promise<RemoteAccountStateResult["account"]> {
+  if (!apiBaseUrl) {
+    return {
+      userId,
+      isPremium: false,
+      premiumActivatedAt: null,
+      penaltyPoints: 0,
+      suspendedAt: null,
+      accountPaused: false,
+    };
+  }
+
+  const response = await fetchJson<RemoteAccountStateResult>(`/profiles/${encodeURIComponent(userId)}/account`);
+  return response.account;
+}
+
+export async function createRemoteReport(input: {
+  reporterUserId: string;
+  reportedUserId: string;
+  reporterName: string;
+  reportedName: string;
+  reason: string;
+  details?: string;
+  latestMessagePreview?: string | null;
+}): Promise<CreateReportResult> {
+  if (!apiBaseUrl) {
+    return {
+      ok: true,
+      reportId: `local-report-${Date.now()}`,
+    };
+  }
+
+  return postJson<CreateReportResult>("/reports", {
+    reporterUserId: input.reporterUserId,
+    reportedUserId: input.reportedUserId,
+    reporterName: input.reporterName,
+    reportedName: input.reportedName,
+    reason: input.reason,
+    details: input.details?.trim() || undefined,
+    latestMessagePreview: input.latestMessagePreview?.trim() || undefined,
+  });
 }

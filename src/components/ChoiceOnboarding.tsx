@@ -27,8 +27,10 @@ import Svg, {
   Rect,
 } from "react-native-svg";
 import {
+  createRemoteReport,
   createRemoteProfile,
   deleteRemoteAccount,
+  fetchRemoteAccountState,
   fetchRemoteProfile,
   startPhoneVerification,
   uploadProfilePhotos,
@@ -3949,6 +3951,41 @@ function OverviewScreen({
   }, [isModerationHydrated, moderationState]);
 
   useEffect(() => {
+    if (!isModerationHydrated || !currentUserId) {
+      return;
+    }
+
+    const activeUserId = currentUserId;
+    let cancelled = false;
+
+    async function hydrateRemoteAccountState() {
+      try {
+        const remoteAccount = await fetchRemoteAccountState(activeUserId);
+
+        if (cancelled) {
+          return;
+        }
+
+        setModerationState((current) => ({
+          ...current,
+          penaltyPointsByUserId: {
+            ...current.penaltyPointsByUserId,
+            [activeUserId]: remoteAccount.penaltyPoints,
+          },
+        }));
+      } catch {
+        // Keep the locally cached moderation state when the API is unavailable.
+      }
+    }
+
+    void hydrateRemoteAccountState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId, isModerationHydrated]);
+
+  useEffect(() => {
     if (
       !isJourneyHydrated
       || !isModerationHydrated
@@ -4139,18 +4176,36 @@ function OverviewScreen({
     setShowReportModal(true);
   }
 
-  function submitReport() {
+  async function submitReport() {
     if (!currentUserId || !matchedSession || !reportReason) {
       return;
     }
 
     const latestMessagePreview = getSharedChatMessagePreview(sharedChatMessages[sharedChatMessages.length - 1]) ?? null;
+    let reportId = `report-${Date.now()}`;
+    let feedback = "Meldung gespeichert. Du kannst sie im Status-Tab prüfen.";
+
+    try {
+      const response = await createRemoteReport({
+        reporterUserId: currentUserId,
+        reportedUserId: matchedSession.userId,
+        reporterName: displayName,
+        reportedName: featuredProfile.firstName,
+        reason: reportReason,
+        details: reportDetails.trim(),
+        latestMessagePreview,
+      });
+
+      reportId = response.reportId;
+    } catch {
+      feedback = "Meldung lokal gespeichert. Der Server war gerade nicht erreichbar.";
+    }
 
     setModerationState((current) => ({
       ...current,
       reports: [
         {
-          id: `report-${Date.now()}`,
+          id: reportId,
           reporterUserId: currentUserId,
           reporterName: displayName,
           reportedUserId: matchedSession.userId,
@@ -4168,7 +4223,7 @@ function OverviewScreen({
     setShowReportModal(false);
     setReportReason("");
     setReportDetails("");
-    setReportFeedback("Meldung gespeichert. Du kannst sie im Status-Tab prüfen.");
+    setReportFeedback(feedback);
   }
 
   function resolveModerationReport(reportId: string, decision: "dismissed" | "confirmed") {
@@ -5665,8 +5720,13 @@ export function ChoiceOnboarding() {
   }
 
   async function loadIsAccountPaused(userId: string) {
-    const nextModerationState = await loadModerationState();
-    return (nextModerationState.penaltyPointsByUserId[userId] ?? 0) >= 3;
+    try {
+      const remoteAccount = await fetchRemoteAccountState(userId);
+      return remoteAccount.accountPaused;
+    } catch {
+      const nextModerationState = await loadModerationState();
+      return (nextModerationState.penaltyPointsByUserId[userId] ?? 0) >= 3;
+    }
   }
 
   function resetToPausedSignIn(message = "Dieses Konto ist pausiert.") {

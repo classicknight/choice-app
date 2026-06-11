@@ -24,6 +24,47 @@ const profileSchema = z.object({
 });
 
 export const profileRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/profiles/:userId/account", async (request, reply) => {
+    const params = z.object({
+      userId: z.string().min(1),
+    }).safeParse(request.params);
+
+    if (!params.success) {
+      return reply.status(400).send({
+        error: "INVALID_USER_ID",
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: params.data.userId },
+      select: {
+        id: true,
+        isPremium: true,
+        premiumActivatedAt: true,
+        penaltyPoints: true,
+        suspendedAt: true,
+      },
+    });
+
+    if (!user) {
+      return reply.status(404).send({
+        error: "USER_NOT_FOUND",
+      });
+    }
+
+    return reply.send({
+      ok: true,
+      account: {
+        userId: user.id,
+        isPremium: user.isPremium,
+        premiumActivatedAt: user.premiumActivatedAt,
+        penaltyPoints: user.penaltyPoints,
+        suspendedAt: user.suspendedAt,
+        accountPaused: user.penaltyPoints >= 3 || Boolean(user.suspendedAt),
+      },
+    });
+  });
+
   app.get("/profiles/:userId", async (request, reply) => {
     const params = z.object({
       userId: z.string().min(1),

@@ -1,9 +1,11 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { adminRoutes } from "./routes/admin.js";
 import { env } from "./config/env.js";
 import { authRoutes } from "./routes/auth.js";
 import { healthRoutes } from "./routes/health.js";
 import { profileRoutes } from "./routes/profiles.js";
+import { reportRoutes } from "./routes/reports.js";
 import { uploadRoutes } from "./routes/uploads.js";
 
 export function buildApp() {
@@ -20,7 +22,9 @@ export function buildApp() {
   app.register(healthRoutes, { prefix: "/v1" });
   app.register(authRoutes, { prefix: "/v1" });
   app.register(profileRoutes, { prefix: "/v1" });
+  app.register(reportRoutes, { prefix: "/v1" });
   app.register(uploadRoutes, { prefix: "/v1" });
+  app.register(adminRoutes, { prefix: "/v1" });
 
   return app;
 }
