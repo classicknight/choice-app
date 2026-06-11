@@ -87,7 +87,7 @@ type DashboardPayload = {
 };
 
 const storageKey = "choice.admin-settings";
-const defaultApiUrl = process.env.NEXT_PUBLIC_ADMIN_API_URL?.trim() || "http://localhost:4000/v1";
+const defaultApiUrl = process.env.NEXT_PUBLIC_ADMIN_API_URL?.trim() || "https://choice-api.onrender.com/v1";
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -161,15 +161,21 @@ export default function AdminPage() {
   );
 
   async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(`${apiUrl.replace(/\/$/, "")}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        "x-admin-phone": phoneNumber.trim(),
-        "x-admin-key": accessKey.trim(),
-        ...(init?.headers ?? {}),
-      },
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(`${apiUrl.replace(/\/$/, "")}${path}`, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-phone": phoneNumber.trim(),
+          "x-admin-key": accessKey.trim(),
+          ...(init?.headers ?? {}),
+        },
+      });
+    } catch {
+      throw new Error("API nicht erreichbar. Prüfe die API-URL oder ob der Server läuft.");
+    }
 
     const payload = (await response.json()) as T & { error?: string };
 

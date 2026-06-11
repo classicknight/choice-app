@@ -5,6 +5,48 @@ services:
     rootDir: website
     buildCommand: npm install && npm run build
     staticPublishPath: out
+    envVars:
+      - key: NEXT_PUBLIC_ADMIN_API_URL
+        value: https://choice-api.onrender.com/v1
     buildFilter:
       paths:
         - website/**
+        - render.yaml
+  - type: web
+    name: choice-api
+    runtime: node
+    rootDir: api
+    buildCommand: npm install && npm run prisma:generate && npm run build
+    startCommand: npm run start
+    healthCheckPath: /v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: EMAIL_FROM
+        value: auth@choice-dating.app
+      - key: RESEND_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_VERIFY_SERVICE_SID
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: ADMIN_PHONE_NUMBERS
+        sync: false
+      - key: ADMIN_ACCESS_KEY
+        sync: false
+    buildFilter:
+      paths:
+        - api/**
+        - render.yaml
