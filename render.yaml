@@ -16,7 +16,7 @@ services:
     name: choice-api
     runtime: node
     rootDir: api
-    buildCommand: npm install && npm run prisma:generate && npm run build
+    buildCommand: npm install --include=dev && npm run prisma:generate && npm run build
     startCommand: npm run start
     healthCheckPath: /v1/health
     envVars:
