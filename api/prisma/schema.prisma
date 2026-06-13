@@ -49,7 +49,14 @@ enum ParticipantDecision {
 
 enum MessageKind {
   TEXT
+  IMAGE
   SYSTEM
+}
+
+enum PhaseTwoStage {
+  STARTER
+  PARTNER
+  RESULT
 }
 
 enum ReportStatus {
@@ -73,6 +80,11 @@ model User {
   premiumActivatedAt DateTime?
   penaltyPoints     Int                     @default(0)
   suspendedAt       DateTime?
+  bannedAt          DateTime?
+  paidMatchCredits  Int                     @default(0)
+  frozenPaidMatchCredits Int                @default(0)
+  forfeitedPaidMatchCredits Int             @default(0)
+  lastPaidMatchPackageAt DateTime?
   profile           Profile?
   verificationCodes VerificationChallenge[]
   matchesAsA        Match[]                 @relation("MatchUserA")
@@ -81,6 +93,7 @@ model User {
   chatMembers       ChatMember[]
   reportsFiled      Report[]                @relation("ReportsFiled")
   reportsReceived   Report[]                @relation("ReportsReceived")
+  systemPenaltyEvents SystemPenaltyEvent[]
 }
 
 model Profile {
@@ -136,8 +149,19 @@ model Match {
   status           MatchStatus         @default(PENDING)
   userAId          String
   userBId          String
+  phaseOneStarterUserId String?
+  phaseOneStarterPenaltyAppliedAt DateTime?
+  phaseTwoPenaltyAppliedAt DateTime?
   userADecision    ParticipantDecision @default(UNDECIDED)
   userBDecision    ParticipantDecision @default(UNDECIDED)
+  phaseThreeUserADecision ParticipantDecision @default(UNDECIDED)
+  phaseThreeUserBDecision ParticipantDecision @default(UNDECIDED)
+  phaseTwoStarterUserId String?
+  phaseTwoPartnerUserId String?
+  phaseTwoStage    PhaseTwoStage?
+  phaseTwoRoundIndex Int               @default(0)
+  phaseTwoRounds   Json?
+  phaseTwoResults  Json?
   compatibility    Float?
   rationale        Json?
   userA            User                @relation("MatchUserA", fields: [userAId], references: [id], onDelete: Cascade)
@@ -208,4 +232,17 @@ model Report {
   @@index([status, createdAt])
   @@index([reportedUserId, status])
   @@index([reporterUserId, createdAt])
+}
+
+model SystemPenaltyEvent {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  userId     String
+  reason     String
+  contextKey String   @unique
+  note       String?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }

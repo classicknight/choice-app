@@ -6,6 +6,7 @@ import {
   Image,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -27,12 +28,20 @@ import Svg, {
   Rect,
 } from "react-native-svg";
 import {
+  applyRemoteSystemPenalty,
   createRemoteReport,
   createRemoteProfile,
   deleteRemoteAccount,
   fetchRemoteAccountState,
+  fetchRemoteJourney,
   fetchRemoteProfile,
+  type RemoteJourneyState,
+  sendRemoteJourneyMessage,
+  setRemotePhaseOneDecision,
+  setRemotePhaseThreeDecision,
   startPhoneVerification,
+  startRemotePhaseTwo,
+  submitRemotePhaseTwoAnswer,
   uploadProfilePhotos,
   uploadProfileVideo,
   verifyPhoneVerification,
@@ -63,15 +72,11 @@ import {
   clearTransientState,
   clearPersistedSession,
   loadPersistedSession,
-  loadModerationState,
   loadRememberedSessions,
   loadTransientState,
-  saveModerationState,
   removeRememberedSession,
   saveTransientState,
   savePersistedSession,
-  type ModerationReport,
-  type PersistedModerationState,
   type PersistedSession,
 } from "../lib/session";
 import {
@@ -114,6 +119,8 @@ type PhaseTwoRoundResult = {
   compatibility: number;
 };
 
+type RemoteAccountState = Awaited<ReturnType<typeof fetchRemoteAccountState>>;
+
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
 const MATCH_RELEASE_HOUR = 9;
@@ -133,6 +140,12 @@ const TEST_PHASE_JUMP_OPTIONS = [
   { phase: 4, label: "Phase 4" },
   { phase: 5, label: "Phase 5" },
 ] as const;
+const LEGAL_URLS = {
+  impressum: "https://choice-dating.app/impressum",
+  datenschutz: "https://choice-dating.app/datenschutz",
+  rechtliches: "https://choice-dating.app/rechtliches",
+  agb: "https://choice-dating.app/agb",
+} as const;
 
 type GermanCityRecord = {
   city: string;
@@ -496,21 +509,6 @@ function getChoiceMatchReasons(params: {
   }
 
   return reasons.slice(0, 4);
-}
-
-function formatModerationTimestamp(value: string) {
-  const parsed = new Date(value);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return "";
-  }
-
-  return parsed.toLocaleString("de-DE", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function formatCityFieldValue(entry: GermanCityRecord) {
@@ -1772,6 +1770,74 @@ function normalizeSharedChatMessages(value: unknown): SharedChatMessage[] {
   }, []);
 }
 
+function mapRemoteJourneyMessages(
+  messages: readonly RemoteJourneyState["sharedChatMessages"][number][],
+  viewerUserId: string,
+): SharedChatMessage[] {
+  return messages.reduce<SharedChatMessage[]>((items, message) => {
+    if (message.kind === "system") {
+      return items;
+    }
+
+    const author: SharedChatAuthor = message.senderUserId === viewerUserId ? "primary" : "mila";
+
+    if (message.kind === "image" && message.imageUri) {
+      items.push({
+        id: message.id,
+        author,
+        kind: "image",
+        imageUri: message.imageUri,
+      });
+      return items;
+    }
+
+    if (message.kind === "text" && message.text) {
+      items.push({
+        id: message.id,
+        author,
+        kind: "text",
+        text: message.text,
+      });
+    }
+
+    return items;
+  }, []);
+}
+
+function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyState["partner"]): DemoProfile | null {
+  if (!partner) {
+    return null;
+  }
+
+  const primaryPhoto = partner.photoUrls.find((entry) => entry?.trim()) ?? partner.avatarUrl ?? demoSessionPhotoUris[0];
+  const tagline =
+    partner.greenFlags.slice(0, 2).join(" • ")
+    || partner.interests.slice(0, 2).join(" • ")
+    || "Choice Match";
+
+  return {
+    id: partner.userId,
+    firstName: partner.firstName.trim() || "Choice",
+    age: partner.age,
+    city: partner.city.trim() || "Berlin",
+    selfDescription: partner.selfDescription,
+    tagline,
+    imageUri: primaryPhoto,
+    photoUris: partner.photoUrls.length ? partner.photoUrls : [primaryPhoto],
+    introVideoUrl: partner.introVideoUrl,
+    interests: partner.interests,
+    pronouns: partner.pronouns,
+    identity: partner.identity,
+    lookingFor: partner.lookingFor,
+    datingIntent: partner.datingIntent,
+    ageRangeMin: partner.ageRangeMin,
+    ageRangeMax: partner.ageRangeMax,
+    greenFlags: partner.greenFlags,
+    dealbreakers: partner.dealbreakers,
+    time: partner.matchTime || "Heute 21:00",
+  };
+}
+
 function isEmojiOnlyMessage(text: string) {
   const trimmed = text.trim();
 
@@ -2405,7 +2471,8 @@ function OverviewScreen({
   const [photoViewerIndex, setPhotoViewerIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [isJourneyHydrated, setIsJourneyHydrated] = useState(false);
-  const [isModerationHydrated, setIsModerationHydrated] = useState(false);
+  const [isAccountStateHydrated, setIsAccountStateHydrated] = useState(false);
+  const [remoteJourney, setRemoteJourney] = useState<RemoteJourneyState | null>(null);
   const [sharedChatMessages, setSharedChatMessages] = useState<SharedChatMessage[]>([]);
   const [journeyReleaseAt, setJourneyReleaseAt] = useState<string | null>(null);
   const [seenMatchReleaseAt, setSeenMatchReleaseAt] = useState<string | null>(null);
@@ -2413,10 +2480,7 @@ function OverviewScreen({
   const [scheduledMatchNotificationReleaseAt, setScheduledMatchNotificationReleaseAt] = useState<string | null>(null);
   const [phaseOneStarterPenaltyAppliedAt, setPhaseOneStarterPenaltyAppliedAt] = useState<string | null>(null);
   const [phaseTwoPenaltyAppliedAt, setPhaseTwoPenaltyAppliedAt] = useState<string | null>(null);
-  const [moderationState, setModerationState] = useState<PersistedModerationState>({
-    reports: [],
-    penaltyPointsByUserId: {},
-  });
+  const [accountState, setAccountState] = useState<RemoteAccountState | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState("");
   const [reportDetails, setReportDetails] = useState("");
@@ -2426,9 +2490,11 @@ function OverviewScreen({
   const photoViewerPageWidth = Math.max(viewportWidth - 36, 1);
   const insets = useSafeAreaInsets();
   const isMilaSession = currentUserId === demoMilaUserId;
+  const isServerJourneyMode = Boolean(currentUserId && !isMilaSession);
   const journeyOwnerUserId = currentUserId === demoMilaUserId ? matchedSession?.userId ?? null : currentUserId;
 
   function applyJourneyState(state: PersistedJourneyState) {
+    setRemoteJourney(null);
     setJourneyReleaseAt(state.releaseAt);
     setSharedChatMessages(normalizeSharedChatMessages(state.sharedChatMessages));
     setSeenMatchReleaseAt(state.seenMatchReleaseAt ?? null);
@@ -2439,6 +2505,24 @@ function OverviewScreen({
     setPhaseOneDecisions(state.phaseOneDecisions);
     setPhaseThreeDecisions(state.phaseThreeDecisions);
     setPhaseTwoOpen(state.phaseTwoOpen);
+    setPhaseTwoRounds(state.phaseTwoRounds);
+    setPhaseTwoRoundIndex(state.phaseTwoRoundIndex);
+    setPhaseTwoStage(state.phaseTwoStage);
+    setPhaseTwoResults(state.phaseTwoResults);
+    setPhaseTwoStarterUserId(state.phaseTwoStarterUserId);
+    setPhaseTwoPartnerUserId(state.phaseTwoPartnerUserId);
+    setPhaseTwoStarterName(state.phaseTwoStarterName);
+    setPhaseTwoPartnerName(state.phaseTwoPartnerName);
+  }
+
+  function applyRemoteJourneyState(state: RemoteJourneyState) {
+    setRemoteJourney(state);
+    setJourneyReleaseAt(state.releaseAt);
+    setSharedChatMessages(currentUserId ? mapRemoteJourneyMessages(state.sharedChatMessages, currentUserId) : []);
+    setPhaseOneStarterPenaltyAppliedAt(state.phaseOneStarterPenaltyAppliedAt);
+    setPhaseTwoPenaltyAppliedAt(state.phaseTwoPenaltyAppliedAt);
+    setPhaseOneDecisions(state.phaseOneDecisions);
+    setPhaseThreeDecisions(state.phaseThreeDecisions);
     setPhaseTwoRounds(state.phaseTwoRounds);
     setPhaseTwoRoundIndex(state.phaseTwoRoundIndex);
     setPhaseTwoStage(state.phaseTwoStage);
@@ -2496,7 +2580,26 @@ function OverviewScreen({
       phaseTwoPartnerName: "",
     });
   }
+
+  async function refreshAccountState(userId: string) {
+    const remoteAccount = await fetchRemoteAccountState(userId);
+    setAccountState(remoteAccount);
+    return remoteAccount;
+  }
+
+  async function refreshJourneyState(userId: string) {
+    const journey = await fetchRemoteJourney(userId);
+    applyRemoteJourneyState(journey);
+    return journey;
+  }
+
   const featuredProfile = useMemo<DemoProfile>(() => {
+    const remotePartnerProfile = mapRemoteJourneyPartnerToDemoProfile(remoteJourney?.partner ?? null);
+
+    if (remotePartnerProfile) {
+      return remotePartnerProfile;
+    }
+
     if (matchedSession) {
       const primaryPhoto = matchedSession.photoUris.find((entry) => entry?.trim()) ?? demoSessionPhotoUris[0];
       const matchedAge = calculateAgeFromProfile(matchedSession.profile) ?? 27;
@@ -2529,17 +2632,20 @@ function OverviewScreen({
     }
 
     return demoProfiles.find((entry) => entry.id === demoRunthrough.currentMatchProfileId) ?? demoProfiles[0];
-  }, [matchedSession]);
-  const penaltyPoints = currentUserId ? moderationState.penaltyPointsByUserId[currentUserId] ?? 0 : 0;
+  }, [matchedSession, remoteJourney?.partner]);
+  const penaltyPoints = accountState?.penaltyPoints ?? 0;
   const maxPenaltyPoints = 3;
   const remainingPenaltyPoints = Math.max(maxPenaltyPoints - penaltyPoints, 0);
-  const accountPaused = penaltyPoints >= maxPenaltyPoints;
-  const moderationReports = moderationState.reports;
-  const pendingModerationReports = moderationReports.filter((entry) => entry.status === "pending");
-  const hasActiveChat = Boolean(currentUserId && matchedSession);
-  const isBuiltInDemoMatch = matchedSession?.userId === demoMilaUserId;
+  const accountPaused = accountState?.accountPaused ?? false;
+  const accountBanned = accountState?.accountBanned ?? false;
+  const activePartnerUserId = remoteJourney?.partner?.userId ?? matchedSession?.userId ?? null;
+  const hasActiveChat = isServerJourneyMode ? Boolean(currentUserId && remoteJourney?.partner) : Boolean(currentUserId && matchedSession);
+  const isBuiltInDemoMatch = !isServerJourneyMode && matchedSession?.userId === demoMilaUserId;
   const includedMatchLimit = 8;
-  const unlimitedUnlocked = false;
+  const paidMatchCredits = accountState?.paidMatchCredits ?? 0;
+  const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
+  const forfeitedPaidMatchCredits = accountState?.forfeitedPaidMatchCredits ?? 0;
+  const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
   const profileAge = calculateAgeFromProfile(profile);
   const profileSelfDescription = profile.selfDescription ? getOptionLabel(selfDescriptionOptions, profile.selfDescription) : "";
   const profileIdentity = profile.identity ? getOptionLabel(identityOptions, profile.identity) : "";
@@ -2619,8 +2725,8 @@ function OverviewScreen({
   ];
   const phaseOneViewerUserId = currentUserId ?? "choice_primary_demo";
   const phaseOnePartnerUserId =
-    matchedSession?.userId ?? (phaseOneViewerUserId === demoMilaUserId ? "choice_primary_demo" : demoMilaUserId);
-  const phaseOneStarterUserId = chooseStableStarterUserId(phaseOneViewerUserId, phaseOnePartnerUserId);
+    activePartnerUserId ?? (phaseOneViewerUserId === demoMilaUserId ? "choice_primary_demo" : demoMilaUserId);
+  const phaseOneStarterUserId = remoteJourney?.phaseOneStarterUserId ?? chooseStableStarterUserId(phaseOneViewerUserId, phaseOnePartnerUserId);
   const phaseOneStarterName = phaseOneStarterUserId === phaseOneViewerUserId ? displayName : featuredProfile.firstName;
   const phaseOneViewerStarts = phaseOneStarterUserId === phaseOneViewerUserId;
   const phaseOneChatStarted = sharedChatMessages.length > 0;
@@ -2700,21 +2806,21 @@ function OverviewScreen({
         : `Choice hat ${phaseOneStarterName} ausgewählt, den Chat zu eröffnen.`
       : "Choice hat gerade noch kein Match für dich freigegeben.");
   const phaseThreeSuggestedProfile = useMemo(() => {
-    const excludedIds = new Set<string>([featuredProfile.id, matchedSession?.userId ?? ""]);
+    const excludedIds = new Set<string>([featuredProfile.id, activePartnerUserId ?? ""]);
 
     if (currentUserId === demoMilaUserId) {
       excludedIds.add("mila");
     }
 
     return demoProfiles.find((entry) => !excludedIds.has(entry.id)) ?? demoProfiles[0];
-  }, [currentUserId, featuredProfile.id, matchedSession?.userId]);
+  }, [activePartnerUserId, currentUserId, featuredProfile.id]);
   const phaseThreeSuggestedDistanceLabel = formatDistanceLabel(
     estimateDistanceKm(profile.city || "Berlin", phaseThreeSuggestedProfile.city),
   );
   const phaseTwoViewerUserId = currentUserId ?? "choice_local_viewer";
   const phaseTwoFallbackPartnerUserId =
-    matchedSession?.userId ?? (phaseTwoViewerUserId === demoMilaUserId ? "choice_primary_demo" : demoMilaUserId);
-  const phaseTwoAssignedStarterUserId = chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId);
+    activePartnerUserId ?? (phaseTwoViewerUserId === demoMilaUserId ? "choice_primary_demo" : demoMilaUserId);
+  const phaseTwoAssignedStarterUserId = remoteJourney?.phaseTwoStarterUserId ?? chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId);
   const phaseTwoAssignedPartnerUserId =
     phaseTwoAssignedStarterUserId === phaseTwoViewerUserId ? phaseTwoFallbackPartnerUserId : phaseTwoViewerUserId;
   const phaseTwoAssignedStarterName =
@@ -3076,9 +3182,21 @@ function OverviewScreen({
     onSelectTab("chats");
   }
 
-  function startPhaseTwo() {
+  async function startPhaseTwo() {
     setChatOpen(false);
     setShowChatDecisionModal(false);
+
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      try {
+        const journey = await startRemotePhaseTwo(journeyOwnerUserId);
+        applyRemoteJourneyState(journey);
+        setPhaseTwoOpen(true);
+      } catch {
+        // Keep the user in chat if the round cannot be opened right now.
+      }
+      return;
+    }
+
     resetPhaseTwoRun(
       phaseTwoAssignedStarterUserId,
       phaseTwoAssignedStarterName,
@@ -3100,11 +3218,26 @@ function OverviewScreen({
       return;
     }
 
-    startPhaseTwo();
+    void startPhaseTwo();
   }
 
   function setViewerPhaseOneDecision(nextDecision: "continue" | "new-match") {
     if (!phaseOneWindowOpen) {
+      return;
+    }
+
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      void (async () => {
+        try {
+          const journey = await setRemotePhaseOneDecision({
+            userId: journeyOwnerUserId,
+            decision: nextDecision,
+          });
+          applyRemoteJourneyState(journey);
+        } catch {
+          // Keep the existing choice visible if the API is temporarily unavailable.
+        }
+      })();
       return;
     }
 
@@ -3120,6 +3253,21 @@ function OverviewScreen({
       return;
     }
 
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      void (async () => {
+        try {
+          const journey = await setRemotePhaseThreeDecision({
+            userId: journeyOwnerUserId,
+            decision: nextDecision,
+          });
+          applyRemoteJourneyState(journey);
+        } catch {
+          // Keep the current UI state until the next refresh if the API fails.
+        }
+      })();
+      return;
+    }
+
     setPhaseThreeDecisions((current) => ({
       ...current,
       [phaseOneViewerUserId]: nextDecision,
@@ -3128,6 +3276,23 @@ function OverviewScreen({
 
   function selectPhaseTwoAnswerA(answer: PhaseTwoAnswerBranch) {
     if (!phaseTwoCurrentRound || !phaseTwoViewerCanAnswer) {
+      return;
+    }
+
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      void (async () => {
+        try {
+          const journey = await submitRemotePhaseTwoAnswer({
+            userId: journeyOwnerUserId,
+            stage: "starter",
+            roundIndex: phaseTwoRoundIndex,
+            optionIndex: phaseTwoCurrentRound.answerOptions.findIndex((entry) => entry.label === answer.label),
+          });
+          applyRemoteJourneyState(journey);
+        } catch {
+          // Keep the current round open if syncing fails.
+        }
+      })();
       return;
     }
 
@@ -3161,6 +3326,23 @@ function OverviewScreen({
       return;
     }
 
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      void (async () => {
+        try {
+          const journey = await submitRemotePhaseTwoAnswer({
+            userId: journeyOwnerUserId,
+            stage: "partner",
+            roundIndex: phaseTwoRoundIndex,
+            optionIndex: phaseTwoCurrentResult.followUpOptions.findIndex((entry) => entry.label === answer.label),
+          });
+          applyRemoteJourneyState(journey);
+        } catch {
+          // Keep the current round open if syncing fails.
+        }
+      })();
+      return;
+    }
+
     const compatibility = getCompatibilityPoints(phaseTwoCurrentResult.personAScore, answer.score);
 
     setPhaseTwoResults((current) => {
@@ -3186,6 +3368,23 @@ function OverviewScreen({
     const nextText = chatDraft.trim();
 
     if (!nextText || !hasActiveChat || !chatComposerEditable) {
+      return;
+    }
+
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      void (async () => {
+        try {
+          const journey = await sendRemoteJourneyMessage({
+            userId: journeyOwnerUserId,
+            kind: "text",
+            text: nextText,
+          });
+          applyRemoteJourneyState(journey);
+          setChatDraft("");
+        } catch {
+          // Ignore temporary send failures and leave the draft intact.
+        }
+      })();
       return;
     }
 
@@ -3829,6 +4028,7 @@ function OverviewScreen({
     async function hydrateJourneyState() {
       if (!journeyOwnerUserId) {
         if (!cancelled) {
+          setRemoteJourney(null);
           setJourneyReleaseAt(null);
           setSharedChatMessages([]);
           setPhaseOneStarterPenaltyAppliedAt(null);
@@ -3846,6 +4046,24 @@ function OverviewScreen({
           setPhaseTwoPartnerName("");
           setIsJourneyHydrated(true);
         }
+        return;
+      }
+
+      if (isServerJourneyMode) {
+        try {
+          const journey = await refreshJourneyState(journeyOwnerUserId);
+
+          if (!cancelled) {
+            setIsJourneyHydrated(true);
+          }
+        } catch {
+          if (!cancelled) {
+            setRemoteJourney(null);
+            resetJourneyState(journeyOwnerUserId);
+            setIsJourneyHydrated(true);
+          }
+        }
+
         return;
       }
 
@@ -3868,13 +4086,22 @@ function OverviewScreen({
     setIsJourneyHydrated(false);
     void hydrateJourneyState();
 
+    const intervalId = isServerJourneyMode
+      ? setInterval(() => {
+          void hydrateJourneyState();
+        }, 15_000)
+      : null;
+
     return () => {
       cancelled = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
     };
-  }, [journeyOwnerUserId]);
+  }, [isServerJourneyMode, journeyOwnerUserId]);
 
   useEffect(() => {
-    if (!isJourneyHydrated || !journeyOwnerUserId || !journeyReleaseAt) {
+    if (isServerJourneyMode || !isJourneyHydrated || !journeyOwnerUserId || !journeyReleaseAt) {
       return;
     }
 
@@ -3900,6 +4127,7 @@ function OverviewScreen({
       phaseTwoPartnerName,
     });
   }, [
+    isServerJourneyMode,
     isJourneyHydrated,
     journeyOwnerUserId,
     journeyReleaseAt,
@@ -3923,35 +4151,7 @@ function OverviewScreen({
   ]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function hydrateModerationState() {
-      const stored = await loadModerationState();
-
-      if (!cancelled) {
-        setModerationState(stored);
-        setIsModerationHydrated(true);
-      }
-    }
-
-    setIsModerationHydrated(false);
-    void hydrateModerationState();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isModerationHydrated) {
-      return;
-    }
-
-    void saveModerationState(moderationState);
-  }, [isModerationHydrated, moderationState]);
-
-  useEffect(() => {
-    if (!isModerationHydrated || !currentUserId) {
+    if (!currentUserId) {
       return;
     }
 
@@ -3960,61 +4160,88 @@ function OverviewScreen({
 
     async function hydrateRemoteAccountState() {
       try {
-        const remoteAccount = await fetchRemoteAccountState(activeUserId);
+        const remoteAccount = await refreshAccountState(activeUserId);
 
         if (cancelled) {
           return;
         }
 
-        setModerationState((current) => ({
-          ...current,
-          penaltyPointsByUserId: {
-            ...current.penaltyPointsByUserId,
-            [activeUserId]: remoteAccount.penaltyPoints,
-          },
-        }));
+        setAccountState(remoteAccount);
       } catch {
-        // Keep the locally cached moderation state when the API is unavailable.
+        if (!cancelled) {
+          setAccountState(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsAccountStateHydrated(true);
+        }
       }
     }
 
+    setIsAccountStateHydrated(false);
     void hydrateRemoteAccountState();
+
+    const intervalId = setInterval(() => {
+      void hydrateRemoteAccountState();
+    }, 20_000);
 
     return () => {
       cancelled = true;
+      clearInterval(intervalId);
     };
-  }, [currentUserId, isModerationHydrated]);
+  }, [currentUserId]);
 
   useEffect(() => {
     if (
-      !isJourneyHydrated
-      || !isModerationHydrated
+      isServerJourneyMode
+      || !isJourneyHydrated
+      || !isAccountStateHydrated
       || !journeyOwnerUserId
       || !journeyReleaseAt
       || !phaseOneClosed
       || phaseOneChatStarted
+      || !phaseOneStarterUserId
       || phaseOneStarterPenaltyAppliedAt === currentReleaseKey
     ) {
       return;
     }
 
-    setModerationState((current) => {
-      const nextPenaltyPoints = { ...current.penaltyPointsByUserId };
-      nextPenaltyPoints[phaseOneStarterUserId] = Math.min((nextPenaltyPoints[phaseOneStarterUserId] ?? 0) + 1, maxPenaltyPoints);
+    let cancelled = false;
 
-      return {
-        ...current,
-        penaltyPointsByUserId: nextPenaltyPoints,
-      };
-    });
-    setPhaseOneStarterPenaltyAppliedAt(currentReleaseKey);
+    async function applyPhaseOnePenalty() {
+      try {
+        const updatedAccount = await applyRemoteSystemPenalty({
+          userId: phaseOneStarterUserId,
+          reason: "PHASE_ONE_NOT_STARTED",
+          contextKey: `phase-one-starter-missed:${currentReleaseKey}:${phaseOneStarterUserId}`,
+          note: "Keine erste Nachricht bis zum Ende von Phase 1.",
+        });
+
+        if (!cancelled && updatedAccount.userId === currentUserId) {
+          setAccountState(updatedAccount);
+        }
+
+        if (!cancelled) {
+          setPhaseOneStarterPenaltyAppliedAt(currentReleaseKey);
+        }
+      } catch {
+        // Retry automatically on the next render while the API is unavailable.
+      }
+    }
+
+    void applyPhaseOnePenalty();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     currentReleaseKey,
+    currentUserId,
     isJourneyHydrated,
-    isModerationHydrated,
+    isAccountStateHydrated,
+    isServerJourneyMode,
     journeyOwnerUserId,
     journeyReleaseAt,
-    maxPenaltyPoints,
     phaseOneChatStarted,
     phaseOneClosed,
     phaseOneStarterPenaltyAppliedAt,
@@ -4023,8 +4250,9 @@ function OverviewScreen({
 
   useEffect(() => {
     if (
-      !isJourneyHydrated
-      || !isModerationHydrated
+      isServerJourneyMode
+      || !isJourneyHydrated
+      || !isAccountStateHydrated
       || !journeyOwnerUserId
       || !journeyReleaseAt
       || !hasActiveChat
@@ -4037,25 +4265,44 @@ function OverviewScreen({
       return;
     }
 
-    setModerationState((current) => {
-      const nextPenaltyPoints = { ...current.penaltyPointsByUserId };
-      nextPenaltyPoints[phaseTwoCurrentResponderUserId] = Math.min((nextPenaltyPoints[phaseTwoCurrentResponderUserId] ?? 0) + 1, maxPenaltyPoints);
+    let cancelled = false;
 
-      return {
-        ...current,
-        penaltyPointsByUserId: nextPenaltyPoints,
-      };
-    });
-    setPhaseTwoPenaltyAppliedAt(currentReleaseKey);
+    async function applyPhaseTwoPenalty() {
+      try {
+        const updatedAccount = await applyRemoteSystemPenalty({
+          userId: phaseTwoCurrentResponderUserId,
+          reason: "PHASE_TWO_NOT_PLAYED",
+          contextKey: `phase-two-missed:${currentReleaseKey}:${phaseTwoCurrentResponderUserId}`,
+          note: "Phase 2 wurde nicht rechtzeitig gespielt.",
+        });
+
+        if (!cancelled && updatedAccount.userId === currentUserId) {
+          setAccountState(updatedAccount);
+        }
+
+        if (!cancelled) {
+          setPhaseTwoPenaltyAppliedAt(currentReleaseKey);
+        }
+      } catch {
+        // Retry automatically on the next render while the API is unavailable.
+      }
+    }
+
+    void applyPhaseTwoPenalty();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
     currentReleaseKey,
     currentTime,
+    currentUserId,
     hasActiveChat,
     isJourneyHydrated,
-    isModerationHydrated,
+    isAccountStateHydrated,
+    isServerJourneyMode,
     journeyOwnerUserId,
     journeyReleaseAt,
-    maxPenaltyPoints,
     phaseOneBothContinue,
     phaseThreeStartTime,
     phaseTwoCurrentResponderUserId,
@@ -4160,6 +4407,22 @@ function OverviewScreen({
         return;
       }
 
+      if (isServerJourneyMode && journeyOwnerUserId) {
+        const [uploadedImageUri] = await uploadProfilePhotos([nextUri]);
+
+        if (!uploadedImageUri) {
+          return;
+        }
+
+        const journey = await sendRemoteJourneyMessage({
+          userId: journeyOwnerUserId,
+          kind: "image",
+          imageUri: uploadedImageUri,
+        });
+        applyRemoteJourneyState(journey);
+        return;
+      }
+
       appendSharedChatMessage({
         kind: "image",
         imageUri: nextUri,
@@ -4177,82 +4440,29 @@ function OverviewScreen({
   }
 
   async function submitReport() {
-    if (!currentUserId || !matchedSession || !reportReason) {
+    if (!currentUserId || !activePartnerUserId || !reportReason) {
       return;
     }
 
     const latestMessagePreview = getSharedChatMessagePreview(sharedChatMessages[sharedChatMessages.length - 1]) ?? null;
-    let reportId = `report-${Date.now()}`;
-    let feedback = "Meldung gespeichert. Du kannst sie im Status-Tab prüfen.";
 
     try {
-      const response = await createRemoteReport({
+      await createRemoteReport({
         reporterUserId: currentUserId,
-        reportedUserId: matchedSession.userId,
+        reportedUserId: activePartnerUserId,
         reporterName: displayName,
         reportedName: featuredProfile.firstName,
         reason: reportReason,
         details: reportDetails.trim(),
         latestMessagePreview,
       });
-
-      reportId = response.reportId;
+      setShowReportModal(false);
+      setReportReason("");
+      setReportDetails("");
+      setReportFeedback("Meldung gespeichert. Choice prüft sie im Admin-Dashboard.");
     } catch {
-      feedback = "Meldung lokal gespeichert. Der Server war gerade nicht erreichbar.";
+      setReportFeedback("Meldung konnte gerade nicht gespeichert werden. Bitte versuch es gleich nochmal.");
     }
-
-    setModerationState((current) => ({
-      ...current,
-      reports: [
-        {
-          id: reportId,
-          reporterUserId: currentUserId,
-          reporterName: displayName,
-          reportedUserId: matchedSession.userId,
-          reportedName: featuredProfile.firstName,
-          reason: reportReason,
-          details: reportDetails.trim(),
-          latestMessagePreview,
-          createdAt: new Date().toISOString(),
-          status: "pending",
-          resolvedAt: null,
-        },
-        ...current.reports,
-      ],
-    }));
-    setShowReportModal(false);
-    setReportReason("");
-    setReportDetails("");
-    setReportFeedback(feedback);
-  }
-
-  function resolveModerationReport(reportId: string, decision: "dismissed" | "confirmed") {
-    setModerationState((current) => {
-      const targetReport = current.reports.find((entry) => entry.id === reportId);
-
-      if (!targetReport || targetReport.status !== "pending") {
-        return current;
-      }
-
-      const nextPenaltyPoints = { ...current.penaltyPointsByUserId };
-
-      if (decision === "confirmed") {
-        nextPenaltyPoints[targetReport.reportedUserId] = Math.min((nextPenaltyPoints[targetReport.reportedUserId] ?? 0) + 1, maxPenaltyPoints);
-      }
-
-      return {
-        reports: current.reports.map((entry) =>
-          entry.id === reportId
-            ? {
-                ...entry,
-                status: decision,
-                resolvedAt: new Date().toISOString(),
-              }
-            : entry,
-        ),
-        penaltyPointsByUserId: nextPenaltyPoints,
-      };
-    });
   }
 
   useEffect(() => {
@@ -4295,7 +4505,7 @@ function OverviewScreen({
   }, []);
 
   useEffect(() => {
-    if (!isJourneyHydrated || !journeyOwnerUserId || !journeyReleaseAt) {
+    if (isServerJourneyMode || !isJourneyHydrated || !journeyOwnerUserId || !journeyReleaseAt) {
       return;
     }
 
@@ -4314,6 +4524,7 @@ function OverviewScreen({
     }
   }, [
     currentTime,
+    isServerJourneyMode,
     isJourneyHydrated,
     journeyOwnerUserId,
     journeyReleaseAt,
@@ -4377,17 +4588,27 @@ function OverviewScreen({
 
         <View style={styles.accountPausedWrap}>
           <View style={styles.overviewStatusCard}>
-            <Text style={styles.overviewStatusEyebrow}>Konto pausiert</Text>
-            <Text style={styles.overviewStatusTitle}>Dein Konto ist gerade gesperrt.</Text>
+            <Text style={styles.overviewStatusEyebrow}>{accountBanned ? "Konto gesperrt" : "Konto pausiert"}</Text>
+            <Text style={styles.overviewStatusTitle}>
+              {accountBanned ? "Dein Konto ist dauerhaft gesperrt." : "Dein Konto ist gerade pausiert."}
+            </Text>
             <Text style={styles.overviewStatusText}>
-              Du hast {penaltyPoints}/{maxPenaltyPoints} Strafpunkte erreicht. Solange das Konto pausiert ist, kannst du keine Matches öffnen, keine Chats nutzen und nicht normal weitermachen.
+              {accountBanned
+                ? "Choice hat dein Konto wegen schwerem oder wiederholtem Verstoß dauerhaft gesperrt. Du kannst keine Matches öffnen, keine Chats nutzen und nicht normal weitermachen."
+                : `Du hast ${penaltyPoints}/${maxPenaltyPoints} Strafpunkte erreicht. Solange das Konto pausiert ist, kannst du keine Matches öffnen, keine Chats nutzen und nicht normal weitermachen.`}
             </Text>
           </View>
 
           <View style={styles.overviewRuleCard}>
-            <Text style={styles.overviewRuleTitle}>Warum das passiert ist</Text>
+            <Text style={styles.overviewRuleTitle}>{accountBanned ? "Was das für gekaufte Matches bedeutet" : "Warum das passiert ist"}</Text>
             <Text style={styles.overviewRuleText}>
-              Choice pausiert Konten bei drei bestätigten Strafpunkten automatisch. Dazu zählt auch, wenn du den Chat eröffnen solltest und bis {decisionClockLabel} keine erste Nachricht schreibst oder wenn du eine dir zugewiesene Choice-Runde in Phase 2 liegen lässt.
+              {accountBanned
+                ? forfeitedPaidMatchCredits > 0
+                  ? `${forfeitedPaidMatchCredits} gekaufte Matches sind mit der Sperrung verfallen.`
+                  : "Auch zahlende Konten können dauerhaft gesperrt werden."
+                : frozenPaidMatchCredits > 0
+                  ? `${frozenPaidMatchCredits} gekaufte Matches sind eingefroren und können nach einer Entsperrung wieder freigegeben werden.`
+                  : `Choice pausiert Konten bei drei bestätigten Strafpunkten automatisch. Dazu zählt auch, wenn du den Chat eröffnen solltest und bis ${decisionClockLabel} keine erste Nachricht schreibst oder wenn du eine dir zugewiesene Choice-Runde in Phase 2 liegen lässt.`}
             </Text>
           </View>
 
@@ -4809,7 +5030,7 @@ function OverviewScreen({
         </View>
 
         <Text style={styles.penaltyText}>
-          Ein bestätigter Verstoß gibt einen Strafpunkt. Bei drei Punkten wird dein Konto pausiert.
+          Ein bestätigter Verstoß gibt einen Strafpunkt. Bei drei Punkten wird dein Konto pausiert. Gekaufte Match-Pakete werden dann eingefroren und nur bei dauerhafter Sperre endgültig verloren.
         </Text>
 
         <View style={styles.penaltyProgressRow}>
@@ -4834,57 +5055,6 @@ function OverviewScreen({
             </View>
           ))}
         </View>
-      </View>
-    );
-  }
-
-  function renderModerationCard() {
-    return (
-      <View style={styles.overviewListCard}>
-        <View style={styles.moderationHeaderRow}>
-          <Text style={styles.overviewListTitle}>Offene Meldungen</Text>
-          <View style={styles.moderationBadge}>
-            <Text style={styles.moderationBadgeText}>{pendingModerationReports.length}</Text>
-          </View>
-        </View>
-
-        {pendingModerationReports.length ? (
-          <View style={styles.moderationList}>
-            {pendingModerationReports.map((report) => (
-              <View key={report.id} style={styles.moderationCard}>
-                <View style={styles.moderationCardTopRow}>
-                  <Text style={styles.moderationCardTitle}>
-                    {report.reportedName} wurde von {report.reporterName} gemeldet
-                  </Text>
-                  <Text style={styles.moderationCardMeta}>{formatModerationTimestamp(report.createdAt)}</Text>
-                </View>
-
-                <View style={styles.moderationReasonPill}>
-                  <Text style={styles.moderationReasonPillText}>{getOptionLabel(reportReasonOptions, report.reason)}</Text>
-                </View>
-
-                {report.details ? <Text style={styles.moderationCardText}>{report.details}</Text> : null}
-                {report.latestMessagePreview ? (
-                  <View style={styles.moderationQuoteCard}>
-                    <Text style={styles.moderationQuoteLabel}>Letzte Nachricht</Text>
-                    <Text style={styles.moderationQuoteText}>{report.latestMessagePreview}</Text>
-                  </View>
-                ) : null}
-
-                <View style={styles.moderationActionRow}>
-                  <Pressable onPress={() => resolveModerationReport(report.id, "dismissed")} style={styles.moderationDismissButton}>
-                    <Text style={styles.moderationDismissButtonText}>Kein Verstoß</Text>
-                  </Pressable>
-                  <Pressable onPress={() => resolveModerationReport(report.id, "confirmed")} style={styles.moderationConfirmButton}>
-                    <Text style={styles.moderationConfirmButtonText}>Strafpunkt geben</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))}
-          </View>
-        ) : (
-          <Text style={styles.overviewRuleText}>Aktuell gibt es keine offenen Meldungen.</Text>
-        )}
       </View>
     );
   }
@@ -5232,14 +5402,13 @@ function OverviewScreen({
               </View>
               <View style={styles.unlockBadge}>
                 <Text style={styles.unlockBadgeText}>
-                  {unlimitedUnlocked ? "Aktiv" : `${completedMatchCount}/${includedMatchLimit}`}
+                  {hasPaidMatchAccess ? `+${paidMatchCredits}` : `${completedMatchCount}/${includedMatchLimit}`}
                 </Text>
               </View>
             </View>
 
             <Text style={styles.unlockText}>
-              Nach deinen ersten 8 Matches schaltest du Choice einmalig für 4,99 € frei und bekommst danach unbegrenzt
-              weitere Matches.
+              Nach deinen ersten 8 Matches kannst du dir jeweils 8 weitere Matches für 3,99 € freischalten.
             </Text>
 
             <View style={styles.unlockProgressRow}>
@@ -5248,23 +5417,30 @@ function OverviewScreen({
                 total={includedMatchLimit}
                 activeColor="#ffb65f"
                 label="Matches"
-                unlocked={unlimitedUnlocked}
+                unlocked={hasPaidMatchAccess}
               />
               <View style={styles.unlockProgressCopy}>
                 <Text style={styles.unlockProgressTitle}>
-                  {unlimitedUnlocked ? "Unbegrenzt freigeschaltet" : `${remainingIncludedMatches} von ${includedMatchLimit} offen`}
+                  {hasPaidMatchAccess
+                    ? `${paidMatchCredits} gekaufte Matches offen`
+                    : `${remainingIncludedMatches} von ${includedMatchLimit} offen`}
                 </Text>
                 <Text style={styles.unlockFootnote}>
-                  {unlimitedUnlocked
-                    ? "Du kannst ohne weiteres Limit weiter matchen."
-                    : "Sobald die 8 voll sind, schaltest du Choice einmalig für 4,99 € frei."}
+                  {accountBanned
+                    ? forfeitedPaidMatchCredits > 0
+                      ? `${forfeitedPaidMatchCredits} gekaufte Matches sind mit der Sperrung verfallen.`
+                      : "Dauerhafte Sperren können auch zahlende Konten betreffen."
+                    : accountPaused && frozenPaidMatchCredits > 0
+                      ? `${frozenPaidMatchCredits} gekaufte Matches sind aktuell eingefroren.`
+                      : hasPaidMatchAccess
+                        ? "Wenn dein Konto pausiert wird, friert Choice das restliche Paket ein."
+                        : "Sobald die 8 voll sind, kannst du dir für 3,99 € 8 weitere Matches kaufen."}
                 </Text>
               </View>
             </View>
           </View>
 
           {renderPenaltyCard()}
-          {renderModerationCard()}
           {renderTestPhaseCard()}
 
           <View style={styles.overviewListCard}>
@@ -5724,8 +5900,7 @@ export function ChoiceOnboarding() {
       const remoteAccount = await fetchRemoteAccountState(userId);
       return remoteAccount.accountPaused;
     } catch {
-      const nextModerationState = await loadModerationState();
-      return (nextModerationState.penaltyPointsByUserId[userId] ?? 0) >= 3;
+      return false;
     }
   }
 
@@ -6029,8 +6204,11 @@ export function ChoiceOnboarding() {
   function validateCurrentScreen() {
     switch (currentScreen.id) {
       case "intro":
-      case "done":
         return null;
+      case "done":
+        return signedInReturningUser || profile.consent
+          ? null
+          : "Bitte stimme Impressum, Datenschutz, Rechtlichem und AGB zu.";
       case "phone":
         return phoneLocalValue.length >= 8 ? null : "Nummer fehlt.";
       case "otp":
@@ -6372,7 +6550,6 @@ export function ChoiceOnboarding() {
 
     const nextProfile = {
       ...profile,
-      consent: true,
     };
     const uploadedPhotoUrls = await uploadProfilePhotos(photoUris);
     const uploadedVideoUrl = await uploadProfileVideo(introVideoUri);
@@ -6424,13 +6601,13 @@ export function ChoiceOnboarding() {
     setError(null);
 
     try {
-      await persistProfileSnapshot();
-
       if (editingProfile) {
+        await persistProfileSnapshot();
         exitProfileEditingToOverview();
         return;
       }
 
+      setShowBirthdayPicker(false);
       setScreenIndex((current) => Math.min(current + 1, screens.length - 1));
     } catch (requestError) {
       handleProfileSaveError(requestError);
@@ -6450,6 +6627,35 @@ export function ChoiceOnboarding() {
       handleProfileSaveError(requestError);
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function confirmOnboardingAndFinish() {
+    const validationError = validateCurrentScreen();
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      await persistProfileSnapshot();
+      finishOnboardingToOverview();
+    } catch (requestError) {
+      handleProfileSaveError(requestError);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function openLegalDocument(url: string) {
+    try {
+      await Linking.openURL(url);
+    } catch {
+      setError("Rechtliche Seite konnte gerade nicht geöffnet werden.");
     }
   }
 
@@ -6650,16 +6856,56 @@ export function ChoiceOnboarding() {
           ) : null}
 
           <View style={styles.doneStatusCard}>
-            <Text style={styles.doneStatusText}>{success?.summary ?? "Dein Profil wurde gespeichert."}</Text>
-            <Text style={styles.doneStatusSubtext}>Nummer verifiziert. Bilder hochgeladen. Profil bereit.</Text>
+            <Text style={styles.doneStatusText}>Dein Profil ist fast fertig.</Text>
+            <Text style={styles.doneStatusSubtext}>Nummer verifiziert. Bilder und Angaben geprüft. Jetzt fehlt nur noch deine Zustimmung.</Text>
+          </View>
+
+          <View style={styles.legalConsentCard}>
+            <Text style={styles.legalConsentTitle}>Rechtliches</Text>
+            <Text style={styles.legalConsentText}>
+              Bevor du dein Konto bestätigst, musst du Impressum, Datenschutz, Rechtliches und AGB gelesen haben und ihnen zustimmen.
+            </Text>
+
+            <View style={styles.legalLinksRow}>
+              <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.impressum)} style={styles.legalLinkPill}>
+                <Text style={styles.legalLinkPillText}>Impressum</Text>
+              </Pressable>
+              <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.datenschutz)} style={styles.legalLinkPill}>
+                <Text style={styles.legalLinkPillText}>Datenschutz</Text>
+              </Pressable>
+              <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.rechtliches)} style={styles.legalLinkPill}>
+                <Text style={styles.legalLinkPillText}>Rechtliches</Text>
+              </Pressable>
+              <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.agb)} style={styles.legalLinkPill}>
+                <Text style={styles.legalLinkPillText}>AGB</Text>
+              </Pressable>
+            </View>
+
+            <Pressable
+              onPress={() => updateProfile("consent", !profile.consent)}
+              style={[styles.legalConsentToggle, profile.consent && styles.legalConsentToggleActive]}
+            >
+              <View style={[styles.legalConsentCheckbox, profile.consent && styles.legalConsentCheckboxActive]}>
+                {profile.consent ? <Text style={styles.legalConsentCheckmark}>✓</Text> : null}
+              </View>
+              <Text style={styles.legalConsentLabel}>
+                Ich habe Impressum, Datenschutz, Rechtliches und AGB gelesen und stimme allen vier Punkten zu.
+              </Text>
+            </Pressable>
           </View>
 
           <View style={styles.decisionPreviewRow}>
             <Pressable onPress={startProfileEditing} style={styles.decisionGhostButton}>
               <Text style={styles.decisionGhostText}>Bearbeiten</Text>
             </Pressable>
-            <Pressable onPress={finishOnboardingToOverview} style={styles.decisionSolidButton}>
-              <Text style={styles.decisionSolidText}>Fertig</Text>
+            <Pressable
+              onPress={() => {
+                void confirmOnboardingAndFinish();
+              }}
+              disabled={isSubmitting || !profile.consent}
+              style={[styles.decisionSolidButton, (!profile.consent || isSubmitting) && styles.decisionSolidButtonDisabled]}
+            >
+              <Text style={styles.decisionSolidText}>{isSubmitting ? "..." : "Zustimmen & fertig"}</Text>
             </Pressable>
           </View>
         </View>
@@ -10924,6 +11170,84 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  legalConsentCard: {
+    padding: 18,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(196, 47, 105, 0.2)",
+    gap: 14,
+  },
+  legalConsentTitle: {
+    color: "#fff7ff",
+    fontSize: 16,
+    fontWeight: "700",
+  },
+  legalConsentText: {
+    color: "#b7afd7",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  legalLinksRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  legalLinkPill: {
+    minHeight: 38,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  legalLinkPillText: {
+    color: "#f1eafe",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  legalConsentToggle: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.035)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  legalConsentToggleActive: {
+    backgroundColor: "rgba(196, 47, 105, 0.12)",
+    borderColor: "rgba(255, 110, 162, 0.34)",
+  },
+  legalConsentCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.02)",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  legalConsentCheckboxActive: {
+    backgroundColor: "#c42f69",
+    borderColor: "#ff9cc1",
+  },
+  legalConsentCheckmark: {
+    color: "#fff7fb",
+    fontSize: 13,
+    fontWeight: "900",
+    lineHeight: 15,
+  },
+  legalConsentLabel: {
+    flex: 1,
+    color: "#ece4ff",
+    fontSize: 14,
+    lineHeight: 21,
+  },
   chatPreviewCard: {
     marginTop: 8,
     padding: 16,
@@ -10967,6 +11291,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#c42f69",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
+  },
+  decisionSolidButtonDisabled: {
+    backgroundColor: "rgba(196, 47, 105, 0.36)",
+    borderColor: "rgba(255,255,255,0.08)",
+    opacity: 0.7,
   },
   decisionSolidText: {
     color: "#fff7fb",

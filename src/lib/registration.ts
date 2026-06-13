@@ -222,7 +222,7 @@ export function validateStep(profile: RegistrationProfile, step: number) {
 
   if (step === 2) {
     if (!profile.consent) {
-      return "Bitte bestätige den täglichen Match-Flow.";
+      return "Bitte stimme Impressum, Datenschutz, Rechtlichem und AGB zu.";
     }
   }
 

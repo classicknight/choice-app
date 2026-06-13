@@ -13,6 +13,7 @@ export function SiteFooter() {
         <nav className={styles.nav} aria-label="Rechtliches">
           <Link href="/impressum">Impressum</Link>
           <Link href="/datenschutz">Datenschutz</Link>
+          <Link href="/agb">AGB</Link>
           <Link href="/rechtliches">Rechtliches</Link>
         </nav>
       </div>

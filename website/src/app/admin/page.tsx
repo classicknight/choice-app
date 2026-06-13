@@ -8,6 +8,7 @@ type AdminSummary = {
   totalUsers: number;
   completedProfiles: number;
   premiumUsers: number;
+  payingUsers: number;
   pausedUsers: number;
   openReports: number;
   activeMatches: number;
@@ -26,8 +27,14 @@ type AdminUser = {
   premiumActivatedAt: string | null;
   penaltyPoints: number;
   suspendedAt: string | null;
+  bannedAt: string | null;
   accountPaused: boolean;
+  accountBanned: boolean;
   matchCount: number;
+  paidMatchCredits: number;
+  frozenPaidMatchCredits: number;
+  forfeitedPaidMatchCredits: number;
+  lastPaidMatchPackageAt: string | null;
 };
 
 type AdminMatch = {
@@ -74,6 +81,7 @@ type AdminReport = {
     phoneNumber: string | null;
     penaltyPoints: number;
     suspendedAt: string | null;
+    bannedAt: string | null;
   };
   matchId: string | null;
 };
@@ -87,7 +95,18 @@ type DashboardPayload = {
 };
 
 const storageKey = "choice.admin-settings";
-const defaultApiUrl = process.env.NEXT_PUBLIC_ADMIN_API_URL?.trim() || "https://choice-api.onrender.com/v1";
+
+function getDefaultApiUrl() {
+  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+    return "http://localhost:4000/v1";
+  }
+
+  if (typeof window !== "undefined" && window.location.hostname.endsWith("choice-dating.app")) {
+    return "https://api.choice-dating.app/v1";
+  }
+
+  return process.env.NEXT_PUBLIC_ADMIN_API_URL?.trim() || "https://api.choice-dating.app/v1";
+}
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -112,7 +131,7 @@ function SummaryCard({ label, value, tone = "default" }: { label: string; value:
 }
 
 export default function AdminPage() {
-  const [apiUrl, setApiUrl] = useState(defaultApiUrl);
+  const [apiUrl, setApiUrl] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [accessKey, setAccessKey] = useState("");
   const [data, setData] = useState<DashboardPayload | null>(null);
@@ -122,6 +141,9 @@ export default function AdminPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    const fallbackApiUrl = getDefaultApiUrl();
+    setApiUrl(fallbackApiUrl);
+
     if (typeof window === "undefined") {
       return;
     }
@@ -140,7 +162,11 @@ export default function AdminPage() {
       }>;
 
       if (parsed.apiUrl) {
-        setApiUrl(parsed.apiUrl);
+        const shouldPreferLocalApi =
+          window.location.hostname === "localhost"
+          && parsed.apiUrl.includes("choice-api.onrender.com");
+
+        setApiUrl(shouldPreferLocalApi ? fallbackApiUrl : parsed.apiUrl);
       }
 
       if (parsed.phoneNumber) {
@@ -217,7 +243,11 @@ export default function AdminPage() {
     }
   }
 
-  async function updateUser(userId: string, payload: { isPremium?: boolean; penaltyPoints?: number; suspended?: boolean }, successText: string) {
+  async function updateUser(
+    userId: string,
+    payload: { isPremium?: boolean; penaltyPoints?: number; suspended?: boolean; banned?: boolean },
+    successText: string,
+  ) {
     setIsSaving(true);
     setError(null);
     setNotice(null);
@@ -231,6 +261,29 @@ export default function AdminPage() {
       await loadDashboard();
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Account-Aktion fehlgeschlagen.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function manageMatchAccess(
+    userId: string,
+    action: "grant_pack" | "freeze_paid" | "restore_frozen" | "forfeit_paid" | "ban_account",
+    successText: string,
+  ) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await adminFetch(`/admin/users/${userId}/match-access`, {
+        method: "POST",
+        body: JSON.stringify({ action }),
+      });
+      setNotice(successText);
+      await loadDashboard();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Match-Paket-Aktion fehlgeschlagen.");
     } finally {
       setIsSaving(false);
     }
@@ -332,6 +385,7 @@ export default function AdminPage() {
               <SummaryCard label="Accounts" value={data.summary.totalUsers} />
               <SummaryCard label="Komplette Profile" value={data.summary.completedProfiles} />
               <SummaryCard label="Premium" value={data.summary.premiumUsers} tone="accent" />
+              <SummaryCard label="Bezahlt" value={data.summary.payingUsers} tone="accent" />
               <SummaryCard label="Aktive Matches" value={data.summary.activeMatches} />
               <SummaryCard label="Offene Meldungen" value={data.summary.openReports} tone="alert" />
               <SummaryCard label="Pausierte Konten" value={data.summary.pausedUsers} tone="alert" />
@@ -377,6 +431,11 @@ export default function AdminPage() {
                         <p>
                           <strong>Aktuelle Strafpunkte:</strong> {report.reportedUser.penaltyPoints}/3
                         </p>
+                        {report.reportedUser.bannedAt ? (
+                          <p>
+                            <strong>Status:</strong> dauerhaft gesperrt
+                          </p>
+                        ) : null}
                       </div>
 
                       {report.status === "OPEN" ? (
@@ -458,6 +517,7 @@ export default function AdminPage() {
                       <th>Status</th>
                       <th>Premium</th>
                       <th>Strafpunkte</th>
+                      <th>Gekaufte Matches</th>
                       <th>Matches</th>
                       <th>Aktionen</th>
                     </tr>
@@ -476,9 +536,15 @@ export default function AdminPage() {
                             {user.phoneNumber || "—"}
                             <div className={styles.cellSubline}>{user.email || "Keine E-Mail"}</div>
                           </td>
-                          <td>{user.accountPaused ? "Pausiert" : "Aktiv"}</td>
+                          <td>{user.accountBanned ? "Gesperrt" : user.accountPaused ? "Pausiert" : "Aktiv"}</td>
                           <td>{user.isPremium ? "Ja" : "Nein"}</td>
                           <td>{user.penaltyPoints}/3</td>
+                          <td>
+                            {user.paidMatchCredits} aktiv
+                            <div className={styles.cellSubline}>
+                              {user.frozenPaidMatchCredits} eingefroren · {user.forfeitedPaidMatchCredits} verfallen
+                            </div>
+                          </td>
                           <td>{user.matchCount}</td>
                           <td>
                             <div className={styles.inlineActions}>
@@ -514,6 +580,46 @@ export default function AdminPage() {
                                 disabled={isSaving}
                               >
                                 Entsperren
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.secondaryButton}
+                                onClick={() => void manageMatchAccess(user.id, "grant_pack", `${label} hat 8 gekaufte Matches erhalten.`)}
+                                disabled={isSaving}
+                              >
+                                +8 Matches
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.secondaryButton}
+                                onClick={() => void manageMatchAccess(user.id, "freeze_paid", `${label} hat jetzt eingefrorene Match-Pakete.`)}
+                                disabled={isSaving}
+                              >
+                                Paket einfrieren
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.secondaryButton}
+                                onClick={() => void manageMatchAccess(user.id, "restore_frozen", `${label} kann eingefrorene Matches wieder nutzen.`)}
+                                disabled={isSaving}
+                              >
+                                Paket freigeben
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.secondaryButton}
+                                onClick={() => void manageMatchAccess(user.id, "forfeit_paid", `${label} hat verbleibende gekaufte Matches verloren.`)}
+                                disabled={isSaving}
+                              >
+                                Paket verfallen
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.dangerButton}
+                                onClick={() => void manageMatchAccess(user.id, "ban_account", `${label} wurde dauerhaft gesperrt.`)}
+                                disabled={isSaving}
+                              >
+                                Dauerhaft sperren
                               </button>
                               <button type="button" className={styles.dangerButton} onClick={() => void deleteUser(user.id, label)} disabled={isSaving}>
                                 Löschen

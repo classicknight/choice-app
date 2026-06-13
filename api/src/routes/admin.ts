@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { buildBanAccountData, buildPauseAccountData, buildRestorePausedAccountData, isAccountPaused, mapAccountState } from "../lib/account-state.js";
 import { requireAdminAccess } from "../lib/admin-auth.js";
 import { prisma } from "../lib/prisma.js";
 
@@ -7,6 +8,11 @@ const updateUserSchema = z.object({
   isPremium: z.boolean().optional(),
   penaltyPoints: z.number().int().min(0).max(3).optional(),
   suspended: z.boolean().optional(),
+  banned: z.boolean().optional(),
+});
+
+const manageMatchAccessSchema = z.object({
+  action: z.enum(["grant_pack", "freeze_paid", "restore_frozen", "forfeit_paid", "ban_account"]),
 });
 
 const resolveReportSchema = z.object({
@@ -25,15 +31,22 @@ type UserSummaryRow = {
   premiumActivatedAt: Date | null;
   penaltyPoints: number;
   suspendedAt: Date | null;
-  profile: {
+  bannedAt: Date | null;
+  paidMatchCredits: number;
+  frozenPaidMatchCredits: number;
+  forfeitedPaidMatchCredits: number;
+  lastPaidMatchPackageAt: Date | null;
+  profile?: {
     firstName: string;
     city: string;
   } | null;
-  matchesAsA: Array<{ id: string }>;
-  matchesAsB: Array<{ id: string }>;
+  matchesAsA?: Array<{ id: string }>;
+  matchesAsB?: Array<{ id: string }>;
 };
 
 function mapUserSummary(user: UserSummaryRow) {
+  const account = mapAccountState(user);
+
   return {
     id: user.id,
     createdAt: user.createdAt,
@@ -47,9 +60,19 @@ function mapUserSummary(user: UserSummaryRow) {
     premiumActivatedAt: user.premiumActivatedAt,
     penaltyPoints: user.penaltyPoints,
     suspendedAt: user.suspendedAt,
-    accountPaused: user.penaltyPoints >= 3 || Boolean(user.suspendedAt),
-    matchCount: user.matchesAsA.length + user.matchesAsB.length,
+    bannedAt: user.bannedAt,
+    accountPaused: account.accountPaused,
+    accountBanned: account.accountBanned,
+    matchCount: (user.matchesAsA?.length ?? 0) + (user.matchesAsB?.length ?? 0),
+    paidMatchCredits: user.paidMatchCredits,
+    frozenPaidMatchCredits: user.frozenPaidMatchCredits,
+    forfeitedPaidMatchCredits: user.forfeitedPaidMatchCredits,
+    lastPaidMatchPackageAt: user.lastPaidMatchPackageAt,
   };
+}
+
+function resolveNumericField(value: unknown, fallback: number) {
+  return typeof value === "number" ? value : fallback;
 }
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
@@ -112,7 +135,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         totalUsers: users.length,
         completedProfiles: users.filter((user) => user.profileCompleted).length,
         premiumUsers: users.filter((user) => user.isPremium).length,
-        pausedUsers: users.filter((user) => user.penaltyPoints >= 3 || user.suspendedAt).length,
+        payingUsers: users.filter((user) => user.paidMatchCredits > 0 || user.frozenPaidMatchCredits > 0 || user.forfeitedPaidMatchCredits > 0 || user.isPremium).length,
+        pausedUsers: users.filter((user) => isAccountPaused(user)).length,
         openReports: reports.filter((report) => report.status === "OPEN").length,
         activeMatches: matches.filter((match) => match.status === "ACTIVE").length,
       },
@@ -161,6 +185,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
           phoneNumber: report.reportedUser.phoneNumber,
           penaltyPoints: report.reportedUser.penaltyPoints,
           suspendedAt: report.reportedUser.suspendedAt,
+          bannedAt: report.reportedUser.bannedAt,
         },
         matchId: report.matchId,
       })),
@@ -191,7 +216,18 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
     const existingUser = await prisma.user.findUnique({
       where: { id: params.data.userId },
-      select: { id: true, isPremium: true, premiumActivatedAt: true, penaltyPoints: true, suspendedAt: true },
+      select: {
+        id: true,
+        isPremium: true,
+        premiumActivatedAt: true,
+        penaltyPoints: true,
+        suspendedAt: true,
+        bannedAt: true,
+        paidMatchCredits: true,
+        frozenPaidMatchCredits: true,
+        forfeitedPaidMatchCredits: true,
+        lastPaidMatchPackageAt: true,
+      },
     });
 
     if (!existingUser) {
@@ -203,6 +239,24 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     const nextPenaltyPoints = parsed.data.penaltyPoints ?? existingUser.penaltyPoints;
     const nextSuspended =
       parsed.data.suspended !== undefined ? parsed.data.suspended : nextPenaltyPoints >= 3 || Boolean(existingUser.suspendedAt);
+    const nextBanned = parsed.data.banned !== undefined ? parsed.data.banned : Boolean(existingUser.bannedAt);
+    const matchAccessData = nextBanned
+      ? buildBanAccountData(existingUser)
+      : nextSuspended
+        ? buildPauseAccountData(existingUser)
+        : buildRestorePausedAccountData(existingUser);
+    const nextPaidMatchCredits = resolveNumericField(
+      "paidMatchCredits" in matchAccessData ? matchAccessData.paidMatchCredits : undefined,
+      existingUser.paidMatchCredits,
+    );
+    const nextFrozenPaidMatchCredits = resolveNumericField(
+      "frozenPaidMatchCredits" in matchAccessData ? matchAccessData.frozenPaidMatchCredits : undefined,
+      existingUser.frozenPaidMatchCredits,
+    );
+    const nextForfeitedPaidMatchCredits = resolveNumericField(
+      "forfeitedPaidMatchCredits" in matchAccessData ? matchAccessData.forfeitedPaidMatchCredits : undefined,
+      existingUser.forfeitedPaidMatchCredits,
+    );
 
     const updatedUser = await prisma.user.update({
       where: { id: params.data.userId },
@@ -215,7 +269,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
               ? existingUser.premiumActivatedAt ?? new Date()
               : null,
         penaltyPoints: nextPenaltyPoints,
-        suspendedAt: nextSuspended ? existingUser.suspendedAt ?? new Date() : null,
+        suspendedAt: nextBanned ? existingUser.suspendedAt ?? new Date() : nextSuspended ? existingUser.suspendedAt ?? new Date() : null,
+        bannedAt: nextBanned ? existingUser.bannedAt ?? new Date() : null,
+        paidMatchCredits: nextPaidMatchCredits,
+        frozenPaidMatchCredits: nextFrozenPaidMatchCredits,
+        forfeitedPaidMatchCredits: nextForfeitedPaidMatchCredits,
       },
       include: {
         profile: true,
@@ -225,6 +283,89 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         matchesAsB: {
           select: { id: true },
         },
+      },
+    });
+
+    return reply.send({
+      ok: true,
+      user: mapUserSummary(updatedUser),
+    });
+  });
+
+  app.post("/admin/users/:userId/match-access", async (request, reply) => {
+    if (!requireAdminAccess(request, reply)) {
+      return;
+    }
+
+    const params = z.object({ userId: z.string().min(1) }).safeParse(request.params);
+    const parsed = manageMatchAccessSchema.safeParse(request.body);
+
+    if (!params.success) {
+      return reply.status(400).send({
+        error: "INVALID_MATCH_ACCESS_ACTION",
+        details: params.error.flatten(),
+      });
+    }
+
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "INVALID_MATCH_ACCESS_ACTION",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { id: params.data.userId },
+      include: {
+        profile: true,
+        matchesAsA: { select: { id: true } },
+        matchesAsB: { select: { id: true } },
+      },
+    });
+
+    if (!existingUser) {
+      return reply.status(404).send({ error: "USER_NOT_FOUND" });
+    }
+
+    let updateData: Record<string, unknown> = {};
+
+    switch (parsed.data.action) {
+      case "grant_pack":
+        updateData = {
+          paidMatchCredits: existingUser.paidMatchCredits + 8,
+          lastPaidMatchPackageAt: new Date(),
+        };
+        break;
+      case "freeze_paid":
+        updateData = buildPauseAccountData(existingUser);
+        break;
+      case "restore_frozen":
+        updateData = {
+          ...buildRestorePausedAccountData(existingUser),
+          suspendedAt: null,
+          bannedAt: null,
+        };
+        break;
+      case "forfeit_paid":
+        updateData = {
+          paidMatchCredits: 0,
+          frozenPaidMatchCredits: 0,
+          forfeitedPaidMatchCredits:
+            existingUser.forfeitedPaidMatchCredits + existingUser.paidMatchCredits + existingUser.frozenPaidMatchCredits,
+        };
+        break;
+      case "ban_account":
+        updateData = buildBanAccountData(existingUser);
+        break;
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: existingUser.id },
+      data: updateData,
+      include: {
+        profile: true,
+        matchesAsA: { select: { id: true } },
+        matchesAsB: { select: { id: true } },
       },
     });
 
@@ -277,6 +418,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
     const shouldConfirm = parsed.data.decision === "confirmed";
     const nextPenaltyPoints = shouldConfirm ? Math.min(report.reportedUser.penaltyPoints + 1, 3) : report.reportedUser.penaltyPoints;
+    const pauseData = shouldConfirm && nextPenaltyPoints >= 3 ? buildPauseAccountData(report.reportedUser) : {};
 
     const [updatedReport] = await prisma.$transaction([
       prisma.report.update({
@@ -293,6 +435,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
             data: {
               penaltyPoints: nextPenaltyPoints,
               suspendedAt: nextPenaltyPoints >= 3 ? report.reportedUser.suspendedAt ?? new Date() : report.reportedUser.suspendedAt,
+              paidMatchCredits:
+                nextPenaltyPoints >= 3
+                  ? (pauseData.paidMatchCredits as number | undefined) ?? report.reportedUser.paidMatchCredits
+                  : report.reportedUser.paidMatchCredits,
+              frozenPaidMatchCredits:
+                nextPenaltyPoints >= 3
+                  ? (pauseData.frozenPaidMatchCredits as number | undefined) ?? report.reportedUser.frozenPaidMatchCredits
+                  : report.reportedUser.frozenPaidMatchCredits,
             },
           })
         : prisma.user.findUnique({

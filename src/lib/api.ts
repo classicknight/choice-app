@@ -69,13 +69,120 @@ type RemoteAccountStateResult = {
     premiumActivatedAt: string | null;
     penaltyPoints: number;
     suspendedAt: string | null;
+    bannedAt: string | null;
     accountPaused: boolean;
+    accountBanned: boolean;
+    paidMatchCredits: number;
+    frozenPaidMatchCredits: number;
+    forfeitedPaidMatchCredits: number;
+    lastPaidMatchPackageAt: string | null;
+    hasPaidMatchAccess: boolean;
   };
 };
 
 type CreateReportResult = {
   ok: true;
   reportId: string;
+};
+
+type ApplySystemPenaltyResult = {
+  ok: true;
+  applied: boolean;
+  account: RemoteAccountStateResult["account"];
+};
+
+export type RemoteJourneyPhaseTwoResponseOption = {
+  label: string;
+  score: 1 | 2 | 3 | 4 | 5;
+};
+
+export type RemoteJourneyPhaseTwoAnswerBranch = {
+  label: string;
+  score: 1 | 2 | 3 | 4 | 5;
+  followUpPrompt: string;
+  followUpOptions: RemoteJourneyPhaseTwoResponseOption[];
+};
+
+export type RemoteJourneyPhaseTwoRoundConfig = {
+  id: string;
+  prompt: string;
+  answerOptions: RemoteJourneyPhaseTwoAnswerBranch[];
+};
+
+export type RemoteJourneyPhaseTwoRoundResult = {
+  roundId: string;
+  prompt: string;
+  personALabel: string;
+  personAScore: number;
+  followUpPrompt: string;
+  followUpOptions: RemoteJourneyPhaseTwoResponseOption[];
+  personBLabel: string;
+  personBScore: number;
+  compatibility: number;
+};
+
+export type RemoteJourneyMessage = {
+  id: string;
+  senderUserId: string;
+  kind: "text" | "image" | "system";
+  text?: string;
+  imageUri?: string;
+  createdAt: string;
+};
+
+export type RemoteJourneyPartnerProfile = {
+  userId: string;
+  phoneNumber: string | null;
+  firstName: string;
+  age: number;
+  city: string;
+  selfDescription: string;
+  pronouns: string;
+  identity: string;
+  lookingFor: string;
+  datingIntent: string;
+  ageRangeMin: number;
+  ageRangeMax: number;
+  interests: string[];
+  greenFlags: string[];
+  dealbreakers: string[];
+  avatarUrl: string | null;
+  photoUrls: string[];
+  introVideoUrl: string | null;
+  matchTime: string;
+  conversationStyle: string;
+};
+
+export type RemoteJourneyState = {
+  ownerUserId: string;
+  matchId: string | null;
+  releaseAt: string | null;
+  decisionDeadlineAt: string | null;
+  phaseTwoStartAt: string | null;
+  phaseThreeStartAt: string | null;
+  phaseFourStartAt: string | null;
+  phaseFiveStartAt: string | null;
+  status: "PENDING" | "ACTIVE" | "DISCARDED" | "EXPIRED" | "KEPT" | null;
+  partner: RemoteJourneyPartnerProfile | null;
+  sharedChatMessages: RemoteJourneyMessage[];
+  phaseOneStarterUserId: string | null;
+  phaseOneStarterPenaltyAppliedAt: string | null;
+  phaseTwoPenaltyAppliedAt: string | null;
+  phaseOneDecisions: Record<string, "continue" | "new-match">;
+  phaseThreeDecisions: Record<string, "stay" | "new-match">;
+  phaseTwoRounds: RemoteJourneyPhaseTwoRoundConfig[];
+  phaseTwoRoundIndex: number;
+  phaseTwoStage: "starter" | "partner" | "result";
+  phaseTwoResults: RemoteJourneyPhaseTwoRoundResult[];
+  phaseTwoStarterUserId: string | null;
+  phaseTwoPartnerUserId: string | null;
+  phaseTwoStarterName: string;
+  phaseTwoPartnerName: string;
+};
+
+type JourneyResponse = {
+  ok: true;
+  journey: RemoteJourneyState;
 };
 
 type HydratedProfileResult = {
@@ -516,11 +623,52 @@ export async function fetchRemoteAccountState(userId: string): Promise<RemoteAcc
       premiumActivatedAt: null,
       penaltyPoints: 0,
       suspendedAt: null,
+      bannedAt: null,
       accountPaused: false,
+      accountBanned: false,
+      paidMatchCredits: 0,
+      frozenPaidMatchCredits: 0,
+      forfeitedPaidMatchCredits: 0,
+      lastPaidMatchPackageAt: null,
+      hasPaidMatchAccess: false,
     };
   }
 
   const response = await fetchJson<RemoteAccountStateResult>(`/profiles/${encodeURIComponent(userId)}/account`);
+  return response.account;
+}
+
+export async function applyRemoteSystemPenalty(input: {
+  userId: string;
+  reason: string;
+  contextKey: string;
+  note?: string;
+}): Promise<ApplySystemPenaltyResult["account"]> {
+  if (!apiBaseUrl) {
+    return {
+      userId: input.userId,
+      isPremium: false,
+      premiumActivatedAt: null,
+      penaltyPoints: 0,
+      suspendedAt: null,
+      bannedAt: null,
+      accountPaused: false,
+      accountBanned: false,
+      paidMatchCredits: 0,
+      frozenPaidMatchCredits: 0,
+      forfeitedPaidMatchCredits: 0,
+      lastPaidMatchPackageAt: null,
+      hasPaidMatchAccess: false,
+    };
+  }
+
+  const response = await postJson<ApplySystemPenaltyResult>("/moderation/system-penalty", {
+    userId: input.userId,
+    reason: input.reason,
+    contextKey: input.contextKey,
+    note: input.note?.trim() || undefined,
+  });
+
   return response.account;
 }
 
@@ -549,4 +697,90 @@ export async function createRemoteReport(input: {
     details: input.details?.trim() || undefined,
     latestMessagePreview: input.latestMessagePreview?.trim() || undefined,
   });
+}
+
+export async function fetchRemoteJourney(userId: string): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await fetchJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}`);
+  return response.journey;
+}
+
+export async function sendRemoteJourneyMessage(input: {
+  userId: string;
+  kind: "text" | "image";
+  text?: string;
+  imageUri?: string;
+}): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/messages`, {
+    kind: input.kind,
+    text: input.text?.trim() || undefined,
+    imageUri: input.imageUri?.trim() || undefined,
+  });
+
+  return response.journey;
+}
+
+export async function setRemotePhaseOneDecision(input: {
+  userId: string;
+  decision: "continue" | "new-match";
+}): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/phase-one-decision`, {
+    decision: input.decision,
+  });
+
+  return response.journey;
+}
+
+export async function startRemotePhaseTwo(userId: string): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}/phase-two/start`, {});
+  return response.journey;
+}
+
+export async function submitRemotePhaseTwoAnswer(input: {
+  userId: string;
+  stage: "starter" | "partner";
+  roundIndex: number;
+  optionIndex: number;
+}): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/phase-two/answer`, {
+    stage: input.stage,
+    roundIndex: input.roundIndex,
+    optionIndex: input.optionIndex,
+  });
+
+  return response.journey;
+}
+
+export async function setRemotePhaseThreeDecision(input: {
+  userId: string;
+  decision: "stay" | "new-match";
+}): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/phase-three-decision`, {
+    decision: input.decision,
+  });
+
+  return response.journey;
 }

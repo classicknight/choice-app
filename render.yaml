@@ -7,7 +7,7 @@ services:
     staticPublishPath: out
     envVars:
       - key: NEXT_PUBLIC_ADMIN_API_URL
-        value: https://choice-api.onrender.com/v1
+        value: https://api.choice-dating.app/v1
     buildFilter:
       paths:
         - website/**

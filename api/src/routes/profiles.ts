@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { mapAccountState } from "../lib/account-state.js";
 import { prisma } from "../lib/prisma.js";
 
 const profileSchema = z.object({
@@ -43,6 +44,11 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
         premiumActivatedAt: true,
         penaltyPoints: true,
         suspendedAt: true,
+        bannedAt: true,
+        paidMatchCredits: true,
+        frozenPaidMatchCredits: true,
+        forfeitedPaidMatchCredits: true,
+        lastPaidMatchPackageAt: true,
       },
     });
 
@@ -54,14 +60,7 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.send({
       ok: true,
-      account: {
-        userId: user.id,
-        isPremium: user.isPremium,
-        premiumActivatedAt: user.premiumActivatedAt,
-        penaltyPoints: user.penaltyPoints,
-        suspendedAt: user.suspendedAt,
-        accountPaused: user.penaltyPoints >= 3 || Boolean(user.suspendedAt),
-      },
+      account: mapAccountState(user),
     });
   });
 
