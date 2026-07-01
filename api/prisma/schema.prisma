@@ -94,6 +94,7 @@ model User {
   reportsFiled      Report[]                @relation("ReportsFiled")
   reportsReceived   Report[]                @relation("ReportsReceived")
   systemPenaltyEvents SystemPenaltyEvent[]
+  pushDevices       PushDevice[]
 }
 
 model Profile {
@@ -245,4 +246,18 @@ model SystemPenaltyEvent {
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+}
+
+model PushDevice {
+  id         String   @id @default(cuid())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastSeenAt DateTime @default(now())
+  disabledAt DateTime?
+  userId     String
+  token      String   @unique
+  platform   String?
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, disabledAt])
 }

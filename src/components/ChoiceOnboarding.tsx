@@ -35,6 +35,7 @@ import {
   fetchRemoteAccountState,
   fetchRemoteJourney,
   fetchRemoteProfile,
+  registerRemotePushToken,
   type RemoteJourneyState,
   sendRemoteJourneyMessage,
   setRemotePhaseOneDecision,
@@ -48,10 +49,6 @@ import {
 } from "../lib/api";
 import {
   demoProfiles,
-  demoRunthrough,
-  demoSessionPhotoUris,
-  demoSessionProfile,
-  type DemoChatMessage,
   type DemoProfile,
 } from "../lib/mock-data";
 import {
@@ -80,8 +77,12 @@ import {
   type PersistedSession,
 } from "../lib/session";
 import {
+  clearJourneyLocalNotifications,
+  getExpoPushToken,
   cancelScheduledLocalNotification,
   scheduleMatchReleaseNotification,
+  syncJourneyLocalNotifications,
+  type JourneyLocalNotificationPlan,
 } from "../lib/notifications";
 
 type SelectOption = {
@@ -123,23 +124,9 @@ type RemoteAccountState = Awaited<ReturnType<typeof fetchRemoteAccountState>>;
 
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
+const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
 const MATCH_RELEASE_HOUR = 9;
 const MATCH_DECISION_HOUR = 21;
-const TEST_PHASE_TIMELINE_ENABLED = false;
-const TEST_PHASE_TIMELINE = {
-  phaseOneStart: { hour: 12, minute: 30 },
-  phaseTwoStart: { hour: 12, minute: 35 },
-  phaseThreeStart: { hour: 12, minute: 40 },
-  phaseFourStart: { hour: 12, minute: 45 },
-  phaseFiveStart: { hour: 12, minute: 50 },
-} as const;
-const TEST_PHASE_JUMP_OPTIONS = [
-  { phase: 1, label: "Phase 1" },
-  { phase: 2, label: "Phase 2" },
-  { phase: 3, label: "Phase 3" },
-  { phase: 4, label: "Phase 4" },
-  { phase: 5, label: "Phase 5" },
-] as const;
 const LEGAL_URLS = {
   impressum: "https://choice-dating.app/impressum",
   datenschutz: "https://choice-dating.app/datenschutz",
@@ -288,8 +275,6 @@ const choiceLogo = require("../assets/logo-untertitel-hero.png");
 const choiceWordmark = require("../assets/choice-wordmark.png");
 const introHighlights = ["Ohne Swipes", "Unter 2 Minuten", "1 Match pro Tag"] as const;
 const phonePrefix = "+49";
-const demoMilaUserId = "demo_mila_user";
-const demoMilaPhoneNumber = "+49 152 00000000";
 const minimumPhotoCount = 2;
 const maximumPhotoCount = 8;
 const overviewTabs: { id: OverviewTabId; label: string }[] = [
@@ -546,48 +531,19 @@ function setTimeOfDay(date: Date, hour: number, minute: number) {
 }
 
 function buildPhaseSchedule(now: Date) {
-  if (!TEST_PHASE_TIMELINE_ENABLED) {
-    const release = new Date(now);
-    release.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
-    const decisionDeadline = new Date(now);
-    decisionDeadline.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
-    const phaseTwoStart = addDaysAtSameTime(release, 1);
-    const phaseThreeStart = addDaysAtSameTime(release, 2);
-    const phaseFourStart = addDaysAtSameTime(release, 3);
-    const phaseFiveStart = new Date(phaseFourStart);
-    phaseFiveStart.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
-
-    return {
-      release,
-      decisionDeadline,
-      phaseTwoStart,
-      phaseThreeStart,
-      phaseFourStart,
-      phaseFiveStart,
-    };
-  }
-
-  const scheduleDate = new Date(now);
-  scheduleDate.setHours(0, 0, 0, 0);
-
-  let release = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseOneStart.hour, TEST_PHASE_TIMELINE.phaseOneStart.minute);
-  let phaseTwoStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseTwoStart.hour, TEST_PHASE_TIMELINE.phaseTwoStart.minute);
-  let phaseThreeStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseThreeStart.hour, TEST_PHASE_TIMELINE.phaseThreeStart.minute);
-  let phaseFourStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseFourStart.hour, TEST_PHASE_TIMELINE.phaseFourStart.minute);
-  let phaseFiveStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseFiveStart.hour, TEST_PHASE_TIMELINE.phaseFiveStart.minute);
-
-  if (now >= phaseFiveStart) {
-    scheduleDate.setDate(scheduleDate.getDate() + 1);
-    release = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseOneStart.hour, TEST_PHASE_TIMELINE.phaseOneStart.minute);
-    phaseTwoStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseTwoStart.hour, TEST_PHASE_TIMELINE.phaseTwoStart.minute);
-    phaseThreeStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseThreeStart.hour, TEST_PHASE_TIMELINE.phaseThreeStart.minute);
-    phaseFourStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseFourStart.hour, TEST_PHASE_TIMELINE.phaseFourStart.minute);
-    phaseFiveStart = setTimeOfDay(scheduleDate, TEST_PHASE_TIMELINE.phaseFiveStart.hour, TEST_PHASE_TIMELINE.phaseFiveStart.minute);
-  }
+  const release = new Date(now);
+  release.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
+  const decisionDeadline = new Date(now);
+  decisionDeadline.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
+  const phaseTwoStart = addDaysAtSameTime(release, 1);
+  const phaseThreeStart = addDaysAtSameTime(release, 2);
+  const phaseFourStart = addDaysAtSameTime(release, 3);
+  const phaseFiveStart = new Date(phaseFourStart);
+  phaseFiveStart.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
 
   return {
     release,
-    decisionDeadline: phaseTwoStart,
+    decisionDeadline,
     phaseTwoStart,
     phaseThreeStart,
     phaseFourStart,
@@ -616,7 +572,7 @@ function addDaysAtSameTime(date: Date, days: number) {
 function createInitialReleaseAt(now: Date) {
   const release = getMatchReleaseTime(now);
 
-  if (!TEST_PHASE_TIMELINE_ENABLED && now >= release) {
+  if (now >= release) {
     release.setDate(release.getDate() + 1);
   }
 
@@ -742,19 +698,6 @@ function buildProfileFromDemoProfile(entry: DemoProfile): RegistrationProfile {
     matchTime: "09:00",
     conversationStyle: "direct",
     consent: true,
-  };
-}
-
-function buildDemoMilaSession(): Omit<PersistedSession, "savedAt"> {
-  const milaProfile = demoProfiles.find((entry) => entry.id === "mila") ?? demoProfiles[0];
-
-  return {
-    userId: demoMilaUserId,
-    phoneNumber: demoMilaPhoneNumber,
-    profile: buildProfileFromDemoProfile(milaProfile),
-    photoUris: [...milaProfile.photoUris],
-    introVideoUri: milaProfile.introVideoUrl ?? null,
-    introVideoDurationMs: null,
   };
 }
 
@@ -1650,7 +1593,7 @@ type SelectionChipProps = {
   onPress: () => void;
 };
 
-type SharedChatAuthor = "primary" | "mila";
+type SharedChatAuthor = "primary" | "partner";
 
 type SharedChatTextMessage = {
   id: string;
@@ -1678,21 +1621,11 @@ type ChatRenderMessage =
   | { id: string; side: "left" | "right"; kind: "text"; text: string }
   | { id: string; side: "left" | "right"; kind: "image"; imageUri: string };
 
-function buildSharedDemoChatMessages(messages: readonly DemoChatMessage[]): SharedChatMessage[] {
-  return messages.map((message) => ({
-    id: message.id,
-    author: message.side === "right" ? "primary" : "mila",
-    kind: "text",
-    text: message.text,
-  }));
-}
-
 function mapSharedChatMessagesForViewer(
   messages: readonly SharedChatMessage[],
-  isMilaSession: boolean,
 ): ChatRenderMessage[] {
   return messages.map((message) => {
-    const side = message.author === (isMilaSession ? "mila" : "primary") ? "right" : "left";
+    const side = message.author === "primary" ? "right" : "left";
 
     if (message.kind === "image") {
       return {
@@ -1734,8 +1667,15 @@ function normalizeSharedChatMessages(value: unknown): SharedChatMessage[] {
       return messages;
     }
 
-    const candidate = entry as Partial<SharedChatMessage> & { kind?: unknown; author?: unknown; id?: unknown };
-    const author = candidate.author === "mila" ? "mila" : candidate.author === "primary" ? "primary" : null;
+    const candidate = entry as Record<string, unknown>;
+    const rawAuthor = typeof candidate.author === "string" ? candidate.author : null;
+    const author =
+      rawAuthor === "partner"
+      || rawAuthor === "mila"
+        ? "partner"
+        : rawAuthor === "primary"
+          ? "primary"
+          : null;
     const id = typeof candidate.id === "string" ? candidate.id : null;
 
     if (!author || !id) {
@@ -1779,7 +1719,7 @@ function mapRemoteJourneyMessages(
       return items;
     }
 
-    const author: SharedChatAuthor = message.senderUserId === viewerUserId ? "primary" : "mila";
+    const author: SharedChatAuthor = message.senderUserId === viewerUserId ? "primary" : "partner";
 
     if (message.kind === "image" && message.imageUri) {
       items.push({
@@ -1809,7 +1749,7 @@ function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyState["partn
     return null;
   }
 
-  const primaryPhoto = partner.photoUrls.find((entry) => entry?.trim()) ?? partner.avatarUrl ?? demoSessionPhotoUris[0];
+  const primaryPhoto = partner.photoUrls.find((entry) => entry?.trim()) ?? partner.avatarUrl ?? demoProfiles[0].imageUri;
   const tagline =
     partner.greenFlags.slice(0, 2).join(" • ")
     || partner.interests.slice(0, 2).join(" • ")
@@ -2427,7 +2367,6 @@ type OverviewScreenProps = {
   accountActionMessage?: string | null;
   displayName: string;
   currentUserId: string | null;
-  matchedSession: Omit<PersistedSession, "savedAt"> | PersistedSession | null;
   profile: RegistrationProfile;
   photoUris: string[];
   introVideoUri: string | null;
@@ -2446,7 +2385,6 @@ function OverviewScreen({
   accountActionMessage,
   displayName,
   currentUserId,
-  matchedSession,
   profile,
   photoUris,
   introVideoUri,
@@ -2486,12 +2424,12 @@ function OverviewScreen({
   const [reportDetails, setReportDetails] = useState("");
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
   const photoViewerRef = useRef<ScrollView | null>(null);
+  const pushRegistrationRef = useRef<string | null>(null);
   const { width: viewportWidth } = useWindowDimensions();
   const photoViewerPageWidth = Math.max(viewportWidth - 36, 1);
   const insets = useSafeAreaInsets();
-  const isMilaSession = currentUserId === demoMilaUserId;
-  const isServerJourneyMode = Boolean(currentUserId && !isMilaSession);
-  const journeyOwnerUserId = currentUserId === demoMilaUserId ? matchedSession?.userId ?? null : currentUserId;
+  const isServerJourneyMode = Boolean(currentUserId);
+  const journeyOwnerUserId = currentUserId;
 
   function applyJourneyState(state: PersistedJourneyState) {
     setRemoteJourney(null);
@@ -2600,47 +2538,15 @@ function OverviewScreen({
       return remotePartnerProfile;
     }
 
-    if (matchedSession) {
-      const primaryPhoto = matchedSession.photoUris.find((entry) => entry?.trim()) ?? demoSessionPhotoUris[0];
-      const matchedAge = calculateAgeFromProfile(matchedSession.profile) ?? 27;
-      const tagline =
-        matchedSession.profile.greenFlags.slice(0, 2).join(" • ") ||
-        matchedSession.profile.interests.slice(0, 2).join(" • ") ||
-        "Choice Match";
-
-      return {
-        id: matchedSession.userId,
-        firstName: matchedSession.profile.firstName.trim() || "Choice",
-        age: matchedAge,
-        city: matchedSession.profile.city.trim() || "Berlin",
-        selfDescription: matchedSession.profile.selfDescription,
-        tagline,
-        imageUri: primaryPhoto,
-        photoUris: matchedSession.photoUris.length ? matchedSession.photoUris : [primaryPhoto],
-        introVideoUrl: matchedSession.introVideoUri,
-        interests: matchedSession.profile.interests,
-        pronouns: matchedSession.profile.pronouns,
-        identity: matchedSession.profile.identity,
-        lookingFor: matchedSession.profile.lookingFor,
-        datingIntent: matchedSession.profile.datingIntent,
-        ageRangeMin: Number(matchedSession.profile.ageRangeMin || 18),
-        ageRangeMax: Number(matchedSession.profile.ageRangeMax || 99),
-        greenFlags: matchedSession.profile.greenFlags,
-        dealbreakers: matchedSession.profile.dealbreakers,
-        time: "Heute 21:00",
-      };
-    }
-
-    return demoProfiles.find((entry) => entry.id === demoRunthrough.currentMatchProfileId) ?? demoProfiles[0];
-  }, [matchedSession, remoteJourney?.partner]);
+    return demoProfiles[0];
+  }, [remoteJourney?.partner]);
   const penaltyPoints = accountState?.penaltyPoints ?? 0;
   const maxPenaltyPoints = 3;
   const remainingPenaltyPoints = Math.max(maxPenaltyPoints - penaltyPoints, 0);
   const accountPaused = accountState?.accountPaused ?? false;
   const accountBanned = accountState?.accountBanned ?? false;
-  const activePartnerUserId = remoteJourney?.partner?.userId ?? matchedSession?.userId ?? null;
-  const hasActiveChat = isServerJourneyMode ? Boolean(currentUserId && remoteJourney?.partner) : Boolean(currentUserId && matchedSession);
-  const isBuiltInDemoMatch = !isServerJourneyMode && matchedSession?.userId === demoMilaUserId;
+  const activePartnerUserId = remoteJourney?.partner?.userId ?? null;
+  const hasActiveChat = Boolean(currentUserId && remoteJourney?.partner);
   const includedMatchLimit = 8;
   const paidMatchCredits = accountState?.paidMatchCredits ?? 0;
   const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
@@ -2655,7 +2561,6 @@ function OverviewScreen({
   const profileMetaParts = [profile.city || "Berlin", String(profileAge ?? 27), profilePronouns].filter(Boolean);
   const awardViewerPhotoUri =
     photoUris.find((entry) => entry?.trim())
-    ?? demoSessionPhotoUris[0]
     ?? featuredProfile.imageUri;
   const awardPartnerPhotoUri =
     featuredProfile.photoUris.find((entry) => entry?.trim())
@@ -2724,8 +2629,7 @@ function OverviewScreen({
     "Du verschickst anstößige Bilder und das wird von der anderen Person bestätigt gemeldet.",
   ];
   const phaseOneViewerUserId = currentUserId ?? "choice_primary_demo";
-  const phaseOnePartnerUserId =
-    activePartnerUserId ?? (phaseOneViewerUserId === demoMilaUserId ? "choice_primary_demo" : demoMilaUserId);
+  const phaseOnePartnerUserId = activePartnerUserId ?? "choice_partner_placeholder";
   const phaseOneStarterUserId = remoteJourney?.phaseOneStarterUserId ?? chooseStableStarterUserId(phaseOneViewerUserId, phaseOnePartnerUserId);
   const phaseOneStarterName = phaseOneStarterUserId === phaseOneViewerUserId ? displayName : featuredProfile.firstName;
   const phaseOneViewerStarts = phaseOneStarterUserId === phaseOneViewerUserId;
@@ -2758,6 +2662,7 @@ function OverviewScreen({
   const phaseOneBeforeRelease = currentTime < matchReleaseTime;
   const phaseOneClosed = currentTime >= decisionDeadline;
   const currentReleaseKey = journeyReleaseAt ?? matchReleaseTime.toISOString();
+  const notificationSyncMinute = Math.floor(currentTime.getTime() / 60_000);
   const showFreshMatchNotice =
     hasActiveChat
     && !phaseOneBeforeRelease
@@ -2794,8 +2699,8 @@ function OverviewScreen({
       : `morgen um ${nextScheduledMatchReleaseClockLabel}`;
   const phaseTwoStartsInLabel = formatDurationLabel(phaseTwoStartTime.getTime() - currentTime.getTime());
   const renderedChatMessages = useMemo(
-    () => (hasActiveChat ? mapSharedChatMessagesForViewer(sharedChatMessages, isMilaSession) : []),
-    [hasActiveChat, isMilaSession, sharedChatMessages],
+    () => (hasActiveChat ? mapSharedChatMessagesForViewer(sharedChatMessages) : []),
+    [hasActiveChat, sharedChatMessages],
   );
   const latestSharedChatMessage = sharedChatMessages[sharedChatMessages.length - 1];
   const latestSharedChatPreview = getSharedChatMessagePreview(latestSharedChatMessage);
@@ -2808,18 +2713,13 @@ function OverviewScreen({
   const phaseThreeSuggestedProfile = useMemo(() => {
     const excludedIds = new Set<string>([featuredProfile.id, activePartnerUserId ?? ""]);
 
-    if (currentUserId === demoMilaUserId) {
-      excludedIds.add("mila");
-    }
-
     return demoProfiles.find((entry) => !excludedIds.has(entry.id)) ?? demoProfiles[0];
-  }, [activePartnerUserId, currentUserId, featuredProfile.id]);
+  }, [activePartnerUserId, featuredProfile.id]);
   const phaseThreeSuggestedDistanceLabel = formatDistanceLabel(
     estimateDistanceKm(profile.city || "Berlin", phaseThreeSuggestedProfile.city),
   );
   const phaseTwoViewerUserId = currentUserId ?? "choice_local_viewer";
-  const phaseTwoFallbackPartnerUserId =
-    activePartnerUserId ?? (phaseTwoViewerUserId === demoMilaUserId ? "choice_primary_demo" : demoMilaUserId);
+  const phaseTwoFallbackPartnerUserId = activePartnerUserId ?? "choice_partner_placeholder";
   const phaseTwoAssignedStarterUserId = remoteJourney?.phaseTwoStarterUserId ?? chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId);
   const phaseTwoAssignedPartnerUserId =
     phaseTwoAssignedStarterUserId === phaseTwoViewerUserId ? phaseTwoFallbackPartnerUserId : phaseTwoViewerUserId;
@@ -3123,65 +3023,6 @@ function OverviewScreen({
     setChatOpen(true);
   }
 
-  function jumpToTestPhase(phase: (typeof TEST_PHASE_JUMP_OPTIONS)[number]["phase"]) {
-    if (!journeyOwnerUserId) {
-      return;
-    }
-
-    const releaseAt = getReleaseAnchorForCurrentTime(currentTime);
-
-    if (phase === 2) {
-      releaseAt.setDate(releaseAt.getDate() - 1);
-    }
-
-    if (phase === 3) {
-      releaseAt.setDate(releaseAt.getDate() - 2);
-    }
-
-    if (phase === 4) {
-      releaseAt.setDate(releaseAt.getDate() - 3);
-    }
-
-    if (phase === 5) {
-      releaseAt.setDate(releaseAt.getDate() - 4);
-    }
-
-    const nextState = buildInitialJourneyState(journeyOwnerUserId, releaseAt);
-    nextState.releaseAt = releaseAt.toISOString();
-
-    if (phase >= 2) {
-      nextState.phaseOneDecisions = {
-        [phaseOneViewerUserId]: "continue",
-        [phaseOnePartnerUserId]: "continue",
-      };
-    }
-
-    if (phase >= 3) {
-      const rounds = buildPhaseTwoRounds(phaseTwoAssignedStarterName, phaseTwoAssignedPartnerName);
-      nextState.phaseTwoRounds = rounds;
-      nextState.phaseTwoResults = buildCompletedPhaseTwoResults(rounds);
-      nextState.phaseTwoStage = "result";
-      nextState.phaseTwoRoundIndex = 0;
-      nextState.phaseTwoStarterUserId = phaseTwoAssignedStarterUserId;
-      nextState.phaseTwoPartnerUserId = phaseTwoAssignedPartnerUserId;
-      nextState.phaseTwoStarterName = phaseTwoAssignedStarterName;
-      nextState.phaseTwoPartnerName = phaseTwoAssignedPartnerName;
-    }
-
-    if (phase >= 4) {
-      nextState.phaseThreeDecisions = {
-        [phaseOneViewerUserId]: "stay",
-        [phaseOnePartnerUserId]: "stay",
-      };
-    }
-
-    applyJourneyState(nextState);
-    setShowChatDecisionModal(false);
-    setShowReportModal(false);
-    setReportFeedback(null);
-    onSelectTab("chats");
-  }
-
   async function startPhaseTwo() {
     setChatOpen(false);
     setShowChatDecisionModal(false);
@@ -3244,7 +3085,6 @@ function OverviewScreen({
     setPhaseOneDecisions((current) => ({
       ...current,
       [phaseOneViewerUserId]: nextDecision,
-      ...(isBuiltInDemoMatch ? { [phaseOnePartnerUserId]: nextDecision } : {}),
     }));
   }
 
@@ -4192,6 +4032,50 @@ function OverviewScreen({
   }, [currentUserId]);
 
   useEffect(() => {
+    if (!currentUserId) {
+      pushRegistrationRef.current = null;
+      return;
+    }
+
+    const activeUserId = currentUserId;
+    let cancelled = false;
+
+    async function syncPushRegistration() {
+      const expoPushToken = await getExpoPushToken();
+
+      if (!expoPushToken || cancelled) {
+        return;
+      }
+
+      const nextRegistrationKey = `${activeUserId}:${expoPushToken}`;
+
+      if (pushRegistrationRef.current === nextRegistrationKey) {
+        return;
+      }
+
+      try {
+        await registerRemotePushToken({
+          userId: activeUserId,
+          token: expoPushToken,
+          platform: Platform.OS === "ios" || Platform.OS === "android" ? Platform.OS : "web",
+        });
+
+        if (!cancelled) {
+          pushRegistrationRef.current = nextRegistrationKey;
+        }
+      } catch {
+        // Retry on the next app session or when the user reloads the app.
+      }
+    }
+
+    void syncPushRegistration();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
     if (
       isServerJourneyMode
       || !isJourneyHydrated
@@ -4358,6 +4242,189 @@ function OverviewScreen({
   ]);
 
   useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+
+    const activeUserId = currentUserId;
+    let cancelled = false;
+
+    async function syncPhaseNotifications() {
+      if (!journeyOwnerUserId || !journeyReleaseAt || !hasActiveChat) {
+        await clearJourneyLocalNotifications(activeUserId);
+        return;
+      }
+
+      const nowMs = Date.now();
+      const plans: JourneyLocalNotificationPlan[] = [];
+
+      if (phaseOneWindowOpen && phaseOneViewerStarts && !phaseOneChatStarted) {
+        const warningAt = new Date(decisionDeadline.getTime() - PHASE_WARNING_LEAD_MS);
+
+        if (warningAt.getTime() > nowMs) {
+          plans.push({
+            ownerUserId: activeUserId,
+            key: `${currentReleaseKey}:phase-one-warning`,
+            date: warningAt,
+            kind: "warning",
+            title: "Es droht ein Strafpunkt",
+            body: `Choice hat dich ausgewaehlt, den Chat mit ${featuredProfile.firstName} zu eroeffnen. Wenn du bis ${decisionClockLabel} nicht schreibst, droht ein Strafpunkt.`,
+            data: {
+              type: "phase-one-warning",
+              matchId: remoteJourney?.matchId ?? currentReleaseKey,
+            },
+          });
+        }
+      }
+
+      if (phaseOneBothContinue) {
+        if (phaseTwoStartTime.getTime() > nowMs) {
+          plans.push({
+            ownerUserId: activeUserId,
+            key: `${currentReleaseKey}:phase-two-start`,
+            date: phaseTwoStartTime,
+            kind: "phase",
+            title: "Ihr seid jetzt in Phase 2",
+            body:
+              phaseTwoAssignedStarterUserId === activeUserId
+                ? "Du beginnst diese Runde. Beantworte zuerst alle 3 Fragen."
+                : `${featuredProfile.firstName} beginnt diese Runde. Danach bist du dran.`,
+            data: {
+              type: "phase-two-start",
+              matchId: remoteJourney?.matchId ?? currentReleaseKey,
+            },
+          });
+        }
+
+        if (!phaseTwoReady && phaseTwoCurrentResponderUserId === activeUserId) {
+          const warningAt = new Date(phaseThreeStartTime.getTime() - PHASE_WARNING_LEAD_MS);
+
+          if (warningAt.getTime() > nowMs) {
+            plans.push({
+              ownerUserId: activeUserId,
+              key: `${currentReleaseKey}:phase-two-warning`,
+              date: warningAt,
+              kind: "warning",
+              title: "Es droht ein Strafpunkt",
+              body: `Du bist gerade mit Phase 2 dran. Wenn du bis ${phaseThreeClockLabel} nicht mitmachst, droht ein Strafpunkt.`,
+              data: {
+                type: "phase-two-warning",
+                matchId: remoteJourney?.matchId ?? currentReleaseKey,
+              },
+            });
+          }
+        }
+      }
+
+      if (phaseThreeQualified) {
+        if (phaseThreeStartTime.getTime() > nowMs) {
+          plans.push({
+            ownerUserId: activeUserId,
+            key: `${currentReleaseKey}:phase-three-start`,
+            date: phaseThreeStartTime,
+            kind: "phase",
+            title: "Ihr seid jetzt in Phase 3",
+            body: "Jetzt entscheidet ihr, ob ihr hier bleibt oder morgen ein neues Match wollt.",
+            data: {
+              type: "phase-three-start",
+              matchId: remoteJourney?.matchId ?? currentReleaseKey,
+            },
+          });
+        }
+
+        if (phaseThreeDecisionOpen && phaseThreeViewerDecision === "undecided") {
+          const reminderAt = new Date(phaseFourStartTime.getTime() - PHASE_WARNING_LEAD_MS);
+
+          if (reminderAt.getTime() > nowMs) {
+            plans.push({
+              ownerUserId: activeUserId,
+              key: `${currentReleaseKey}:phase-three-reminder`,
+              date: reminderAt,
+              kind: "warning",
+              title: "Treffe jetzt deine Entscheidung",
+              body: "Sage heute noch, ob du bleiben oder morgen ein neues Match willst.",
+              data: {
+                type: "phase-three-reminder",
+                matchId: remoteJourney?.matchId ?? currentReleaseKey,
+              },
+            });
+          }
+        }
+      }
+
+      if (phaseThreeBothStay) {
+        if (phaseFourStartTime.getTime() > nowMs) {
+          plans.push({
+            ownerUserId: activeUserId,
+            key: `${currentReleaseKey}:phase-four-start`,
+            date: phaseFourStartTime,
+            kind: "phase",
+            title: "Ihr seid jetzt in Phase 4",
+            body: `Choice pausiert euren Chat jetzt bewusst bis ${phaseFiveClockLabel}.`,
+            data: {
+              type: "phase-four-start",
+              matchId: remoteJourney?.matchId ?? currentReleaseKey,
+            },
+          });
+        }
+
+        if (phaseFiveStartTime.getTime() > nowMs) {
+          plans.push({
+            ownerUserId: activeUserId,
+            key: `${currentReleaseKey}:phase-five-start`,
+            date: phaseFiveStartTime,
+            kind: "phase",
+            title: "Phase 5 ist jetzt da",
+            body: "Euer Choice Award wartet auf euch.",
+            data: {
+              type: "phase-five-start",
+              matchId: remoteJourney?.matchId ?? currentReleaseKey,
+            },
+          });
+        }
+      }
+
+      if (!cancelled) {
+        await syncJourneyLocalNotifications(activeUserId, plans);
+      }
+    }
+
+    void syncPhaseNotifications();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentReleaseKey,
+    currentUserId,
+    decisionClockLabel,
+    decisionDeadline,
+    featuredProfile.firstName,
+    hasActiveChat,
+    journeyOwnerUserId,
+    journeyReleaseAt,
+    notificationSyncMinute,
+    phaseFiveClockLabel,
+    phaseFiveStartTime,
+    phaseOneBothContinue,
+    phaseOneChatStarted,
+    phaseOneViewerStarts,
+    phaseOneWindowOpen,
+    phaseThreeClockLabel,
+    phaseThreeDecisionOpen,
+    phaseThreeQualified,
+    phaseThreeStartTime,
+    phaseThreeViewerDecision,
+    phaseThreeBothStay,
+    phaseTwoAssignedStarterUserId,
+    phaseTwoCurrentResponderUserId,
+    phaseTwoReady,
+    phaseTwoStartTime,
+    phaseFourStartTime,
+    remoteJourney?.matchId,
+  ]);
+
+  useEffect(() => {
     if (!showFreshMatchNotice) {
       return;
     }
@@ -4372,7 +4439,7 @@ function OverviewScreen({
       ...current,
       {
         id: `shared-${Date.now()}-${current.length + 1}`,
-        author: isMilaSession ? "mila" : "primary",
+        author: "primary",
         ...message,
       },
     ]);
@@ -5148,34 +5215,6 @@ function OverviewScreen({
     );
   }
 
-  function renderTestPhaseCard() {
-    if (!hasActiveChat || !journeyOwnerUserId) {
-      return null;
-    }
-
-    return (
-      <View style={styles.phaseJumpCard}>
-        <Text style={styles.phaseJumpEyebrow}>Testen</Text>
-        <Text style={styles.phaseJumpTitle}>Direkt zwischen den Phasen springen</Text>
-        <Text style={styles.phaseJumpText}>
-          Das setzt deinen aktuellen Match-Verlauf lokal auf die gewählte Phase und bringt dich direkt in den Chat.
-        </Text>
-
-        <View style={styles.phaseJumpButtonRow}>
-          {TEST_PHASE_JUMP_OPTIONS.map((option) => (
-            <Pressable
-              key={option.phase}
-              onPress={() => jumpToTestPhase(option.phase)}
-              style={styles.phaseJumpButton}
-            >
-              <Text style={styles.phaseJumpButtonText}>{option.label}</Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
-    );
-  }
-
   function renderOverviewContent() {
     if (currentTab === "today") {
       return (
@@ -5441,7 +5480,6 @@ function OverviewScreen({
           </View>
 
           {renderPenaltyCard()}
-          {renderTestPhaseCard()}
 
           <View style={styles.overviewListCard}>
             <Text style={styles.overviewListTitle}>Dein Status</Text>
@@ -5823,24 +5861,10 @@ export function ChoiceOnboarding() {
       ].filter((entry) => entry.value),
     [identityLabel, intentLabel, profile.ageRangeMax, profile.ageRangeMin, profile.city, profile.lookingFor, pronounLabel, selfDescriptionLabel],
   );
-  const milaSwitchSession = useMemo(() => buildDemoMilaSession(), []);
-  const activeChatAuthor: SharedChatAuthor = verifiedUserId === demoMilaUserId ? "mila" : "primary";
-  const matchedSession = useMemo(() => {
-    if (verifiedUserId === demoMilaUserId) {
-      return rememberedSessions.find((entry) => entry.userId !== demoMilaUserId) ?? null;
-    }
-
-    return milaSwitchSession;
-  }, [milaSwitchSession, rememberedSessions, verifiedUserId]);
-  const alternateRememberedSessions = useMemo(() => {
-    const base = rememberedSessions.filter((entry) => entry.userId !== verifiedUserId);
-
-    if (verifiedUserId !== demoMilaUserId && !base.some((entry) => entry.userId === demoMilaUserId)) {
-      return [milaSwitchSession, ...base];
-    }
-
-    return base;
-  }, [milaSwitchSession, rememberedSessions, verifiedUserId]);
+  const alternateRememberedSessions = useMemo(
+    () => rememberedSessions.filter((entry) => entry.userId !== verifiedUserId),
+    [rememberedSessions, verifiedUserId],
+  );
 
   const displayScreenTitle = useMemo(() => {
     if (currentScreen.kind === "phone" && entryMode === "signin") {
@@ -6367,19 +6391,6 @@ export function ChoiceOnboarding() {
 
     try {
       let nextSession = session;
-
-      if (session.userId === demoMilaUserId) {
-        const savedDemoSession = await persistLocalSession({
-          userId: session.userId,
-          phoneNumber: session.phoneNumber,
-          profile: session.profile,
-          photoUris: session.photoUris,
-          introVideoUri: session.introVideoUri,
-          introVideoDurationMs: session.introVideoDurationMs,
-        });
-        setSessionState(savedDemoSession);
-        return;
-      }
 
       if (await loadIsAccountPaused(session.userId)) {
         await removeRememberedSession(session.userId);
@@ -7341,7 +7352,6 @@ export function ChoiceOnboarding() {
           accountActionMessage={accountActionMessage}
           displayName={overviewDisplayName}
           currentUserId={verifiedUserId}
-          matchedSession={matchedSession}
           profile={profile}
           photoUris={photoUris}
           introVideoUri={introVideoUri}

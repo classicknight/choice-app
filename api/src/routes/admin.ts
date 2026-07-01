@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { buildBanAccountData, buildPauseAccountData, buildRestorePausedAccountData, isAccountPaused, mapAccountState } from "../lib/account-state.js";
 import { requireAdminAccess } from "../lib/admin-auth.js";
+import { sendPushNotificationToUser } from "../lib/push-notifications.js";
 import { prisma } from "../lib/prisma.js";
 
 const updateUserSchema = z.object({
@@ -449,6 +450,23 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
             where: { id: report.reportedUserId },
           }),
     ]);
+
+    if (shouldConfirm) {
+      void sendPushNotificationToUser(report.reportedUserId, {
+        title: "Du hast einen Strafpunkt bekommen",
+        body:
+          nextPenaltyPoints >= 3
+            ? "Eine Meldung gegen dein Verhalten wurde bestaetigt. Dein Konto ist jetzt pausiert."
+            : "Eine Meldung gegen dein Verhalten wurde bestaetigt. Dafuer wurde dir ein Strafpunkt gegeben.",
+        channelId: "fair-play",
+        data: {
+          type: "penalty",
+          reason: "REPORT_CONFIRMED",
+          penaltyPoints: nextPenaltyPoints,
+          reportId: report.id,
+        },
+      });
+    }
 
     return reply.send({
       ok: true,

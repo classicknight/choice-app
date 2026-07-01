@@ -6,6 +6,7 @@ import { authRoutes } from "./routes/auth.js";
 import { healthRoutes } from "./routes/health.js";
 import { journeyRoutes } from "./routes/journey.js";
 import { moderationRoutes } from "./routes/moderation.js";
+import { pushRoutes } from "./routes/push.js";
 import { profileRoutes } from "./routes/profiles.js";
 import { reportRoutes } from "./routes/reports.js";
 import { uploadRoutes } from "./routes/uploads.js";
@@ -24,6 +25,7 @@ export function buildApp() {
   app.register(healthRoutes, { prefix: "/v1" });
   app.register(authRoutes, { prefix: "/v1" });
   app.register(journeyRoutes, { prefix: "/v1" });
+  app.register(pushRoutes, { prefix: "/v1" });
   app.register(profileRoutes, { prefix: "/v1" });
   app.register(moderationRoutes, { prefix: "/v1" });
   app.register(reportRoutes, { prefix: "/v1" });

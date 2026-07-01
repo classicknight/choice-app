@@ -1,4 +1,4 @@
-import { buildSummary, calculateAgeFromProfile, createProfileId, type RegistrationProfile } from "./registration";
+import { buildSummary, calculateAgeFromProfile, type RegistrationProfile } from "./registration";
 
 const apiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
 
@@ -191,11 +191,6 @@ type HydratedProfileResult = {
   videoUrl: string | null;
 };
 
-const mockCodes = new Map<string, { code: string; userId: string }>();
-const mockUsersByPhone = new Map<string, string>();
-const mockCompletedProfiles = new Set<string>();
-const mockProfilesByUser = new Map<string, HydratedProfileResult>();
-
 async function postJson<TResponse>(path: string, body: unknown): Promise<TResponse> {
   if (!apiBaseUrl) {
     throw new Error("API_URL_MISSING");
@@ -337,20 +332,6 @@ function buildFileName(uri: string, index: number) {
 export async function startPhoneVerification(phoneNumber: string): Promise<StartPhoneVerificationResult> {
   const normalizedPhone = phoneNumber.trim();
 
-  if (!apiBaseUrl) {
-    const code = "111111";
-    const userId = mockUsersByPhone.get(normalizedPhone) ?? `local_${Date.now().toString(36)}`;
-    mockUsersByPhone.set(normalizedPhone, userId);
-    mockCodes.set(normalizedPhone, { code, userId });
-
-    return {
-      ok: true,
-      userId,
-      target: normalizedPhone,
-      devCodePreview: code,
-    };
-  }
-
   return postJson<StartPhoneVerificationResult>("/auth/phone/start", {
     phoneNumber: normalizedPhone,
   });
@@ -363,20 +344,6 @@ export async function verifyPhoneVerification(
   const normalizedPhone = phoneNumber.trim();
   const normalizedCode = code.trim();
 
-  if (!apiBaseUrl) {
-    const pending = mockCodes.get(normalizedPhone);
-
-    if (!pending || pending.code !== normalizedCode) {
-      throw new Error("INVALID_CODE");
-    }
-
-    return {
-      ok: true,
-      userId: pending.userId,
-      profileCompleted: mockCompletedProfiles.has(pending.userId),
-    };
-  }
-
   return postJson<VerifyPhoneVerificationResult>("/auth/phone/verify", {
     phoneNumber: normalizedPhone,
     code: normalizedCode,
@@ -386,8 +353,12 @@ export async function verifyPhoneVerification(
 export async function uploadProfilePhotos(photoUris: string[]): Promise<string[]> {
   const normalizedPhotoUris = photoUris.map((entry) => entry.trim()).filter(Boolean);
 
-  if (!normalizedPhotoUris.length || !apiBaseUrl) {
+  if (!normalizedPhotoUris.length) {
     return normalizedPhotoUris;
+  }
+
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
   }
 
   const signedUpload = await postJson<CloudinarySignatureResult>("/uploads/cloudinary/sign", {
@@ -438,8 +409,12 @@ export async function uploadProfilePhotos(photoUris: string[]): Promise<string[]
 export async function uploadProfileVideo(videoUri: string | null): Promise<string | null> {
   const normalizedVideoUri = videoUri?.trim();
 
-  if (!normalizedVideoUri || !apiBaseUrl) {
+  if (!normalizedVideoUri) {
     return normalizedVideoUri ?? null;
+  }
+
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
   }
 
   const signedUpload = await postJson<CloudinarySignatureResult>("/uploads/cloudinary/sign", {
@@ -486,26 +461,6 @@ export async function createRemoteProfile(
   photoUrls: string[],
   introVideoUrl?: string | null,
 ): Promise<CreateProfileResult> {
-  if (!apiBaseUrl) {
-    mockCompletedProfiles.add(userId);
-    mockProfilesByUser.set(userId, {
-      profile: {
-        ...profile,
-        interests: [...profile.interests],
-        greenFlags: [...profile.greenFlags],
-        dealbreakers: [...profile.dealbreakers],
-      },
-      photoUrls: [...photoUrls],
-      videoUrl: introVideoUrl ?? null,
-    });
-
-    return {
-      ok: true,
-      profileId: createProfileId(),
-      summary: buildSummary(profile),
-    };
-  }
-
   const preferenceNotes = [
     profile.greenFlags.length ? `Pro: ${profile.greenFlags.join(", ")}` : "",
     profile.dealbreakers.length ? `No-Gos: ${profile.dealbreakers.join(", ")}` : "",
@@ -547,25 +502,6 @@ export async function createRemoteProfile(
 }
 
 export async function fetchRemoteProfile(userId: string): Promise<HydratedProfileResult> {
-  if (!apiBaseUrl) {
-    const mockProfile = mockProfilesByUser.get(userId);
-
-    if (!mockProfile) {
-      throw new Error("PROFILE_NOT_FOUND");
-    }
-
-    return {
-      profile: {
-        ...mockProfile.profile,
-        interests: [...mockProfile.profile.interests],
-        greenFlags: [...mockProfile.profile.greenFlags],
-        dealbreakers: [...mockProfile.profile.dealbreakers],
-      },
-      photoUrls: [...mockProfile.photoUrls],
-      videoUrl: mockProfile.videoUrl ?? null,
-    };
-  }
-
   const response = await fetchJson<FetchRemoteProfileResult>(`/profiles/${encodeURIComponent(userId)}`);
   const remoteProfile = response.profile;
   const birthday = createApproximateBirthdayFromAge(remoteProfile.age);
@@ -596,44 +532,10 @@ export async function fetchRemoteProfile(userId: string): Promise<HydratedProfil
 }
 
 export async function deleteRemoteAccount(userId: string): Promise<DeleteAccountResult> {
-  if (!apiBaseUrl) {
-    mockCompletedProfiles.delete(userId);
-    mockProfilesByUser.delete(userId);
-
-    for (const [phone, mappedUserId] of mockUsersByPhone.entries()) {
-      if (mappedUserId === userId) {
-        mockUsersByPhone.delete(phone);
-        mockCodes.delete(phone);
-      }
-    }
-
-    return {
-      ok: true,
-    };
-  }
-
   return deleteJson<DeleteAccountResult>(`/profiles/${encodeURIComponent(userId)}`);
 }
 
 export async function fetchRemoteAccountState(userId: string): Promise<RemoteAccountStateResult["account"]> {
-  if (!apiBaseUrl) {
-    return {
-      userId,
-      isPremium: false,
-      premiumActivatedAt: null,
-      penaltyPoints: 0,
-      suspendedAt: null,
-      bannedAt: null,
-      accountPaused: false,
-      accountBanned: false,
-      paidMatchCredits: 0,
-      frozenPaidMatchCredits: 0,
-      forfeitedPaidMatchCredits: 0,
-      lastPaidMatchPackageAt: null,
-      hasPaidMatchAccess: false,
-    };
-  }
-
   const response = await fetchJson<RemoteAccountStateResult>(`/profiles/${encodeURIComponent(userId)}/account`);
   return response.account;
 }
@@ -644,24 +546,6 @@ export async function applyRemoteSystemPenalty(input: {
   contextKey: string;
   note?: string;
 }): Promise<ApplySystemPenaltyResult["account"]> {
-  if (!apiBaseUrl) {
-    return {
-      userId: input.userId,
-      isPremium: false,
-      premiumActivatedAt: null,
-      penaltyPoints: 0,
-      suspendedAt: null,
-      bannedAt: null,
-      accountPaused: false,
-      accountBanned: false,
-      paidMatchCredits: 0,
-      frozenPaidMatchCredits: 0,
-      forfeitedPaidMatchCredits: 0,
-      lastPaidMatchPackageAt: null,
-      hasPaidMatchAccess: false,
-    };
-  }
-
   const response = await postJson<ApplySystemPenaltyResult>("/moderation/system-penalty", {
     userId: input.userId,
     reason: input.reason,
@@ -681,13 +565,6 @@ export async function createRemoteReport(input: {
   details?: string;
   latestMessagePreview?: string | null;
 }): Promise<CreateReportResult> {
-  if (!apiBaseUrl) {
-    return {
-      ok: true,
-      reportId: `local-report-${Date.now()}`,
-    };
-  }
-
   return postJson<CreateReportResult>("/reports", {
     reporterUserId: input.reporterUserId,
     reportedUserId: input.reportedUserId,
@@ -696,6 +573,22 @@ export async function createRemoteReport(input: {
     reason: input.reason,
     details: input.details?.trim() || undefined,
     latestMessagePreview: input.latestMessagePreview?.trim() || undefined,
+  });
+}
+
+export async function registerRemotePushToken(input: {
+  userId: string;
+  token: string;
+  platform: "ios" | "android" | "web";
+}) {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  return postJson<{ ok: true }>("/push/register", {
+    userId: input.userId,
+    token: input.token.trim(),
+    platform: input.platform,
   });
 }
 

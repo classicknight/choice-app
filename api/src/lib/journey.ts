@@ -5,6 +5,7 @@ import {
   PhaseTwoStage,
   Prisma,
 } from "@prisma/client";
+import { sendPushNotificationToUser } from "./push-notifications.js";
 import { applySystemPenalty } from "./system-penalties.js";
 import { prisma } from "./prisma.js";
 
@@ -859,7 +860,35 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
     await ensureChatForMatch(refreshed);
   }
 
-  return getMatchById(activated.id);
+  const hydratedMatch = await getMatchById(activated.id);
+
+  if (hydratedMatch) {
+    const participantNotifications = [
+      {
+        recipientUserId: hydratedMatch.userAId,
+        partnerName: hydratedMatch.userB.profile?.firstName?.trim() || "dein Match",
+      },
+      {
+        recipientUserId: hydratedMatch.userBId,
+        partnerName: hydratedMatch.userA.profile?.firstName?.trim() || "dein Match",
+      },
+    ];
+
+    await Promise.allSettled(
+      participantNotifications.map(({ recipientUserId, partnerName }) =>
+        sendPushNotificationToUser(recipientUserId, {
+          title: "Dein neues Match ist da",
+          body: `${partnerName} wurde gerade für dich freigeschaltet.`,
+          channelId: "match-releases",
+          data: {
+            type: "match-release",
+            matchId: hydratedMatch.id,
+          },
+        })),
+    );
+  }
+
+  return hydratedMatch;
 }
 
 async function maybeCreateUpcomingMatch(userId: string, now: Date) {
@@ -1201,6 +1230,37 @@ async function resolveJourneyMatchForUser(userId: string, now: Date) {
   return match;
 }
 
+export async function runJourneyAutomationSweep(now = new Date()) {
+  const eligibleUsers = await prisma.user.findMany({
+    where: {
+      profileCompleted: true,
+      suspendedAt: null,
+      bannedAt: null,
+      profile: { isNot: null },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  let processedUsers = 0;
+  let failedUsers = 0;
+
+  for (const user of eligibleUsers) {
+    try {
+      await resolveJourneyMatchForUser(user.id, now);
+      processedUsers += 1;
+    } catch {
+      failedUsers += 1;
+    }
+  }
+
+  return {
+    processedUsers,
+    failedUsers,
+  };
+}
+
 function mapProfileDealbreakers(dealbreaker: string | null) {
   if (!dealbreaker) {
     return {
@@ -1513,6 +1573,28 @@ export async function createJourneyMessage(input: {
       senderId: input.userId,
       kind: input.kind === "image" ? MessageKind.IMAGE : MessageKind.TEXT,
       body,
+    },
+  });
+
+  const partnerUserId = input.userId === match.userAId ? match.userBId : match.userAId;
+  const senderName =
+    input.userId === match.userAId
+      ? match.userA.profile?.firstName ?? "Choice"
+      : match.userB.profile?.firstName ?? "Choice";
+
+  void sendPushNotificationToUser(partnerUserId, {
+    title: senderName,
+    body:
+      input.kind === "image"
+        ? `${senderName} hat dir ein Bild geschickt.`
+        : body.length > 120
+          ? `${body.slice(0, 117)}...`
+          : body,
+    channelId: "chat-messages",
+    data: {
+      type: "chat-message",
+      matchId: match.id,
+      senderUserId: input.userId,
     },
   });
 

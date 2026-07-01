@@ -1,4 +1,5 @@
 import { buildPauseAccountData, mapAccountState } from "./account-state.js";
+import { sendPushNotificationToUser } from "./push-notifications.js";
 import { prisma } from "./prisma.js";
 
 type ApplySystemPenaltyInput = {
@@ -77,6 +78,31 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
         lastPaidMatchPackageAt: true,
       },
     });
+  });
+
+  const penaltyTitle = "Du hast einen Strafpunkt bekommen";
+  const penaltyBody =
+    input.reason === "PHASE_ONE_NOT_STARTED"
+      ? updatedUser.penaltyPoints >= 3
+        ? "Du hast den Chat nicht rechtzeitig eröffnet. Dein Konto ist jetzt pausiert."
+        : "Du hast den Chat nicht rechtzeitig eröffnet. Dafür wurde dir ein Strafpunkt gegeben."
+      : input.reason === "PHASE_TWO_NOT_PLAYED"
+        ? updatedUser.penaltyPoints >= 3
+          ? "Du hast Phase 2 nicht rechtzeitig gespielt. Dein Konto ist jetzt pausiert."
+          : "Du hast Phase 2 nicht rechtzeitig gespielt. Dafür wurde dir ein Strafpunkt gegeben."
+        : updatedUser.penaltyPoints >= 3
+          ? "Dein Konto ist jetzt pausiert."
+          : "Bitte prüfe dein Konto in Choice.";
+
+  void sendPushNotificationToUser(input.userId, {
+    title: penaltyTitle,
+    body: penaltyBody,
+    channelId: "fair-play",
+    data: {
+      type: "penalty",
+      reason: input.reason,
+      penaltyPoints: updatedUser.penaltyPoints,
+    },
   });
 
   return {
