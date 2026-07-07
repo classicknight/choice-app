@@ -11,9 +11,10 @@ import { prisma } from "./prisma.js";
 
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
-const MATCH_RELEASE_HOUR = 9;
-const MATCH_DECISION_HOUR = 21;
-const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
+const MATCH_RELEASE_HOUR = 14;
+const MATCH_RELEASE_MINUTE = 0;
+const PHASE_INTERVAL_MINUTES = 20;
+const PHASE_WARNING_LEAD_MS = 5 * 60 * 1000;
 
 export type JourneyPhaseTwoResponseOption = {
   label: string;
@@ -136,6 +137,10 @@ function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
+function addMinutes(date: Date, minutes: number) {
+  return new Date(date.getTime() + minutes * 60 * 1000);
+}
+
 function addDays(date: Date, days: number) {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
@@ -148,7 +153,7 @@ function setTimeOfDay(date: Date, hour: number, minute: number) {
 
 function getNextMatchReleaseAt(now: Date) {
   const release = new Date(now);
-  release.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
+  release.setHours(MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE, 0, 0);
 
   if (now >= release) {
     release.setDate(release.getDate() + 1);
@@ -160,11 +165,11 @@ function getNextMatchReleaseAt(now: Date) {
 function buildPhaseSchedule(releaseAt: Date) {
   return {
     release: releaseAt,
-    decisionDeadline: addHours(releaseAt, MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR),
-    phaseTwoStart: addDays(releaseAt, 1),
-    phaseThreeStart: addDays(releaseAt, 2),
-    phaseFourStart: addDays(releaseAt, 3),
-    phaseFiveStart: addHours(addDays(releaseAt, 3), MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR),
+    decisionDeadline: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES),
+    phaseTwoStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES),
+    phaseThreeStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES * 2),
+    phaseFourStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES * 3),
+    phaseFiveStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES * 4),
   };
 }
 
