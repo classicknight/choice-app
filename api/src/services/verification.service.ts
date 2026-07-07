@@ -15,5 +15,27 @@ export function normalizeEmail(email: string) {
 }
 
 export function normalizePhone(phone: string) {
-  return phone.replace(/[^\d+]/g, "");
+  const compact = phone.trim().replace(/[^\d+]/g, "");
+
+  if (!compact) {
+    return compact;
+  }
+
+  if (compact.startsWith("+")) {
+    return `+${compact.slice(1).replace(/[^\d]/g, "")}`;
+  }
+
+  if (compact.startsWith("00")) {
+    return `+${compact.slice(2).replace(/[^\d]/g, "")}`;
+  }
+
+  if (compact.startsWith("49")) {
+    return `+${compact}`;
+  }
+
+  if (compact.startsWith("0")) {
+    return `+49${compact.slice(1)}`;
+  }
+
+  return compact;
 }
