@@ -452,16 +452,18 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     ]);
 
     if (shouldConfirm) {
+      const confirmedReason = report.reason.trim();
       void sendPushNotificationToUser(report.reportedUserId, {
         title: "Du hast einen Strafpunkt bekommen",
         body:
           nextPenaltyPoints >= 3
-            ? "Eine Meldung gegen dein Verhalten wurde bestaetigt. Dein Konto ist jetzt pausiert."
-            : "Eine Meldung gegen dein Verhalten wurde bestaetigt. Dafuer wurde dir ein Strafpunkt gegeben.",
+            ? `Die Meldung "${confirmedReason}" wurde bestaetigt. Dein Konto ist jetzt pausiert.`
+            : `Die Meldung "${confirmedReason}" wurde bestaetigt. Dafuer wurde dir ein Strafpunkt gegeben.`,
         channelId: "fair-play",
         data: {
           type: "penalty",
           reason: "REPORT_CONFIRMED",
+          reasonLabel: confirmedReason,
           penaltyPoints: nextPenaltyPoints,
           reportId: report.id,
         },

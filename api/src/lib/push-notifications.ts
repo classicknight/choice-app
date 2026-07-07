@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma.js";
 
 type PushPayload = {
@@ -134,4 +135,54 @@ export async function sendPushNotificationToUser(userId: string, payload: PushPa
       sent: 0,
     };
   }
+}
+
+export async function sendPushNotificationOnce(input: {
+  userId: string;
+  matchId?: string | null;
+  kind: string;
+  contextKey: string;
+  payload: PushPayload;
+}) {
+  try {
+    await prisma.notificationDispatch.create({
+      data: {
+        userId: input.userId,
+        matchId: input.matchId ?? undefined,
+        kind: input.kind,
+        contextKey: input.contextKey.trim(),
+      },
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError
+      && error.code === "P2002"
+    ) {
+      return {
+        ok: true as const,
+        skipped: true as const,
+        sent: 0,
+      };
+    }
+
+    throw error;
+  }
+
+  const result = await sendPushNotificationToUser(input.userId, input.payload);
+
+  await prisma.notificationDispatch.update({
+    where: {
+      contextKey: input.contextKey.trim(),
+    },
+    data: {
+      sentAt: new Date(),
+      deliveryCount: result.sent,
+    },
+  });
+
+  return {
+    ok: result.ok,
+    skipped: false as const,
+    sent: result.sent,
+  };
 }

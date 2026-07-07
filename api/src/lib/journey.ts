@@ -5,7 +5,7 @@ import {
   PhaseTwoStage,
   Prisma,
 } from "@prisma/client";
-import { sendPushNotificationToUser } from "./push-notifications.js";
+import { sendPushNotificationOnce, sendPushNotificationToUser } from "./push-notifications.js";
 import { applySystemPenalty } from "./system-penalties.js";
 import { prisma } from "./prisma.js";
 
@@ -13,6 +13,7 @@ const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
 const MATCH_RELEASE_HOUR = 9;
 const MATCH_DECISION_HOUR = 21;
+const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
 
 export type JourneyPhaseTwoResponseOption = {
   label: string;
@@ -170,6 +171,306 @@ function buildPhaseSchedule(releaseAt: Date) {
 function getCompatibilityPoints(scoreA: number, scoreB: number) {
   const difference = Math.abs(scoreA - scoreB);
   return Math.max(0, 100 - difference * 25);
+}
+
+function getParticipantProfileName(match: MatchWithRelations, userId: string) {
+  if (match.userAId === userId) {
+    return match.userA.profile?.firstName?.trim() || "Choice";
+  }
+
+  if (match.userBId === userId) {
+    return match.userB.profile?.firstName?.trim() || "Choice";
+  }
+
+  return "Choice";
+}
+
+function getPartnerProfileName(match: MatchWithRelations, userId: string) {
+  if (match.userAId === userId) {
+    return match.userB.profile?.firstName?.trim() || "dein Match";
+  }
+
+  if (match.userBId === userId) {
+    return match.userA.profile?.firstName?.trim() || "dein Match";
+  }
+
+  return "dein Match";
+}
+
+function getPhaseTwoStarterUserId(match: MatchWithRelations) {
+  return match.phaseTwoStarterUserId ?? chooseStableStarterUserId(match.userAId, match.userBId);
+}
+
+function getPhaseTwoPartnerUserId(match: MatchWithRelations) {
+  return match.phaseTwoPartnerUserId ?? (getPhaseTwoStarterUserId(match) === match.userAId ? match.userBId : match.userAId);
+}
+
+async function sendJourneyNotificationToUser(input: {
+  userId: string;
+  matchId: string;
+  kind: string;
+  contextKey: string;
+  title: string;
+  body: string;
+  channelId: string;
+  data?: Record<string, string | number | boolean | null>;
+}) {
+  await sendPushNotificationOnce({
+    userId: input.userId,
+    matchId: input.matchId,
+    kind: input.kind,
+    contextKey: input.contextKey,
+    payload: {
+      title: input.title,
+      body: input.body,
+      channelId: input.channelId,
+      data: input.data,
+    },
+  });
+}
+
+async function syncJourneyPhaseNotifications(
+  match: MatchWithRelations,
+  now: Date,
+  userMessages: NonNullable<MatchWithRelations["chat"]>["messages"],
+  schedule: ReturnType<typeof buildPhaseSchedule>,
+) {
+  if (match.status !== MatchStatus.ACTIVE) {
+    return;
+  }
+
+  const phaseOneStarterUserId = match.phaseOneStarterUserId ?? chooseStableStarterUserId(match.userAId, match.userBId);
+  const phaseOneWarningAt = new Date(schedule.decisionDeadline.getTime() - PHASE_WARNING_LEAD_MS);
+  const phaseOneChatStarted = userMessages.length > 0;
+  const phaseOneBothContinue =
+    match.userADecision === ParticipantDecision.KEEP && match.userBDecision === ParticipantDecision.KEEP;
+
+  const phaseTwoResults = parseJsonList<JourneyPhaseTwoRoundResult>(match.phaseTwoResults);
+  const phaseTwoReady = match.phaseTwoStage === PhaseTwoStage.RESULT && phaseTwoResults.length > 0;
+  const phaseTwoCompatibility = phaseTwoReady
+    ? Math.round(
+        phaseTwoResults.reduce((sum, entry) => sum + entry.compatibility, 0) / phaseTwoResults.length,
+      )
+    : 0;
+  const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
+  const phaseThreeAnyLeave =
+    match.phaseThreeUserADecision === ParticipantDecision.DISCARD
+    || match.phaseThreeUserBDecision === ParticipantDecision.DISCARD;
+  const phaseThreeBothStay =
+    match.phaseThreeUserADecision === ParticipantDecision.KEEP
+    && match.phaseThreeUserBDecision === ParticipantDecision.KEEP;
+
+  if (
+    phaseOneStarterUserId
+    && !phaseOneChatStarted
+    && now >= match.scheduledFor
+    && now < schedule.decisionDeadline
+    && now >= phaseOneWarningAt
+  ) {
+    await sendJourneyNotificationToUser({
+      userId: phaseOneStarterUserId,
+      matchId: match.id,
+      kind: "phase-one-warning",
+      contextKey: `phase-one-warning:${match.id}:${phaseOneStarterUserId}`,
+      title: "Es droht ein Strafpunkt",
+      body: `Choice hat dich ausgewählt, den Chat mit ${getPartnerProfileName(match, phaseOneStarterUserId)} zu eröffnen. Wenn du heute nichts schreibst, droht ein Strafpunkt.`,
+      channelId: "fair-play",
+      data: {
+        type: "phase-one-warning",
+        matchId: match.id,
+      },
+    });
+  }
+
+  if (phaseOneBothContinue && now >= schedule.phaseTwoStart && now < schedule.phaseThreeStart) {
+    const phaseTwoStarterUserId = getPhaseTwoStarterUserId(match);
+    const phaseTwoPartnerUserId = getPhaseTwoPartnerUserId(match);
+
+    await Promise.allSettled([
+      sendJourneyNotificationToUser({
+        userId: phaseTwoStarterUserId,
+        matchId: match.id,
+        kind: "phase-two-start",
+        contextKey: `phase-two-start:${match.id}:${phaseTwoStarterUserId}`,
+        title: "Ihr seid jetzt in Phase 2",
+        body: "Du beginnst diese Runde. Beantworte zuerst alle 3 Fragen.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-two-start",
+          matchId: match.id,
+        },
+      }),
+      sendJourneyNotificationToUser({
+        userId: phaseTwoPartnerUserId,
+        matchId: match.id,
+        kind: "phase-two-start",
+        contextKey: `phase-two-start:${match.id}:${phaseTwoPartnerUserId}`,
+        title: "Ihr seid jetzt in Phase 2",
+        body: `${getParticipantProfileName(match, phaseTwoStarterUserId)} beginnt diese Runde. Danach bist du dran.`,
+        channelId: "phase-updates",
+        data: {
+          type: "phase-two-start",
+          matchId: match.id,
+        },
+      }),
+    ]);
+
+    if (!phaseTwoReady) {
+      const currentResponderUserId =
+        match.phaseTwoStage === PhaseTwoStage.PARTNER
+          ? getPhaseTwoPartnerUserId(match)
+          : phaseTwoStarterUserId;
+      const phaseTwoWarningAt = new Date(schedule.phaseThreeStart.getTime() - PHASE_WARNING_LEAD_MS);
+
+      if (now >= phaseTwoWarningAt && now < schedule.phaseThreeStart) {
+        await sendJourneyNotificationToUser({
+          userId: currentResponderUserId,
+          matchId: match.id,
+          kind: "phase-two-warning",
+          contextKey: `phase-two-warning:${match.id}:${currentResponderUserId}`,
+          title: "Es droht ein Strafpunkt",
+          body: "Du bist gerade mit Phase 2 dran. Wenn du jetzt nicht mitmachst, droht ein Strafpunkt.",
+          channelId: "fair-play",
+          data: {
+            type: "phase-two-warning",
+            matchId: match.id,
+          },
+        });
+      }
+    }
+  }
+
+  if (phaseTwoReady && phaseThreeQualified && now >= schedule.phaseThreeStart && now < schedule.phaseFourStart) {
+    await Promise.allSettled([
+      sendJourneyNotificationToUser({
+        userId: match.userAId,
+        matchId: match.id,
+        kind: "phase-three-start",
+        contextKey: `phase-three-start:${match.id}:${match.userAId}`,
+        title: "Ihr seid jetzt in Phase 3",
+        body: "Jetzt entscheidet ihr, ob ihr hier bleibt oder ein neues Match wollt.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-three-start",
+          matchId: match.id,
+        },
+      }),
+      sendJourneyNotificationToUser({
+        userId: match.userBId,
+        matchId: match.id,
+        kind: "phase-three-start",
+        contextKey: `phase-three-start:${match.id}:${match.userBId}`,
+        title: "Ihr seid jetzt in Phase 3",
+        body: "Jetzt entscheidet ihr, ob ihr hier bleibt oder ein neues Match wollt.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-three-start",
+          matchId: match.id,
+        },
+      }),
+    ]);
+
+    const phaseThreeReminderAt = new Date(schedule.phaseFourStart.getTime() - PHASE_WARNING_LEAD_MS);
+    if (now >= phaseThreeReminderAt && now < schedule.phaseFourStart) {
+      if (match.phaseThreeUserADecision === ParticipantDecision.UNDECIDED) {
+        await sendJourneyNotificationToUser({
+          userId: match.userAId,
+          matchId: match.id,
+          kind: "phase-three-reminder",
+          contextKey: `phase-three-reminder:${match.id}:${match.userAId}`,
+          title: "Treffe jetzt deine Entscheidung",
+          body: "Sage heute noch, ob du bleiben oder ein neues Match willst.",
+          channelId: "fair-play",
+          data: {
+            type: "phase-three-reminder",
+            matchId: match.id,
+          },
+        });
+      }
+
+      if (match.phaseThreeUserBDecision === ParticipantDecision.UNDECIDED) {
+        await sendJourneyNotificationToUser({
+          userId: match.userBId,
+          matchId: match.id,
+          kind: "phase-three-reminder",
+          contextKey: `phase-three-reminder:${match.id}:${match.userBId}`,
+          title: "Treffe jetzt deine Entscheidung",
+          body: "Sage heute noch, ob du bleiben oder ein neues Match willst.",
+          channelId: "fair-play",
+          data: {
+            type: "phase-three-reminder",
+            matchId: match.id,
+          },
+        });
+      }
+    }
+  }
+
+  if (phaseThreeQualified && phaseThreeBothStay && now >= schedule.phaseFourStart && now < schedule.phaseFiveStart) {
+    await Promise.allSettled([
+      sendJourneyNotificationToUser({
+        userId: match.userAId,
+        matchId: match.id,
+        kind: "phase-four-start",
+        contextKey: `phase-four-start:${match.id}:${match.userAId}`,
+        title: "Ihr seid jetzt in Phase 4",
+        body: "Choice pausiert euren Chat jetzt bewusst.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-four-start",
+          matchId: match.id,
+        },
+      }),
+      sendJourneyNotificationToUser({
+        userId: match.userBId,
+        matchId: match.id,
+        kind: "phase-four-start",
+        contextKey: `phase-four-start:${match.id}:${match.userBId}`,
+        title: "Ihr seid jetzt in Phase 4",
+        body: "Choice pausiert euren Chat jetzt bewusst.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-four-start",
+          matchId: match.id,
+        },
+      }),
+    ]);
+  }
+
+  if (phaseThreeQualified && phaseThreeBothStay && now >= schedule.phaseFiveStart) {
+    await Promise.allSettled([
+      sendJourneyNotificationToUser({
+        userId: match.userAId,
+        matchId: match.id,
+        kind: "phase-five-start",
+        contextKey: `phase-five-start:${match.id}:${match.userAId}`,
+        title: "Phase 5 ist jetzt da",
+        body: "Euer Choice Award wartet auf euch.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-five-start",
+          matchId: match.id,
+        },
+      }),
+      sendJourneyNotificationToUser({
+        userId: match.userBId,
+        matchId: match.id,
+        kind: "phase-five-start",
+        contextKey: `phase-five-start:${match.id}:${match.userBId}`,
+        title: "Phase 5 ist jetzt da",
+        body: "Euer Choice Award wartet auf euch.",
+        channelId: "phase-updates",
+        data: {
+          type: "phase-five-start",
+          matchId: match.id,
+        },
+      }),
+    ]);
+  }
+
+  if (phaseThreeAnyLeave) {
+    return;
+  }
 }
 
 function createResponseOptions(
@@ -876,9 +1177,16 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
 
     await Promise.allSettled(
       participantNotifications.map(({ recipientUserId, partnerName }) =>
-        sendPushNotificationToUser(recipientUserId, {
+        sendJourneyNotificationToUser({
+          userId: recipientUserId,
+          matchId: hydratedMatch.id,
+          kind: "match-release",
+          contextKey: `match-release:${hydratedMatch.id}:${recipientUserId}`,
           title: "Dein neues Match ist da",
-          body: `${partnerName} wurde gerade für dich freigeschaltet.`,
+          body:
+            hydratedMatch.phaseOneStarterUserId === recipientUserId
+              ? `${partnerName} wurde gerade für dich freigeschaltet. Choice hat dich ausgewählt, zuerst zu schreiben.`
+              : `${partnerName} wurde gerade für dich freigeschaltet.`,
           channelId: "match-releases",
           data: {
             type: "match-release",
@@ -1076,6 +1384,8 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
   const schedule = buildPhaseSchedule(match.scheduledFor);
   const chat = match.chat ?? await ensureChatForMatch(match);
   const userMessages = chat.messages.filter((message) => message.kind !== MessageKind.SYSTEM);
+
+  await syncJourneyPhaseNotifications(match, now, userMessages, schedule);
 
   if (
     match.status === MatchStatus.ACTIVE
