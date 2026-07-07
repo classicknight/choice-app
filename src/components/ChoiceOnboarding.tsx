@@ -125,8 +125,8 @@ type RemoteAccountState = Awaited<ReturnType<typeof fetchRemoteAccountState>>;
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
 const PHASE_WARNING_LEAD_MS = 5 * 60 * 1000;
-const MATCH_RELEASE_HOUR = 14;
-const MATCH_RELEASE_MINUTE = 30;
+const MATCH_RELEASE_HOUR = 15;
+const MATCH_RELEASE_MINUTE = 0;
 const PHASE_INTERVAL_MINUTES = 20;
 const LEGAL_URLS = {
   impressum: "https://choice-dating.app/impressum",
@@ -699,7 +699,7 @@ function buildProfileFromDemoProfile(entry: DemoProfile): RegistrationProfile {
     interests: [...entry.interests],
     greenFlags: [...entry.greenFlags],
     dealbreakers: [...entry.dealbreakers],
-    matchTime: "14:30",
+    matchTime: "15:00",
     conversationStyle: "direct",
     consent: true,
   };
@@ -1778,7 +1778,7 @@ function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyState["partn
     ageRangeMax: partner.ageRangeMax,
     greenFlags: partner.greenFlags,
     dealbreakers: partner.dealbreakers,
-    time: partner.matchTime || "Heute 14:30",
+    time: partner.matchTime || "Heute 15:00",
   };
 }
 
@@ -2075,7 +2075,7 @@ function HeroArtwork() {
       </View>
 
       <View style={styles.introPreviewCard}>
-        <Text style={styles.introPreviewLabel}>Morgen um 14:30</Text>
+        <Text style={styles.introPreviewLabel}>Morgen um 15:00</Text>
         <Text style={styles.introPreviewTitle}>1 gutes Match. Kein Feed.</Text>
         <Text style={styles.introPreviewText}>Kurz einrichten. Danach kommt dein Match jeden Tag automatisch.</Text>
       </View>
