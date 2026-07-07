@@ -154,10 +154,13 @@ function setTimeOfDay(date: Date, hour: number, minute: number) {
 function getNextMatchReleaseAt(now: Date) {
   const release = new Date(now);
   release.setHours(MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE, 0, 0);
+  const currentDecisionDeadline = addMinutes(release, PHASE_INTERVAL_MINUTES);
 
-  if (now >= release) {
-    release.setDate(release.getDate() + 1);
+  if (now < currentDecisionDeadline) {
+    return release;
   }
+
+  release.setDate(release.getDate() + 1);
 
   return release;
 }
@@ -1369,6 +1372,27 @@ async function findJourneyMatchForUser(userId: string, now: Date): Promise<Match
   });
 
   if (pending) {
+    const currentCycleRelease = setTimeOfDay(now, MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE);
+    const currentCycleDecisionDeadline = addMinutes(currentCycleRelease, PHASE_INTERVAL_MINUTES);
+
+    if (
+      pending.scheduledFor.getTime() > now.getTime()
+      && now >= currentCycleRelease
+      && now < currentCycleDecisionDeadline
+    ) {
+      await prisma.match.update({
+        where: { id: pending.id },
+        data: {
+          scheduledFor: currentCycleRelease,
+        },
+      });
+
+      const shiftedPending = await getMatchById(pending.id);
+      if (shiftedPending) {
+        return activatePendingMatch(shiftedPending, now);
+      }
+    }
+
     if (pending.scheduledFor.getTime() <= now.getTime()) {
       return activatePendingMatch(pending, now);
     }

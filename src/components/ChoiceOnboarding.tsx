@@ -574,8 +574,9 @@ function addDaysAtSameTime(date: Date, days: number) {
 
 function createInitialReleaseAt(now: Date) {
   const release = getMatchReleaseTime(now);
+  const currentDecisionDeadline = addMinutes(release, PHASE_INTERVAL_MINUTES);
 
-  if (now >= release) {
+  if (now >= currentDecisionDeadline) {
     release.setDate(release.getDate() + 1);
   }
 
