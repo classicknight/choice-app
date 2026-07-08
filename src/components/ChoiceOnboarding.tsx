@@ -2706,6 +2706,20 @@ function OverviewScreen({
   const phaseOneWindowOpen = currentTime >= matchReleaseTime && currentTime < decisionDeadline;
   const phaseOneBeforeRelease = currentTime < matchReleaseTime;
   const phaseOneClosed = currentTime >= decisionDeadline;
+  const phaseOneViewerSelectedContinue = phaseOneViewerDecision === "continue";
+  const phaseOneViewerSelectedNewMatch = phaseOneViewerDecision === "new-match";
+  const phaseOnePartnerSelectedContinue = phaseOnePartnerDecision === "continue";
+  const phaseOnePartnerSelectedNewMatch = phaseOnePartnerDecision === "new-match";
+  const phaseOneWaitingOnPartner =
+    phaseOneWindowOpen
+    && phaseOneViewerSelectedContinue
+    && !phaseOnePartnerSelectedContinue
+    && !phaseOnePartnerSelectedNewMatch;
+  const phaseOnePartnerWaitingOnViewer =
+    phaseOneWindowOpen
+    && !phaseOneViewerSelectedContinue
+    && !phaseOneViewerSelectedNewMatch
+    && phaseOnePartnerSelectedContinue;
   const currentReleaseKey = journeyReleaseAt ?? matchReleaseTime.toISOString();
   const notificationSyncMinute = Math.floor(currentTime.getTime() / 60_000);
   const showFreshMatchNotice =
@@ -2865,6 +2879,14 @@ function OverviewScreen({
   const chatHintText = hasActiveChat
     ? phaseOneBeforeRelease
       ? `Dein erstes Match öffnet ${nextMatchReleaseLabel}.`
+      : phaseOneViewerSelectedNewMatch
+        ? "Du hast Neues Match gewählt. Für dich bleibt dieser Chat jetzt zu."
+      : phaseOnePartnerSelectedNewMatch && !phaseTwoChatUnlocked && !phaseOneClosed
+        ? `${featuredProfile.firstName} hat Neues Match gewählt. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} schreibt nicht weiter und dieses Match endet um ${decisionClockLabel}.`
+      : phaseOneWaitingOnPartner
+        ? `Du hast Phase 2 gewählt. Choice wartet jetzt noch bis ${decisionClockLabel} auf ${featuredProfile.firstName}.`
+      : phaseOnePartnerWaitingOnViewer
+        ? `${featuredProfile.firstName} hat Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 heute um ${phaseTwoClockLabel}.`
       : phaseFiveUnlocked
         ? "Der Choice Award ist da. Ihr habt alle fünf Phasen geschafft."
         : phaseFourWindowLocked
@@ -2944,6 +2966,14 @@ function OverviewScreen({
   const chatEmptyStateTitle = hasActiveChat && !phaseOneChatStarted
     ? phaseOneBeforeRelease
       ? `Dein erstes Match kommt ${nextMatchReleaseLabel}.`
+      : phaseOneViewerSelectedNewMatch
+        ? "Du hast Neues Match gewählt."
+      : phaseOnePartnerSelectedNewMatch && !phaseTwoChatUnlocked && !phaseOneClosed
+        ? `${featuredProfile.firstName} möchte kein Phase 2.`
+      : phaseOneWaitingOnPartner
+        ? "Du wartest auf die Entscheidung der anderen Person."
+      : phaseOnePartnerWaitingOnViewer
+        ? `${featuredProfile.firstName} wartet auf deine Entscheidung.`
       : phaseFiveUnlocked
         ? "Der Choice Award ist da."
         : phaseFourWindowLocked
@@ -2977,6 +3007,14 @@ function OverviewScreen({
   const chatEmptyStateText = hasActiveChat && !phaseOneChatStarted
     ? phaseOneBeforeRelease
       ? `Bis ${nextMatchReleaseLabel} bleibt dieser Chat noch geschlossen. Choice stellt euch erst dann live vor und legt fest, wer die erste Nachricht schreibt.`
+      : phaseOneViewerSelectedNewMatch
+        ? "Du hast für morgen ein neues Match gewählt. Für dich bleibt dieser Chat jetzt geschlossen."
+      : phaseOnePartnerSelectedNewMatch && !phaseTwoChatUnlocked && !phaseOneClosed
+        ? `${featuredProfile.firstName} hat entschieden, morgen lieber ein neues Match zu nehmen. Du kannst bis ${decisionClockLabel} noch schreiben, aber ${featuredProfile.firstName} wird nicht mehr antworten.`
+      : phaseOneWaitingOnPartner
+        ? `Du hast bereits Phase 2 gewählt. Choice wartet jetzt noch bis ${decisionClockLabel} auf die Entscheidung von ${featuredProfile.firstName}.`
+      : phaseOnePartnerWaitingOnViewer
+        ? `${featuredProfile.firstName} hat bereits Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 heute um ${phaseTwoClockLabel}.`
       : phaseFiveUnlocked
         ? "Ihr habt die letzte Phase erreicht. Choice zeigt euch jetzt den Award für das, was zwischen euch geblieben ist."
         : phaseFourWindowLocked
@@ -3112,6 +3150,12 @@ function OverviewScreen({
       return;
     }
 
+    const previousDecision = phaseOneDecisions[phaseOneViewerUserId];
+    setPhaseOneDecisions((current) => ({
+      ...current,
+      [phaseOneViewerUserId]: nextDecision,
+    }));
+
     if (isServerJourneyMode && journeyOwnerUserId) {
       void (async () => {
         try {
@@ -3121,22 +3165,33 @@ function OverviewScreen({
           });
           applyRemoteJourneyState(journey);
         } catch {
-          // Keep the existing choice visible if the API is temporarily unavailable.
+          setPhaseOneDecisions((current) => {
+            const next = { ...current };
+
+            if (!previousDecision) {
+              delete next[phaseOneViewerUserId];
+            } else {
+              next[phaseOneViewerUserId] = previousDecision;
+            }
+
+            return next;
+          });
         }
       })();
       return;
     }
-
-    setPhaseOneDecisions((current) => ({
-      ...current,
-      [phaseOneViewerUserId]: nextDecision,
-    }));
   }
 
   function setViewerPhaseThreeDecision(nextDecision: "stay" | "new-match") {
     if (!phaseThreeDecisionOpen) {
       return;
     }
+
+    const previousDecision = phaseThreeDecisions[phaseOneViewerUserId];
+    setPhaseThreeDecisions((current) => ({
+      ...current,
+      [phaseOneViewerUserId]: nextDecision,
+    }));
 
     if (isServerJourneyMode && journeyOwnerUserId) {
       void (async () => {
@@ -3147,16 +3202,21 @@ function OverviewScreen({
           });
           applyRemoteJourneyState(journey);
         } catch {
-          // Keep the current UI state until the next refresh if the API fails.
+          setPhaseThreeDecisions((current) => {
+            const next = { ...current };
+
+            if (!previousDecision) {
+              delete next[phaseOneViewerUserId];
+            } else {
+              next[phaseOneViewerUserId] = previousDecision;
+            }
+
+            return next;
+          });
         }
       })();
       return;
     }
-
-    setPhaseThreeDecisions((current) => ({
-      ...current,
-      [phaseOneViewerUserId]: nextDecision,
-    }));
   }
 
   function selectPhaseTwoAnswerA(answer: PhaseTwoAnswerBranch) {
