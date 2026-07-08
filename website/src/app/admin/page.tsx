@@ -12,6 +12,8 @@ type AdminSummary = {
   pausedUsers: number;
   openReports: number;
   activeMatches: number;
+  upcomingMatches: number;
+  nextPlannedMatches: number;
 };
 
 type AdminUser = {
@@ -44,8 +46,17 @@ type AdminMatch = {
   activatedAt: string | null;
   closedAt: string | null;
   compatibility: number | null;
+  phaseOneStarterUserId: string | null;
+  phaseOneStarterName: string | null;
+  phaseTwoStage: string | null;
+  phaseTwoStarterUserId: string | null;
+  phaseTwoStarterName: string | null;
+  phaseTwoPartnerUserId: string | null;
+  phaseTwoPartnerName: string | null;
   userADecision: string;
   userBDecision: string;
+  phaseThreeUserADecision: string;
+  phaseThreeUserBDecision: string;
   userA: {
     id: string;
     firstName: string | null;
@@ -91,6 +102,9 @@ type DashboardPayload = {
   summary: AdminSummary;
   users: AdminUser[];
   matches: AdminMatch[];
+  upcomingMatches: AdminMatch[];
+  nextPlannedReleaseAt: string | null;
+  nextPlannedMatches: AdminMatch[];
   reports: AdminReport[];
 };
 
@@ -119,6 +133,34 @@ function formatDate(value: string | null) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatParticipantDecision(value: string) {
+  if (value === "KEEP") {
+    return "bleibt";
+  }
+
+  if (value === "DISCARD") {
+    return "neues Match";
+  }
+
+  return "offen";
+}
+
+function formatPhaseTwoStage(value: string | null) {
+  if (value === "STARTER") {
+    return "Starter antwortet";
+  }
+
+  if (value === "PARTNER") {
+    return "Partner antwortet";
+  }
+
+  if (value === "RESULT") {
+    return "Ergebnis da";
+  }
+
+  return "—";
 }
 
 function SummaryCard({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "alert" | "accent" }) {
@@ -387,6 +429,8 @@ export default function AdminPage() {
               <SummaryCard label="Premium" value={data.summary.premiumUsers} tone="accent" />
               <SummaryCard label="Bezahlt" value={data.summary.payingUsers} tone="accent" />
               <SummaryCard label="Aktive Matches" value={data.summary.activeMatches} />
+              <SummaryCard label="Kommende Matches" value={data.summary.upcomingMatches} />
+              <SummaryCard label="Nächster Slot" value={data.summary.nextPlannedMatches} />
               <SummaryCard label="Offene Meldungen" value={data.summary.openReports} tone="alert" />
               <SummaryCard label="Pausierte Konten" value={data.summary.pausedUsers} tone="alert" />
             </section>
@@ -464,6 +508,68 @@ export default function AdminPage() {
             <section className={styles.section}>
               <div className={styles.sectionHeader}>
                 <div>
+                  <p className={styles.sectionEyebrow}>Als Nächstes</p>
+                  <h2 className={styles.sectionTitle}>Was als Nächstes geplant ist</h2>
+                </div>
+              </div>
+
+              {data.nextPlannedMatches.length ? (
+                <>
+                  <p className={styles.sectionHint}>
+                    Nächste Freigabe: {formatDate(data.nextPlannedReleaseAt)}
+                  </p>
+                  <div className={styles.tableWrap}>
+                    <table className={styles.table}>
+                      <thead>
+                        <tr>
+                          <th>Status</th>
+                          <th>Match</th>
+                          <th>Startperson</th>
+                          <th>Phase 1</th>
+                          <th>Phase 3</th>
+                          <th>Phase 2</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.nextPlannedMatches.map((match) => (
+                          <tr key={`planned-${match.id}`}>
+                            <td>{match.status}</td>
+                            <td>
+                              {(match.userA.firstName || match.userA.phoneNumber || "User A")} ×{" "}
+                              {(match.userB.firstName || match.userB.phoneNumber || "User B")}
+                              <div className={styles.cellSubline}>{formatDate(match.scheduledFor)}</div>
+                            </td>
+                            <td>{match.phaseOneStarterName ?? "—"}</td>
+                            <td>
+                              <div>{match.userA.firstName || "User A"}: {formatParticipantDecision(match.userADecision)}</div>
+                              <div className={styles.cellSubline}>{match.userB.firstName || "User B"}: {formatParticipantDecision(match.userBDecision)}</div>
+                            </td>
+                            <td>
+                              <div>{match.userA.firstName || "User A"}: {formatParticipantDecision(match.phaseThreeUserADecision)}</div>
+                              <div className={styles.cellSubline}>{match.userB.firstName || "User B"}: {formatParticipantDecision(match.phaseThreeUserBDecision)}</div>
+                            </td>
+                            <td>
+                              {formatPhaseTwoStage(match.phaseTwoStage)}
+                              {match.phaseTwoStage ? (
+                                <div className={styles.cellSubline}>
+                                  {match.phaseTwoStarterName ?? "—"} → {match.phaseTwoPartnerName ?? "—"}
+                                </div>
+                              ) : null}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <p className={styles.emptyState}>Aktuell ist noch kein kommender Match-Slot vorbereitet.</p>
+              )}
+            </section>
+
+            <section className={styles.section}>
+              <div className={styles.sectionHeader}>
+                <div>
                   <p className={styles.sectionEyebrow}>Matches</p>
                   <h2 className={styles.sectionTitle}>Wer gerade mit wem gematcht ist</h2>
                 </div>
@@ -477,7 +583,10 @@ export default function AdminPage() {
                       <th>Match</th>
                       <th>Geplant</th>
                       <th>Kompatibilität</th>
-                      <th>Entscheidung</th>
+                      <th>Startperson</th>
+                      <th>Phase 1</th>
+                      <th>Phase 3</th>
+                      <th>Phase 2</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -491,7 +600,23 @@ export default function AdminPage() {
                         <td>{formatDate(match.scheduledFor)}</td>
                         <td>{match.compatibility !== null ? `${Math.round(match.compatibility)}%` : "—"}</td>
                         <td>
-                          {match.userADecision}/{match.userBDecision}
+                          {match.phaseOneStarterName ?? "—"}
+                        </td>
+                        <td>
+                          <div>{match.userA.firstName || "User A"}: {formatParticipantDecision(match.userADecision)}</div>
+                          <div className={styles.cellSubline}>{match.userB.firstName || "User B"}: {formatParticipantDecision(match.userBDecision)}</div>
+                        </td>
+                        <td>
+                          <div>{match.userA.firstName || "User A"}: {formatParticipantDecision(match.phaseThreeUserADecision)}</div>
+                          <div className={styles.cellSubline}>{match.userB.firstName || "User B"}: {formatParticipantDecision(match.phaseThreeUserBDecision)}</div>
+                        </td>
+                        <td>
+                          {formatPhaseTwoStage(match.phaseTwoStage)}
+                          {match.phaseTwoStage ? (
+                            <div className={styles.cellSubline}>
+                              {match.phaseTwoStarterName ?? "—"} → {match.phaseTwoPartnerName ?? "—"}
+                            </div>
+                          ) : null}
                         </td>
                       </tr>
                     ))}

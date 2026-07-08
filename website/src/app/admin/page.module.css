@@ -101,10 +101,15 @@
 
 .authHint,
 .emptyState,
-.resolutionText {
+.resolutionText,
+.sectionHint {
   color: rgba(229, 221, 239, 0.68);
   font-size: 0.92rem;
   line-height: 1.6;
+}
+
+.sectionHint {
+  margin-bottom: 16px;
 }
 
 .error,
@@ -291,7 +296,7 @@
 .table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 900px;
+  min-width: 1180px;
 }
 
 .table th,

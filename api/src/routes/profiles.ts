@@ -38,17 +38,16 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
 
     const user = await prisma.user.findUnique({
       where: { id: params.data.userId },
-      select: {
-        id: true,
-        isPremium: true,
-        premiumActivatedAt: true,
-        penaltyPoints: true,
-        suspendedAt: true,
-        bannedAt: true,
-        paidMatchCredits: true,
-        frozenPaidMatchCredits: true,
-        forfeitedPaidMatchCredits: true,
-        lastPaidMatchPackageAt: true,
+      include: {
+        systemPenaltyEvents: {
+          orderBy: { createdAt: "desc" },
+          take: 5,
+        },
+        reportsReceived: {
+          where: { status: "CONFIRMED" },
+          orderBy: { reviewedAt: "desc" },
+          take: 5,
+        },
       },
     });
 
@@ -60,7 +59,36 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.send({
       ok: true,
-      account: mapAccountState(user),
+      account: {
+        ...mapAccountState(user),
+        recentPenalties: [
+          ...user.systemPenaltyEvents.map((event) => ({
+            id: event.id,
+            createdAt: event.createdAt,
+            source: "system" as const,
+            reasonCode: event.reason,
+            reasonLabel:
+              event.reason === "PHASE_ONE_NOT_STARTED"
+                ? "Du hast nicht geschrieben, obwohl Choice dich zum Starten ausgewählt hat."
+                : event.reason === "PHASE_TWO_NOT_PLAYED"
+                  ? "Du hast Phase 2 nicht rechtzeitig gespielt."
+                  : event.note?.trim() || "Systemseitiger Strafpunkt",
+            note: event.note ?? null,
+            reportId: null,
+          })),
+          ...user.reportsReceived.map((report) => ({
+            id: `report:${report.id}`,
+            createdAt: report.reviewedAt ?? report.updatedAt,
+            source: "report" as const,
+            reasonCode: "REPORT_CONFIRMED",
+            reasonLabel: report.reason,
+            note: report.reviewerNote ?? report.details ?? null,
+            reportId: report.id,
+          })),
+        ]
+          .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+          .slice(0, 5),
+      },
     });
   });
 

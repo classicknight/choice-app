@@ -77,6 +77,15 @@ type RemoteAccountStateResult = {
     forfeitedPaidMatchCredits: number;
     lastPaidMatchPackageAt: string | null;
     hasPaidMatchAccess: boolean;
+    recentPenalties: Array<{
+      id: string;
+      createdAt: string;
+      source: "system" | "report";
+      reasonCode: string;
+      reasonLabel: string;
+      note: string | null;
+      reportId: string | null;
+    }>;
   };
 };
 

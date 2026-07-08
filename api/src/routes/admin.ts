@@ -76,6 +76,23 @@ function resolveNumericField(value: unknown, fallback: number) {
   return typeof value === "number" ? value : fallback;
 }
 
+function getMatchParticipantLabel(match: {
+  userAId: string;
+  userBId: string;
+  userA: { profile?: { firstName: string } | null; phoneNumber: string | null };
+  userB: { profile?: { firstName: string } | null; phoneNumber: string | null };
+}, userId: string) {
+  if (match.userAId === userId) {
+    return match.userA.profile?.firstName ?? match.userA.phoneNumber ?? "User A";
+  }
+
+  if (match.userBId === userId) {
+    return match.userB.profile?.firstName ?? match.userB.phoneNumber ?? "User B";
+  }
+
+  return "Unbekannt";
+}
+
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/admin/overview", async (request, reply) => {
     if (!requireAdminAccess(request, reply)) {
@@ -129,6 +146,46 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     ]);
 
     const userSummaries = users.map(mapUserSummary);
+    const now = new Date();
+    const upcomingMatches = matches.filter((match) => match.status === "PENDING" && match.scheduledFor >= now);
+    const nextPlannedReleaseAt = upcomingMatches
+      .map((match) => match.scheduledFor.getTime())
+      .sort((left, right) => left - right)[0] ?? null;
+    const nextPlannedMatches = nextPlannedReleaseAt === null
+      ? []
+      : upcomingMatches.filter((match) => match.scheduledFor.getTime() === nextPlannedReleaseAt);
+    const mapMatch = (match: (typeof matches)[number]) => ({
+      id: match.id,
+      status: match.status,
+      scheduledFor: match.scheduledFor,
+      activatedAt: match.activatedAt,
+      closedAt: match.closedAt,
+      compatibility: match.compatibility,
+      phaseOneStarterUserId: match.phaseOneStarterUserId,
+      phaseOneStarterName: match.phaseOneStarterUserId ? getMatchParticipantLabel(match, match.phaseOneStarterUserId) : null,
+      phaseTwoStage: match.phaseTwoStage,
+      phaseTwoStarterUserId: match.phaseTwoStarterUserId,
+      phaseTwoStarterName: match.phaseTwoStarterUserId ? getMatchParticipantLabel(match, match.phaseTwoStarterUserId) : null,
+      phaseTwoPartnerUserId: match.phaseTwoPartnerUserId,
+      phaseTwoPartnerName: match.phaseTwoPartnerUserId ? getMatchParticipantLabel(match, match.phaseTwoPartnerUserId) : null,
+      userADecision: match.userADecision,
+      userBDecision: match.userBDecision,
+      phaseThreeUserADecision: match.phaseThreeUserADecision,
+      phaseThreeUserBDecision: match.phaseThreeUserBDecision,
+      rationale: match.rationale,
+      userA: {
+        id: match.userA.id,
+        firstName: match.userA.profile?.firstName ?? null,
+        city: match.userA.profile?.city ?? null,
+        phoneNumber: match.userA.phoneNumber,
+      },
+      userB: {
+        id: match.userB.id,
+        firstName: match.userB.profile?.firstName ?? null,
+        city: match.userB.profile?.city ?? null,
+        phoneNumber: match.userB.phoneNumber,
+      },
+    });
 
     return reply.send({
       ok: true,
@@ -140,31 +197,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         pausedUsers: users.filter((user) => isAccountPaused(user)).length,
         openReports: reports.filter((report) => report.status === "OPEN").length,
         activeMatches: matches.filter((match) => match.status === "ACTIVE").length,
+        upcomingMatches: upcomingMatches.length,
+        nextPlannedMatches: nextPlannedMatches.length,
       },
       users: userSummaries,
-      matches: matches.map((match) => ({
-        id: match.id,
-        status: match.status,
-        scheduledFor: match.scheduledFor,
-        activatedAt: match.activatedAt,
-        closedAt: match.closedAt,
-        compatibility: match.compatibility,
-        userADecision: match.userADecision,
-        userBDecision: match.userBDecision,
-        rationale: match.rationale,
-        userA: {
-          id: match.userA.id,
-          firstName: match.userA.profile?.firstName ?? null,
-          city: match.userA.profile?.city ?? null,
-          phoneNumber: match.userA.phoneNumber,
-        },
-        userB: {
-          id: match.userB.id,
-          firstName: match.userB.profile?.firstName ?? null,
-          city: match.userB.profile?.city ?? null,
-          phoneNumber: match.userB.phoneNumber,
-        },
-      })),
+      matches: matches.map(mapMatch),
+      upcomingMatches: upcomingMatches.map(mapMatch),
+      nextPlannedReleaseAt: nextPlannedReleaseAt ? new Date(nextPlannedReleaseAt) : null,
+      nextPlannedMatches: nextPlannedMatches.map(mapMatch),
       reports: reports.map((report) => ({
         id: report.id,
         createdAt: report.createdAt,

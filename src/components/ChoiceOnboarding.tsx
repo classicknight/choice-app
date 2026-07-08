@@ -590,6 +590,13 @@ function formatClockTime(value: Date) {
   });
 }
 
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("de-DE", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+
 function formatDurationLabel(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -2556,6 +2563,7 @@ function OverviewScreen({
   const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
   const forfeitedPaidMatchCredits = accountState?.forfeitedPaidMatchCredits ?? 0;
   const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
+  const recentPenaltyEntries = accountState?.recentPenalties ?? [];
   const profileAge = calculateAgeFromProfile(profile);
   const profileSelfDescription = profile.selfDescription ? getOptionLabel(selfDescriptionOptions, profile.selfDescription) : "";
   const profileIdentity = profile.identity ? getOptionLabel(identityOptions, profile.identity) : "";
@@ -5125,6 +5133,25 @@ function OverviewScreen({
               <Text style={styles.penaltyReasonText}>{reason}</Text>
             </View>
           ))}
+        </View>
+
+        <View style={styles.penaltyHistoryBlock}>
+          <Text style={styles.penaltyProgressTitle}>Deine letzten Strafpunkte</Text>
+          {recentPenaltyEntries.length ? (
+            <View style={styles.penaltyHistoryList}>
+              {recentPenaltyEntries.map((entry) => (
+                <View key={entry.id} style={styles.penaltyHistoryItem}>
+                  <Text style={styles.penaltyHistoryReason}>{entry.reasonLabel}</Text>
+                  <Text style={styles.penaltyHistoryMeta}>
+                    {formatDateTime(entry.createdAt)}
+                    {entry.note ? ` · ${entry.note}` : ""}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : (
+            <Text style={styles.penaltyFootnote}>Bisher wurde dir noch kein Strafpunkt gegeben.</Text>
+          )}
         </View>
       </View>
     );
@@ -8029,6 +8056,32 @@ const styles = StyleSheet.create({
     color: "#d8bcc8",
     fontSize: 13,
     lineHeight: 19,
+  },
+  penaltyHistoryBlock: {
+    gap: 10,
+    marginTop: 4,
+  },
+  penaltyHistoryList: {
+    gap: 10,
+  },
+  penaltyHistoryItem: {
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    gap: 4,
+  },
+  penaltyHistoryReason: {
+    color: "#fff0f6",
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
+  penaltyHistoryMeta: {
+    color: "#b798aa",
+    fontSize: 12,
+    lineHeight: 17,
   },
   moderationHeaderRow: {
     flexDirection: "row",
