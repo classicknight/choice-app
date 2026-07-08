@@ -122,6 +122,14 @@ type PhaseTwoRoundResult = {
 
 type RemoteAccountState = Awaited<ReturnType<typeof fetchRemoteAccountState>>;
 
+type RememberedSessionMatchState = {
+  hasMatch: boolean;
+  badgeLabel: string | null;
+  detailLabel: string | null;
+  partnerName: string | null;
+  sortTime: number;
+};
+
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
 const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
@@ -598,6 +606,52 @@ function formatMessageTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function getJourneyPhaseLabel(journey: RemoteJourneyState, now = new Date()) {
+  const releaseAt = journey.releaseAt ? new Date(journey.releaseAt) : null;
+  const phaseTwoStartAt = journey.phaseTwoStartAt ? new Date(journey.phaseTwoStartAt) : null;
+  const phaseThreeStartAt = journey.phaseThreeStartAt ? new Date(journey.phaseThreeStartAt) : null;
+  const phaseFourStartAt = journey.phaseFourStartAt ? new Date(journey.phaseFourStartAt) : null;
+  const phaseFiveStartAt = journey.phaseFiveStartAt ? new Date(journey.phaseFiveStartAt) : null;
+
+  if (releaseAt && now < releaseAt) {
+    return `Match um ${formatClockTime(releaseAt)}`;
+  }
+
+  if (phaseFiveStartAt && now >= phaseFiveStartAt) {
+    return "Phase 5 offen";
+  }
+
+  if (phaseFourStartAt && now >= phaseFourStartAt) {
+    return "Phase 4 aktiv";
+  }
+
+  if (phaseThreeStartAt && now >= phaseThreeStartAt) {
+    return "Phase 3 aktiv";
+  }
+
+  if (phaseTwoStartAt && now >= phaseTwoStartAt) {
+    return "Phase 2 aktiv";
+  }
+
+  return "Phase 1 aktiv";
+}
+
+function summarizeRememberedSessionMatch(journey: RemoteJourneyState, now = new Date()): RememberedSessionMatchState {
+  const partnerName = journey.partner?.firstName?.trim() || null;
+  const statusSupportsMatch = journey.status === "PENDING" || journey.status === "ACTIVE" || journey.status === "KEPT";
+  const hasMatch = Boolean(journey.matchId && journey.partner && statusSupportsMatch);
+  const releaseAt = journey.releaseAt ? new Date(journey.releaseAt) : null;
+  const phaseLabel = hasMatch ? getJourneyPhaseLabel(journey, now) : null;
+
+  return {
+    hasMatch,
+    badgeLabel: hasMatch ? (releaseAt && now < releaseAt ? "Match geplant" : "Match live") : null,
+    detailLabel: hasMatch ? [partnerName ? `Mit ${partnerName}` : null, phaseLabel].filter(Boolean).join(" • ") : null,
+    partnerName,
+    sortTime: releaseAt ? releaseAt.getTime() : Number.MAX_SAFE_INTEGER,
+  };
 }
 
 function formatDurationLabel(milliseconds: number) {
@@ -5309,6 +5363,29 @@ function OverviewScreen({
           Choice hat {featuredProfile.firstName} jetzt für dich geöffnet. Du solltest dazu auch eine Benachrichtigung auf dein Handy bekommen haben.
         </Text>
 
+        <View style={styles.matchReleaseProfilePreview}>
+          <Image source={{ uri: featuredProfile.imageUri }} style={styles.matchReleaseProfileImage} />
+          <View style={styles.matchReleaseProfileCopy}>
+            <Text style={styles.matchReleaseProfileName}>
+              {featuredProfile.firstName}, {featuredProfile.age}
+            </Text>
+            <Text style={styles.matchReleaseProfileMeta}>{featuredProfileMeta}</Text>
+            <Text style={styles.matchReleaseProfileTagline}>
+              {featuredProfile.tagline || `${featuredProfile.firstName} ist jetzt dein Match fuer heute.`}
+            </Text>
+          </View>
+        </View>
+
+        {choiceMatchReasons.length ? (
+          <View style={styles.matchReleaseReasonList}>
+            {choiceMatchReasons.slice(0, 2).map((reason) => (
+              <Text key={reason.label} style={styles.matchReleaseReasonText}>
+                • {reason.text}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
         <View style={styles.matchReleaseNoticeActions}>
           <Pressable onPress={() => onSelectTab("match")} style={styles.matchReleaseNoticeGhostButton}>
             <Text style={styles.matchReleaseNoticeGhostText}>Zum Match</Text>
@@ -5910,6 +5987,7 @@ export function ChoiceOnboarding() {
   const [accountActionMessage, setAccountActionMessage] = useState<string | null>(null);
   const [rememberedSessions, setRememberedSessions] = useState<PersistedSession[]>([]);
   const [showAccountSwitcher, setShowAccountSwitcher] = useState(false);
+  const [rememberedSessionMatchStates, setRememberedSessionMatchStates] = useState<Record<string, RememberedSessionMatchState>>({});
 
   const currentScreen = screens[screenIndex];
   const editingProfileScreenIndex =
@@ -6032,10 +6110,29 @@ export function ChoiceOnboarding() {
       ].filter((entry) => entry.value),
     [identityLabel, intentLabel, profile.ageRangeMax, profile.ageRangeMin, profile.city, profile.lookingFor, pronounLabel, selfDescriptionLabel],
   );
-  const alternateRememberedSessions = useMemo(
-    () => rememberedSessions.filter((entry) => entry.userId !== verifiedUserId),
-    [rememberedSessions, verifiedUserId],
-  );
+  const alternateRememberedSessions = useMemo(() => {
+    const filtered = rememberedSessions.filter((entry) => entry.userId !== verifiedUserId);
+
+    return [...filtered].sort((sessionA, sessionB) => {
+      const matchStateA = rememberedSessionMatchStates[sessionA.userId];
+      const matchStateB = rememberedSessionMatchStates[sessionB.userId];
+      const rankA = matchStateA?.hasMatch ? 1 : 0;
+      const rankB = matchStateB?.hasMatch ? 1 : 0;
+
+      if (rankA !== rankB) {
+        return rankB - rankA;
+      }
+
+      const timeA = matchStateA?.sortTime ?? Number.MAX_SAFE_INTEGER;
+      const timeB = matchStateB?.sortTime ?? Number.MAX_SAFE_INTEGER;
+
+      if (timeA !== timeB) {
+        return timeA - timeB;
+      }
+
+      return new Date(sessionB.savedAt).getTime() - new Date(sessionA.savedAt).getTime();
+    });
+  }, [rememberedSessionMatchStates, rememberedSessions, verifiedUserId]);
 
   const displayScreenTitle = useMemo(() => {
     if (currentScreen.kind === "phone" && entryMode === "signin") {
@@ -6217,6 +6314,47 @@ export function ChoiceOnboarding() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const sessionsToInspect = rememberedSessions.filter((entry) => entry.userId !== verifiedUserId);
+
+    if (!showAccountSwitcher || !sessionsToInspect.length) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadRememberedSessionMatches() {
+      const nextEntries = await Promise.all(
+        sessionsToInspect.map(async (session) => {
+          try {
+            const journey = await fetchRemoteJourney(session.userId);
+            return [session.userId, summarizeRememberedSessionMatch(journey)] as const;
+          } catch {
+            return [session.userId, {
+              hasMatch: false,
+              badgeLabel: null,
+              detailLabel: null,
+              partnerName: null,
+              sortTime: Number.MAX_SAFE_INTEGER,
+            }] as const;
+          }
+        }),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setRememberedSessionMatchStates(Object.fromEntries(nextEntries));
+    }
+
+    void loadRememberedSessionMatches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rememberedSessions, showAccountSwitcher, verifiedUserId]);
 
   useEffect(() => {
     if (!isSessionHydrated || currentSurface !== "overview" || !verifiedUserId || !profile.firstName.trim()) {
@@ -7547,6 +7685,7 @@ export function ChoiceOnboarding() {
                 {alternateRememberedSessions.length ? (
                   alternateRememberedSessions.map((session) => {
                     const sessionName = session.profile.firstName.trim() || "Choice";
+                    const sessionMatchState = rememberedSessionMatchStates[session.userId];
                     const sessionMeta = [
                       session.phoneNumber ?? "",
                       session.profile.city.trim(),
@@ -7565,8 +7704,17 @@ export function ChoiceOnboarding() {
                           <Text style={styles.accountSwitchOptionAvatarText}>{sessionName.slice(0, 1).toUpperCase()}</Text>
                         </View>
                         <View style={styles.accountSwitchOptionCopy}>
-                          <Text style={styles.accountSwitchOptionName}>{sessionName}</Text>
-                          <Text style={styles.accountSwitchOptionMeta}>{sessionMeta || "Gespeicherter Account"}</Text>
+                          <View style={styles.accountSwitchOptionHeader}>
+                            <Text style={styles.accountSwitchOptionName}>{sessionName}</Text>
+                            {sessionMatchState?.badgeLabel ? (
+                              <View style={styles.accountSwitchMatchBadge}>
+                                <Text style={styles.accountSwitchMatchBadgeText}>{sessionMatchState.badgeLabel}</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          <Text style={styles.accountSwitchOptionMeta}>
+                            {sessionMatchState?.detailLabel || sessionMeta || "Gespeicherter Account"}
+                          </Text>
                         </View>
                       </Pressable>
                     );
@@ -8037,6 +8185,49 @@ const styles = StyleSheet.create({
     color: "#f0dbe5",
     fontSize: 14,
     lineHeight: 20,
+  },
+  matchReleaseProfilePreview: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  matchReleaseProfileImage: {
+    width: 66,
+    height: 66,
+    borderRadius: 22,
+  },
+  matchReleaseProfileCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  matchReleaseProfileName: {
+    color: "#fff7ff",
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: "800",
+  },
+  matchReleaseProfileMeta: {
+    color: "#d8cbe4",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  matchReleaseProfileTagline: {
+    color: "#f2dfe8",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  matchReleaseReasonList: {
+    gap: 6,
+  },
+  matchReleaseReasonText: {
+    color: "#f3e0ea",
+    fontSize: 13,
+    lineHeight: 19,
   },
   matchReleaseNoticeActions: {
     flexDirection: "row",
@@ -10453,10 +10644,31 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 2,
   },
+  accountSwitchOptionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
   accountSwitchOptionName: {
     color: "#fff7ff",
     fontSize: 15,
     fontWeight: "700",
+  },
+  accountSwitchMatchBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(154, 223, 255, 0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(154, 223, 255, 0.26)",
+  },
+  accountSwitchMatchBadgeText: {
+    color: "#bfefff",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
   },
   accountSwitchOptionMeta: {
     color: "#b8add4",
