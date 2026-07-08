@@ -11,8 +11,8 @@ import { prisma } from "./prisma.js";
 
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
-const MATCH_RELEASE_HOUR = 15;
-const MATCH_RELEASE_MINUTE = 0;
+const MATCH_RELEASE_HOUR = 16;
+const MATCH_RELEASE_MINUTE = 30;
 const PHASE_INTERVAL_MINUTES = 20;
 const PHASE_WARNING_LEAD_MS = 5 * 60 * 1000;
 
