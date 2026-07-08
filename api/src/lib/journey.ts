@@ -1239,6 +1239,18 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
       suspendedAt: null,
       bannedAt: null,
       profile: { isNot: null },
+      matchesAsA: {
+        none: {
+          status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
+          closedAt: null,
+        },
+      },
+      matchesAsB: {
+        none: {
+          status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
+          closedAt: null,
+        },
+      },
     },
     include: {
       profile: true,
@@ -1265,22 +1277,80 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     select: {
       userAId: true,
       userBId: true,
+      scheduledFor: true,
     },
   });
-  const blockedUserIds = new Set(
-    existingPairs.map((entry) => (entry.userAId === userId ? entry.userBId : entry.userAId)),
-  );
+
+  const candidateHistory = new Map<
+    string,
+    {
+      timesMatched: number;
+      lastMatchedAt: number | null;
+    }
+  >();
+
+  for (const entry of existingPairs) {
+    const partnerUserId = entry.userAId === userId ? entry.userBId : entry.userAId;
+    const previous = candidateHistory.get(partnerUserId);
+    const scheduledAt = entry.scheduledFor.getTime();
+
+    if (!previous) {
+      candidateHistory.set(partnerUserId, {
+        timesMatched: 1,
+        lastMatchedAt: scheduledAt,
+      });
+      continue;
+    }
+
+    candidateHistory.set(partnerUserId, {
+      timesMatched: previous.timesMatched + 1,
+      lastMatchedAt:
+        previous.lastMatchedAt === null ? scheduledAt : Math.max(previous.lastMatchedAt, scheduledAt),
+    });
+  }
+
+  const isBetterCandidate = (
+    candidate: {
+      score: number;
+      timesMatched: number;
+      lastMatchedAt: number | null;
+    },
+    current: {
+      score: number;
+      timesMatched: number;
+      lastMatchedAt: number | null;
+    } | null,
+  ) => {
+    if (!current) {
+      return true;
+    }
+
+    if (candidate.timesMatched !== current.timesMatched) {
+      return candidate.timesMatched < current.timesMatched;
+    }
+
+    const candidateLastMatchedAt = candidate.lastMatchedAt ?? Number.NEGATIVE_INFINITY;
+    const currentLastMatchedAt = current.lastMatchedAt ?? Number.NEGATIVE_INFINITY;
+
+    if (candidateLastMatchedAt !== currentLastMatchedAt) {
+      return candidateLastMatchedAt < currentLastMatchedAt;
+    }
+
+    return candidate.score > current.score;
+  };
 
   let bestCandidate:
     | {
         userId: string;
         score: number;
         sharedInterests: string[];
+        timesMatched: number;
+        lastMatchedAt: number | null;
       }
     | null = null;
 
   for (const candidateUser of candidateUsers) {
-    if (!candidateUser.profile || blockedUserIds.has(candidateUser.id)) {
+    if (!candidateUser.profile) {
       continue;
     }
 
@@ -1302,12 +1372,17 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     }
 
     const score = calculateCandidateScore(viewerProfile, candidateProfile);
+    const history = candidateHistory.get(candidateUser.id);
+    const timesMatched = history?.timesMatched ?? 0;
+    const lastMatchedAt = history?.lastMatchedAt ?? null;
 
-    if (!bestCandidate || score.score > bestCandidate.score) {
+    if (isBetterCandidate({ score: score.score, timesMatched, lastMatchedAt }, bestCandidate)) {
       bestCandidate = {
         userId: candidateUser.id,
         score: score.score,
         sharedInterests: score.sharedInterests,
+        timesMatched,
+        lastMatchedAt,
       };
     }
   }
