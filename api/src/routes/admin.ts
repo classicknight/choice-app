@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { buildBanAccountData, buildPauseAccountData, buildRestorePausedAccountData, isAccountPaused, mapAccountState } from "../lib/account-state.js";
 import { requireAdminAccess } from "../lib/admin-auth.js";
+import { reconcileAllPenaltyStates, reconcileUserPenaltyState } from "../lib/penalty-state.js";
 import { sendPushNotificationToUser } from "../lib/push-notifications.js";
 import { prisma } from "../lib/prisma.js";
 
@@ -32,6 +33,7 @@ type UserSummaryRow = {
   premiumActivatedAt: Date | null;
   penaltyPoints: number;
   suspendedAt: Date | null;
+  penaltySuspendedAt: Date | null;
   bannedAt: Date | null;
   paidMatchCredits: number;
   frozenPaidMatchCredits: number;
@@ -61,6 +63,7 @@ function mapUserSummary(user: UserSummaryRow) {
     premiumActivatedAt: user.premiumActivatedAt,
     penaltyPoints: user.penaltyPoints,
     suspendedAt: user.suspendedAt,
+    penaltySuspendedAt: user.penaltySuspendedAt,
     bannedAt: user.bannedAt,
     accountPaused: account.accountPaused,
     accountBanned: account.accountBanned,
@@ -98,6 +101,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     if (!requireAdminAccess(request, reply)) {
       return;
     }
+
+    await reconcileAllPenaltyStates();
 
     const [users, matches, reports] = await Promise.all([
       prisma.user.findMany({
@@ -263,6 +268,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         premiumActivatedAt: true,
         penaltyPoints: true,
         suspendedAt: true,
+        penaltySuspendedAt: true,
         bannedAt: true,
         paidMatchCredits: true,
         frozenPaidMatchCredits: true,
@@ -311,6 +317,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
               : null,
         penaltyPoints: nextPenaltyPoints,
         suspendedAt: nextBanned ? existingUser.suspendedAt ?? new Date() : nextSuspended ? existingUser.suspendedAt ?? new Date() : null,
+        penaltySuspendedAt: nextBanned ? null : nextPenaltyPoints >= 3 ? existingUser.penaltySuspendedAt ?? new Date() : null,
         bannedAt: nextBanned ? existingUser.bannedAt ?? new Date() : null,
         paidMatchCredits: nextPaidMatchCredits,
         frozenPaidMatchCredits: nextFrozenPaidMatchCredits,
@@ -384,6 +391,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         updateData = {
           ...buildRestorePausedAccountData(existingUser),
           suspendedAt: null,
+          penaltySuspendedAt: null,
           bannedAt: null,
         };
         break;
@@ -458,41 +466,19 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const shouldConfirm = parsed.data.decision === "confirmed";
-    const nextPenaltyPoints = shouldConfirm ? Math.min(report.reportedUser.penaltyPoints + 1, 3) : report.reportedUser.penaltyPoints;
-    const pauseData = shouldConfirm && nextPenaltyPoints >= 3 ? buildPauseAccountData(report.reportedUser) : {};
-
-    const [updatedReport] = await prisma.$transaction([
-      prisma.report.update({
-        where: { id: report.id },
-        data: {
-          status: shouldConfirm ? "CONFIRMED" : "DISMISSED",
-          reviewerNote: parsed.data.reviewerNote?.trim() || null,
-          reviewedAt: new Date(),
-        },
-      }),
-      shouldConfirm
-        ? prisma.user.update({
-            where: { id: report.reportedUserId },
-            data: {
-              penaltyPoints: nextPenaltyPoints,
-              suspendedAt: nextPenaltyPoints >= 3 ? report.reportedUser.suspendedAt ?? new Date() : report.reportedUser.suspendedAt,
-              paidMatchCredits:
-                nextPenaltyPoints >= 3
-                  ? (pauseData.paidMatchCredits as number | undefined) ?? report.reportedUser.paidMatchCredits
-                  : report.reportedUser.paidMatchCredits,
-              frozenPaidMatchCredits:
-                nextPenaltyPoints >= 3
-                  ? (pauseData.frozenPaidMatchCredits as number | undefined) ?? report.reportedUser.frozenPaidMatchCredits
-                  : report.reportedUser.frozenPaidMatchCredits,
-            },
-          })
-        : prisma.user.findUnique({
-            where: { id: report.reportedUserId },
-          }),
-    ]);
+    const updatedReport = await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: shouldConfirm ? "CONFIRMED" : "DISMISSED",
+        reviewerNote: parsed.data.reviewerNote?.trim() || null,
+        reviewedAt: new Date(),
+      },
+    });
 
     if (shouldConfirm) {
+      const reconciled = await reconcileUserPenaltyState(report.reportedUserId);
       const confirmedReason = report.reason.trim();
+      const nextPenaltyPoints = reconciled?.account.penaltyPoints ?? report.reportedUser.penaltyPoints;
       void sendPushNotificationToUser(report.reportedUserId, {
         title: "Du hast einen Strafpunkt bekommen",
         body:

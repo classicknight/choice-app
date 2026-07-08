@@ -5,16 +5,16 @@ import {
   PhaseTwoStage,
   Prisma,
 } from "@prisma/client";
+import { reconcileAllPenaltyStates } from "./penalty-state.js";
 import { sendPushNotificationOnce, sendPushNotificationToUser } from "./push-notifications.js";
 import { applySystemPenalty } from "./system-penalties.js";
 import { prisma } from "./prisma.js";
 
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
-const MATCH_RELEASE_HOUR = 17;
-const MATCH_RELEASE_MINUTE = 30;
-const PHASE_INTERVAL_MINUTES = 20;
-const PHASE_WARNING_LEAD_MS = 5 * 60 * 1000;
+const MATCH_RELEASE_HOUR = 9;
+const MATCH_DECISION_HOUR = 21;
+const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
 
 export type JourneyPhaseTwoResponseOption = {
   label: string;
@@ -137,10 +137,6 @@ function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
-function addMinutes(date: Date, minutes: number) {
-  return new Date(date.getTime() + minutes * 60 * 1000);
-}
-
 function addDays(date: Date, days: number) {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
@@ -153,14 +149,11 @@ function setTimeOfDay(date: Date, hour: number, minute: number) {
 
 function getNextMatchReleaseAt(now: Date) {
   const release = new Date(now);
-  release.setHours(MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE, 0, 0);
-  const currentDecisionDeadline = addMinutes(release, PHASE_INTERVAL_MINUTES);
+  release.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
 
-  if (now < currentDecisionDeadline) {
-    return release;
+  if (now >= release) {
+    release.setDate(release.getDate() + 1);
   }
-
-  release.setDate(release.getDate() + 1);
 
   return release;
 }
@@ -168,11 +161,11 @@ function getNextMatchReleaseAt(now: Date) {
 function buildPhaseSchedule(releaseAt: Date) {
   return {
     release: releaseAt,
-    decisionDeadline: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES),
-    phaseTwoStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES),
-    phaseThreeStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES * 2),
-    phaseFourStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES * 3),
-    phaseFiveStart: addMinutes(releaseAt, PHASE_INTERVAL_MINUTES * 4),
+    decisionDeadline: addHours(releaseAt, MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR),
+    phaseTwoStart: addDays(releaseAt, 1),
+    phaseThreeStart: addDays(releaseAt, 2),
+    phaseFourStart: addDays(releaseAt, 3),
+    phaseFiveStart: addHours(addDays(releaseAt, 3), MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR),
   };
 }
 
@@ -1215,7 +1208,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     },
   });
 
-  if (!user?.profile || !user.profileCompleted || user.suspendedAt || user.bannedAt) {
+  if (!user?.profile || !user.profileCompleted || user.suspendedAt || user.penaltySuspendedAt || user.bannedAt) {
     return null;
   }
 
@@ -1237,6 +1230,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
       id: { not: userId },
       profileCompleted: true,
       suspendedAt: null,
+      penaltySuspendedAt: null,
       bannedAt: null,
       profile: { isNot: null },
       matchesAsA: {
@@ -1447,8 +1441,8 @@ async function findJourneyMatchForUser(userId: string, now: Date): Promise<Match
   });
 
   if (pending) {
-    const currentCycleRelease = setTimeOfDay(now, MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE);
-    const currentCycleDecisionDeadline = addMinutes(currentCycleRelease, PHASE_INTERVAL_MINUTES);
+    const currentCycleRelease = setTimeOfDay(now, MATCH_RELEASE_HOUR, 0);
+    const currentCycleDecisionDeadline = addHours(currentCycleRelease, MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR);
 
     if (
       pending.scheduledFor.getTime() > now.getTime()
@@ -1645,10 +1639,13 @@ async function resolveJourneyMatchForUser(userId: string, now: Date) {
 }
 
 export async function runJourneyAutomationSweep(now = new Date()) {
+  await reconcileAllPenaltyStates(now);
+
   const eligibleUsers = await prisma.user.findMany({
     where: {
       profileCompleted: true,
       suspendedAt: null,
+      penaltySuspendedAt: null,
       bannedAt: null,
       profile: { isNot: null },
     },

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { mapAccountState } from "../lib/account-state.js";
+import { PENALTY_RECOVERY_WINDOW_DAYS, reconcileUserPenaltyState } from "../lib/penalty-state.js";
 import { prisma } from "../lib/prisma.js";
 
 const profileSchema = z.object({
@@ -36,6 +37,8 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    await reconcileUserPenaltyState(params.data.userId);
+
     const user = await prisma.user.findUnique({
       where: { id: params.data.userId },
       include: {
@@ -61,6 +64,7 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
       ok: true,
       account: {
         ...mapAccountState(user),
+        penaltyRecoveryWindowDays: PENALTY_RECOVERY_WINDOW_DAYS,
         recentPenalties: [
           ...user.systemPenaltyEvents.map((event) => ({
             id: event.id,

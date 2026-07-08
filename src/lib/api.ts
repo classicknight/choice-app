@@ -69,6 +69,7 @@ type RemoteAccountStateResult = {
     premiumActivatedAt: string | null;
     penaltyPoints: number;
     suspendedAt: string | null;
+    penaltySuspendedAt: string | null;
     bannedAt: string | null;
     accountPaused: boolean;
     accountBanned: boolean;
@@ -77,6 +78,7 @@ type RemoteAccountStateResult = {
     forfeitedPaidMatchCredits: number;
     lastPaidMatchPackageAt: string | null;
     hasPaidMatchAccess: boolean;
+    penaltyRecoveryWindowDays: number;
     recentPenalties: Array<{
       id: string;
       createdAt: string;

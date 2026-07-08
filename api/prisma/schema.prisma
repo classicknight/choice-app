@@ -80,6 +80,7 @@ model User {
   premiumActivatedAt DateTime?
   penaltyPoints     Int                     @default(0)
   suspendedAt       DateTime?
+  penaltySuspendedAt DateTime?
   bannedAt          DateTime?
   paidMatchCredits  Int                     @default(0)
   frozenPaidMatchCredits Int                @default(0)

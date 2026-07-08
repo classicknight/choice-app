@@ -1,4 +1,5 @@
-import { buildPauseAccountData, mapAccountState } from "./account-state.js";
+import { mapAccountState } from "./account-state.js";
+import { reconcileUserPenaltyState } from "./penalty-state.js";
 import { sendPushNotificationToUser } from "./push-notifications.js";
 import { prisma } from "./prisma.js";
 
@@ -18,6 +19,7 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
       premiumActivatedAt: true,
       penaltyPoints: true,
       suspendedAt: true,
+      penaltySuspendedAt: true,
       bannedAt: true,
       paidMatchCredits: true,
       frozenPaidMatchCredits: true,
@@ -46,10 +48,9 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
     };
   }
 
-  const nextPenaltyPoints = Math.min(user.penaltyPoints + 1, 3);
-  const pauseData = nextPenaltyPoints >= 3 ? buildPauseAccountData(user) : {};
+  const previousPenaltyPoints = user.penaltyPoints;
 
-  const updatedUser = await prisma.$transaction(async (transaction) => {
+  await prisma.$transaction(async (transaction) => {
     await transaction.systemPenaltyEvent.create({
       data: {
         userId: input.userId,
@@ -58,38 +59,34 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
         note: input.note?.trim() || undefined,
       },
     });
-
-    return transaction.user.update({
-      where: { id: input.userId },
-      data: {
-        penaltyPoints: nextPenaltyPoints,
-        ...pauseData,
-      },
-      select: {
-        id: true,
-        isPremium: true,
-        premiumActivatedAt: true,
-        penaltyPoints: true,
-        suspendedAt: true,
-        bannedAt: true,
-        paidMatchCredits: true,
-        frozenPaidMatchCredits: true,
-        forfeitedPaidMatchCredits: true,
-        lastPaidMatchPackageAt: true,
-      },
-    });
   });
 
-  const penaltyTitle = "Du hast einen Strafpunkt bekommen";
+  const reconciled = await reconcileUserPenaltyState(input.userId);
+
+  if (!reconciled) {
+    return {
+      ok: false as const,
+      reason: "USER_NOT_FOUND" as const,
+    };
+  }
+
+  const updatedUser = reconciled.account;
+  const penaltyPointsChanged = updatedUser.penaltyPoints > previousPenaltyPoints;
+
+  const penaltyTitle = penaltyPointsChanged ? "Du hast einen Strafpunkt bekommen" : "Dein Strafpunkt bleibt aktiv";
   const penaltyBody =
     input.reason === "PHASE_ONE_NOT_STARTED"
       ? updatedUser.penaltyPoints >= 3
         ? "Du hast den Chat nicht rechtzeitig eröffnet. Dein Konto ist jetzt pausiert."
-        : "Du hast den Chat nicht rechtzeitig eröffnet. Dafür wurde dir ein Strafpunkt gegeben."
+        : penaltyPointsChanged
+          ? "Du hast den Chat nicht rechtzeitig eröffnet. Dafür wurde dir ein Strafpunkt gegeben."
+          : "Du hast den Chat nicht rechtzeitig eröffnet. Der bestehende Strafpunkt für diesen Verstoß bleibt weiter aktiv."
       : input.reason === "PHASE_TWO_NOT_PLAYED"
         ? updatedUser.penaltyPoints >= 3
           ? "Du hast Phase 2 nicht rechtzeitig gespielt. Dein Konto ist jetzt pausiert."
-          : "Du hast Phase 2 nicht rechtzeitig gespielt. Dafür wurde dir ein Strafpunkt gegeben."
+          : penaltyPointsChanged
+            ? "Du hast Phase 2 nicht rechtzeitig gespielt. Dafür wurde dir ein Strafpunkt gegeben."
+            : "Du hast Phase 2 nicht rechtzeitig gespielt. Der bestehende Strafpunkt für diesen Verstoß bleibt weiter aktiv."
         : updatedUser.penaltyPoints >= 3
           ? "Dein Konto ist jetzt pausiert."
           : "Bitte prüfe dein Konto in Choice.";
@@ -108,6 +105,6 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
   return {
     ok: true as const,
     applied: true,
-    account: mapAccountState(updatedUser),
+    account: updatedUser,
   };
 }

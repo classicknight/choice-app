@@ -124,10 +124,9 @@ type RemoteAccountState = Awaited<ReturnType<typeof fetchRemoteAccountState>>;
 
 const PHASE_THREE_THRESHOLD = 50;
 const PHASE_TWO_ROUNDS_PER_SESSION = 3;
-const PHASE_WARNING_LEAD_MS = 5 * 60 * 1000;
-const MATCH_RELEASE_HOUR = 17;
-const MATCH_RELEASE_MINUTE = 30;
-const PHASE_INTERVAL_MINUTES = 20;
+const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
+const MATCH_RELEASE_HOUR = 9;
+const MATCH_DECISION_HOUR = 21;
 const LEGAL_URLS = {
   impressum: "https://choice-dating.app/impressum",
   datenschutz: "https://choice-dating.app/datenschutz",
@@ -531,18 +530,16 @@ function setTimeOfDay(date: Date, hour: number, minute: number) {
   return next;
 }
 
-function addMinutes(date: Date, minutes: number) {
-  return new Date(date.getTime() + minutes * 60 * 1000);
-}
-
 function buildPhaseSchedule(now: Date) {
   const release = new Date(now);
-  release.setHours(MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE, 0, 0);
-  const decisionDeadline = addMinutes(release, PHASE_INTERVAL_MINUTES);
-  const phaseTwoStart = addMinutes(release, PHASE_INTERVAL_MINUTES);
-  const phaseThreeStart = addMinutes(release, PHASE_INTERVAL_MINUTES * 2);
-  const phaseFourStart = addMinutes(release, PHASE_INTERVAL_MINUTES * 3);
-  const phaseFiveStart = addMinutes(release, PHASE_INTERVAL_MINUTES * 4);
+  release.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
+  const decisionDeadline = new Date(now);
+  decisionDeadline.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
+  const phaseTwoStart = addDaysAtSameTime(release, 1);
+  const phaseThreeStart = addDaysAtSameTime(release, 2);
+  const phaseFourStart = addDaysAtSameTime(release, 3);
+  const phaseFiveStart = new Date(phaseFourStart);
+  phaseFiveStart.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
 
   return {
     release,
@@ -574,9 +571,8 @@ function addDaysAtSameTime(date: Date, days: number) {
 
 function createInitialReleaseAt(now: Date) {
   const release = getMatchReleaseTime(now);
-  const currentDecisionDeadline = addMinutes(release, PHASE_INTERVAL_MINUTES);
 
-  if (now >= currentDecisionDeadline) {
+  if (now >= release) {
     release.setDate(release.getDate() + 1);
   }
 
@@ -713,7 +709,7 @@ function buildProfileFromDemoProfile(entry: DemoProfile): RegistrationProfile {
     interests: [...entry.interests],
     greenFlags: [...entry.greenFlags],
     dealbreakers: [...entry.dealbreakers],
-    matchTime: "17:30",
+    matchTime: "09:00",
     conversationStyle: "direct",
     consent: true,
   };
@@ -1433,7 +1429,7 @@ function buildCompletedPhaseTwoResults(rounds: PhaseTwoRoundConfig[]): PhaseTwoR
 
 function getReleaseAnchorForCurrentTime(now: Date) {
   const anchor = new Date(now);
-  anchor.setHours(MATCH_RELEASE_HOUR, MATCH_RELEASE_MINUTE, 0, 0);
+  anchor.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
 
   if (now < anchor) {
     anchor.setDate(anchor.getDate() - 1);
@@ -1808,7 +1804,7 @@ function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyState["partn
     ageRangeMax: partner.ageRangeMax,
     greenFlags: partner.greenFlags,
     dealbreakers: partner.dealbreakers,
-    time: partner.matchTime || "Heute 17:30",
+    time: partner.matchTime || "Heute 21:00",
   };
 }
 
@@ -2105,7 +2101,7 @@ function HeroArtwork() {
       </View>
 
       <View style={styles.introPreviewCard}>
-        <Text style={styles.introPreviewLabel}>Morgen um 17:30</Text>
+        <Text style={styles.introPreviewLabel}>Morgen um 9:00</Text>
         <Text style={styles.introPreviewTitle}>1 gutes Match. Kein Feed.</Text>
         <Text style={styles.introPreviewText}>Kurz einrichten. Danach kommt dein Match jeden Tag automatisch.</Text>
       </View>
@@ -2585,6 +2581,7 @@ function OverviewScreen({
     return demoProfiles[0];
   }, [remoteJourney?.partner]);
   const penaltyPoints = accountState?.penaltyPoints ?? 0;
+  const penaltyRecoveryWindowDays = accountState?.penaltyRecoveryWindowDays ?? 3;
   const maxPenaltyPoints = 3;
   const remainingPenaltyPoints = Math.max(maxPenaltyPoints - penaltyPoints, 0);
   const accountPaused = accountState?.accountPaused ?? false;
@@ -2671,7 +2668,6 @@ function OverviewScreen({
     "Bestätigte Meldung wegen beleidigendem, sexualisiertem oder respektlosem Verhalten.",
     "Du schreibst nicht an, obwohl Choice festgelegt hat, dass du den Chat eröffnen sollst.",
     "Du spielst Phase 2 nicht, obwohl du gerade mit der laufenden Runde dran bist.",
-    "Du verschickst anstößige Bilder und das wird von der anderen Person bestätigt gemeldet.",
   ];
   const phaseOneViewerUserId = currentUserId ?? "choice_primary_demo";
   const phaseOnePartnerUserId = activePartnerUserId ?? "choice_partner_placeholder";
@@ -4829,7 +4825,7 @@ function OverviewScreen({
                   : "Auch zahlende Konten können dauerhaft gesperrt werden."
                 : frozenPaidMatchCredits > 0
                   ? `${frozenPaidMatchCredits} gekaufte Matches sind eingefroren und können nach einer Entsperrung wieder freigegeben werden.`
-                  : `Choice pausiert Konten bei drei bestätigten Strafpunkten automatisch. Dazu zählt auch, wenn du den Chat eröffnen solltest und bis ${decisionClockLabel} keine erste Nachricht schreibst oder wenn du eine dir zugewiesene Choice-Runde in Phase 2 liegen lässt.`}
+                  : `Choice pausiert Konten bei drei bestätigten Strafpunkten automatisch. Wenn derselbe Verstoß ${penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Punkt wieder.`}
             </Text>
           </View>
 
@@ -5252,7 +5248,7 @@ function OverviewScreen({
         </View>
 
         <Text style={styles.penaltyText}>
-          Ein bestätigter Verstoß gibt einen Strafpunkt. Bei drei Punkten wird dein Konto pausiert. Gekaufte Match-Pakete werden dann eingefroren und nur bei dauerhafter Sperre endgültig verloren.
+          Ein bestätigter Verstoß gibt einen Strafpunkt. Bei drei Punkten wird dein Konto pausiert. So baust du Punkte wieder ab: Wenn derselbe Verstoß {penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Strafpunkt wieder. Gekaufte Match-Pakete werden dann eingefroren und nur bei dauerhafter Sperre endgültig verloren.
         </Text>
 
         <View style={styles.penaltyProgressRow}>
@@ -5264,7 +5260,7 @@ function OverviewScreen({
             <Text style={styles.penaltyFootnote}>
               {penaltyPoints === 0
                 ? "Aktuell ist alles sauber. Solange du das Format fair nutzt, bleibt dein Konto problemlos aktiv."
-                : `Noch ${remainingPenaltyPoints} Punkt${remainingPenaltyPoints === 1 ? "" : "e"} bis dein Konto pausiert wird.`}
+                : `Noch ${remainingPenaltyPoints} Punkt${remainingPenaltyPoints === 1 ? "" : "e"} bis dein Konto pausiert wird. Wenn derselbe Verstoß ${penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Punkt wieder.`}
             </Text>
           </View>
         </View>
@@ -5711,7 +5707,8 @@ function OverviewScreen({
           <Text style={styles.overviewRuleTitle}>Kontostatus</Text>
           <Text style={styles.overviewRuleText}>
             Aktuell {penaltyPoints} von {maxPenaltyPoints} Strafpunkten. Wer respektvoll bleibt, bleibt problemlos im
-            Konto aktiv.
+            Konto aktiv. Wenn derselbe Verstoß {penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt,
+            verschwindet der dazugehörige Punkt wieder.
           </Text>
         </View>
 
