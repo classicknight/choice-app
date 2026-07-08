@@ -597,6 +597,13 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatMessageTime(value: string) {
+  return new Intl.DateTimeFormat("de-DE", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 function formatDurationLabel(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const hours = Math.floor(totalSeconds / 3600);
@@ -1611,6 +1618,8 @@ type SharedChatTextMessage = {
   author: SharedChatAuthor;
   kind: "text";
   text: string;
+  createdAt: string;
+  sending?: boolean;
 };
 
 type SharedChatImageMessage = {
@@ -1618,6 +1627,8 @@ type SharedChatImageMessage = {
   author: SharedChatAuthor;
   kind: "image";
   imageUri: string;
+  createdAt: string;
+  sending?: boolean;
 };
 
 type SharedChatMessage =
@@ -1629,8 +1640,8 @@ type SharedChatMessageInput =
   | { kind: "image"; imageUri: string };
 
 type ChatRenderMessage =
-  | { id: string; side: "left" | "right"; kind: "text"; text: string }
-  | { id: string; side: "left" | "right"; kind: "image"; imageUri: string };
+  | { id: string; side: "left" | "right"; kind: "text"; text: string; createdAt: string; sending?: boolean }
+  | { id: string; side: "left" | "right"; kind: "image"; imageUri: string; createdAt: string; sending?: boolean };
 
 function mapSharedChatMessagesForViewer(
   messages: readonly SharedChatMessage[],
@@ -1644,6 +1655,8 @@ function mapSharedChatMessagesForViewer(
         side,
         kind: "image",
         imageUri: message.imageUri,
+        createdAt: message.createdAt,
+        sending: message.sending,
       };
     }
 
@@ -1652,6 +1665,8 @@ function mapSharedChatMessagesForViewer(
       side,
       kind: "text",
       text: message.text,
+      createdAt: message.createdAt,
+      sending: message.sending,
     };
   });
 }
@@ -1688,6 +1703,8 @@ function normalizeSharedChatMessages(value: unknown): SharedChatMessage[] {
           ? "primary"
           : null;
     const id = typeof candidate.id === "string" ? candidate.id : null;
+    const createdAt = typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString();
+    const sending = candidate.sending === true;
 
     if (!author || !id) {
       return messages;
@@ -1704,6 +1721,8 @@ function normalizeSharedChatMessages(value: unknown): SharedChatMessage[] {
         author,
         kind: "image" as const,
         imageUri: candidate.imageUri,
+        createdAt,
+        sending,
       });
       return messages;
     }
@@ -1714,6 +1733,8 @@ function normalizeSharedChatMessages(value: unknown): SharedChatMessage[] {
         author,
         kind: "text" as const,
         text: candidate.text,
+        createdAt,
+        sending,
       });
     }
 
@@ -1738,6 +1759,7 @@ function mapRemoteJourneyMessages(
         author,
         kind: "image",
         imageUri: message.imageUri,
+        createdAt: message.createdAt,
       });
       return items;
     }
@@ -1748,6 +1770,7 @@ function mapRemoteJourneyMessages(
         author,
         kind: "text",
         text: message.text,
+        createdAt: message.createdAt,
       });
     }
 
@@ -2102,6 +2125,7 @@ type ChatSurfaceProps = {
   composerPlaceholder: string;
   composerValue: string;
   composerEditable?: boolean;
+  composerBusy?: boolean;
   composerHidden?: boolean;
   composerLockedText?: string | null;
   fullScreen?: boolean;
@@ -2130,6 +2154,7 @@ function ChatSurface({
   composerPlaceholder,
   composerValue,
   composerEditable = true,
+  composerBusy = false,
   composerHidden = false,
   composerLockedText = null,
   fullScreen = false,
@@ -2148,7 +2173,8 @@ function ChatSurface({
   const threadRef = useRef<ScrollView | null>(null);
   const [threadViewportHeight, setThreadViewportHeight] = useState(0);
   const [threadContentHeight, setThreadContentHeight] = useState(0);
-  const canSend = composerEditable && composerValue.trim().length > 0;
+  const canSend = composerEditable && !composerBusy && composerValue.trim().length > 0;
+  const composerInteractive = composerEditable && !composerBusy;
   const composerBottomPadding = fullScreen ? 4 : 10;
   const canScrollThread = threadContentHeight > threadViewportHeight + 1;
   const dockedThreadSupplement = threadSupplement && fullScreen
@@ -2278,27 +2304,33 @@ function ChatSurface({
                       key={message.id}
                       style={[styles.chatBubbleRow, right ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}
                     >
-                      <View
-                        style={[
-                          styles.chatBubble,
-                          right ? styles.chatBubbleRight : styles.chatBubbleLeft,
-                          message.kind === "image" && styles.chatBubbleImageWrap,
-                          emojiOnly && styles.chatBubbleEmojiOnly,
-                        ]}
-                      >
-                        {message.kind === "image" ? (
-                          <Image source={{ uri: message.imageUri }} style={styles.chatBubbleImage} />
-                        ) : (
-                          <Text
-                            style={[
-                              styles.chatBubbleText,
-                              right ? styles.chatBubbleTextRight : styles.chatBubbleTextLeft,
-                              emojiOnly && styles.chatBubbleEmojiText,
-                            ]}
-                          >
-                            {message.text}
-                          </Text>
-                        )}
+                      <View style={[styles.chatBubbleStack, right ? styles.chatBubbleStackRight : styles.chatBubbleStackLeft]}>
+                        <View
+                          style={[
+                            styles.chatBubble,
+                            right ? styles.chatBubbleRight : styles.chatBubbleLeft,
+                            message.kind === "image" && styles.chatBubbleImageWrap,
+                            emojiOnly && styles.chatBubbleEmojiOnly,
+                            message.sending && styles.chatBubbleSending,
+                          ]}
+                        >
+                          {message.kind === "image" ? (
+                            <Image source={{ uri: message.imageUri }} style={styles.chatBubbleImage} />
+                          ) : (
+                            <Text
+                              style={[
+                                styles.chatBubbleText,
+                                right ? styles.chatBubbleTextRight : styles.chatBubbleTextLeft,
+                                emojiOnly && styles.chatBubbleEmojiText,
+                              ]}
+                            >
+                              {message.text}
+                            </Text>
+                          )}
+                        </View>
+                        <Text style={[styles.chatBubbleMeta, right ? styles.chatBubbleMetaRight : styles.chatBubbleMetaLeft]}>
+                          {message.sending ? "Wird gesendet..." : formatMessageTime(message.createdAt)}
+                        </Text>
                       </View>
                     </View>
                   );
@@ -2337,8 +2369,8 @@ function ChatSurface({
         >
           <Pressable
             onPress={onPickImage}
-            disabled={!composerEditable}
-            style={[styles.chatComposerAccessoryButton, !composerEditable && styles.chatComposerAccessoryButtonDisabled]}
+            disabled={!composerInteractive}
+            style={[styles.chatComposerAccessoryButton, !composerInteractive && styles.chatComposerAccessoryButtonDisabled]}
           >
             <Text style={styles.chatComposerAccessoryButtonText}>＋</Text>
           </Pressable>
@@ -2349,7 +2381,7 @@ function ChatSurface({
               placeholder={composerPlaceholder}
               placeholderTextColor="#867ea9"
               style={styles.chatComposerInput}
-              editable={composerEditable}
+              editable={composerInteractive}
               multiline
               returnKeyType="send"
               blurOnSubmit={false}
@@ -2358,7 +2390,7 @@ function ChatSurface({
             />
           </View>
           <Pressable onPress={onSend} disabled={!canSend} style={[styles.chatComposerSendButton, !canSend && styles.chatComposerSendButtonDisabled]}>
-            <Text style={styles.chatComposerSendButtonText}>↑</Text>
+            <Text style={styles.chatComposerSendButtonText}>{composerBusy ? "…" : "↑"}</Text>
           </Pressable>
         </View>
       )}
@@ -2414,6 +2446,7 @@ function OverviewScreen({
   const [phaseOneDecisions, setPhaseOneDecisions] = useState<Record<string, "continue" | "new-match">>({});
   const [phaseThreeDecisions, setPhaseThreeDecisions] = useState<Record<string, "stay" | "new-match">>({});
   const [chatDraft, setChatDraft] = useState("");
+  const [chatSendPending, setChatSendPending] = useState(false);
   const [showChatDecisionModal, setShowChatDecisionModal] = useState(false);
   const [pendingAccountAction, setPendingAccountAction] = useState<"pause" | "signout" | "delete" | null>(null);
   const [photoViewer, setPhotoViewer] = useState<{ uris: string[]; index: number } | null>(null);
@@ -3219,22 +3252,35 @@ function OverviewScreen({
   function sendChatMessage() {
     const nextText = chatDraft.trim();
 
-    if (!nextText || !hasActiveChat || !chatComposerEditable) {
+    if (!nextText || !hasActiveChat || !chatComposerEditable || chatSendPending) {
       return;
     }
 
     if (isServerJourneyMode && journeyOwnerUserId) {
+      const previousDraft = nextText;
+      const optimisticMessageId = appendSharedChatMessage(
+        {
+          kind: "text",
+          text: previousDraft,
+        },
+        { sending: true },
+      );
+      setChatDraft("");
+      setChatSendPending(true);
+
       void (async () => {
         try {
           const journey = await sendRemoteJourneyMessage({
             userId: journeyOwnerUserId,
             kind: "text",
-            text: nextText,
+            text: previousDraft,
           });
           applyRemoteJourneyState(journey);
-          setChatDraft("");
         } catch {
-          // Ignore temporary send failures and leave the draft intact.
+          removeSharedChatMessage(optimisticMessageId);
+          setChatDraft(previousDraft);
+        } finally {
+          setChatSendPending(false);
         }
       })();
       return;
@@ -4446,19 +4492,38 @@ function OverviewScreen({
     }
   }, [currentReleaseKey, currentTab, showFreshMatchNotice]);
 
-  function appendSharedChatMessage(message: SharedChatMessageInput) {
+  function appendSharedChatMessage(
+    message: SharedChatMessageInput,
+    options?: {
+      createdAt?: string;
+      sending?: boolean;
+      id?: string;
+    },
+  ) {
+    const nextCreatedAt = options?.createdAt ?? new Date().toISOString();
+    const nextSending = options?.sending ?? false;
+    const nextId = options?.id ?? `shared-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     setSharedChatMessages((current) => [
       ...current,
       {
-        id: `shared-${Date.now()}-${current.length + 1}`,
+        id: nextId,
         author: "primary",
+        createdAt: nextCreatedAt,
+        sending: nextSending,
         ...message,
       },
     ]);
+
+    return nextId;
+  }
+
+  function removeSharedChatMessage(messageId: string) {
+    setSharedChatMessages((current) => current.filter((message) => message.id !== messageId));
   }
 
   async function pickChatImage() {
-    if (!hasActiveChat || !chatComposerEditable) {
+    if (!hasActiveChat || !chatComposerEditable || chatSendPending) {
       return;
     }
 
@@ -4487,18 +4552,35 @@ function OverviewScreen({
       }
 
       if (isServerJourneyMode && journeyOwnerUserId) {
-        const [uploadedImageUri] = await uploadProfilePhotos([nextUri]);
+        const optimisticMessageId = appendSharedChatMessage(
+          {
+            kind: "image",
+            imageUri: nextUri,
+          },
+          { sending: true },
+        );
 
-        if (!uploadedImageUri) {
-          return;
+        setChatSendPending(true);
+
+        try {
+          const [uploadedImageUri] = await uploadProfilePhotos([nextUri]);
+
+          if (!uploadedImageUri) {
+            removeSharedChatMessage(optimisticMessageId);
+            return;
+          }
+
+          const journey = await sendRemoteJourneyMessage({
+            userId: journeyOwnerUserId,
+            kind: "image",
+            imageUri: uploadedImageUri,
+          });
+          applyRemoteJourneyState(journey);
+        } catch {
+          removeSharedChatMessage(optimisticMessageId);
+        } finally {
+          setChatSendPending(false);
         }
-
-        const journey = await sendRemoteJourneyMessage({
-          userId: journeyOwnerUserId,
-          kind: "image",
-          imageUri: uploadedImageUri,
-        });
-        applyRemoteJourneyState(journey);
         return;
       }
 
@@ -4931,6 +5013,7 @@ function OverviewScreen({
           composerPlaceholder={chatComposerPlaceholder}
           composerValue={chatDraft}
           composerEditable={chatComposerEditable}
+          composerBusy={chatSendPending}
           composerHidden={chatComposerHidden}
           composerLockedText={chatComposerLockedText}
           fullScreen
@@ -9573,6 +9656,16 @@ const styles = StyleSheet.create({
   chatBubbleRowRight: {
     alignItems: "flex-end",
   },
+  chatBubbleStack: {
+    gap: 4,
+    maxWidth: "84%",
+  },
+  chatBubbleStackLeft: {
+    alignItems: "flex-start",
+  },
+  chatBubbleStackRight: {
+    alignItems: "flex-end",
+  },
   chatBubble: {
     maxWidth: "84%",
     paddingHorizontal: 14,
@@ -9584,6 +9677,9 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     overflow: "hidden",
     backgroundColor: "#120f18",
+  },
+  chatBubbleSending: {
+    opacity: 0.78,
   },
   chatBubbleEmojiOnly: {
     backgroundColor: "transparent",
@@ -9610,6 +9706,17 @@ const styles = StyleSheet.create({
   },
   chatBubbleTextRight: {
     color: "#f4fbff",
+  },
+  chatBubbleMeta: {
+    fontSize: 11,
+    lineHeight: 14,
+    color: "#8d84a5",
+  },
+  chatBubbleMetaLeft: {
+    textAlign: "left",
+  },
+  chatBubbleMetaRight: {
+    textAlign: "right",
   },
   chatBubbleImage: {
     width: 184,
