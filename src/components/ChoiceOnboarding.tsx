@@ -10071,7 +10071,8 @@ const styles = StyleSheet.create({
     backgroundColor: "#120f18",
   },
   chatBubbleSending: {
-    opacity: 0.78,
+    borderWidth: 1,
+    borderColor: "rgba(134, 227, 255, 0.34)",
   },
   chatBubbleEmojiOnly: {
     backgroundColor: "transparent",
