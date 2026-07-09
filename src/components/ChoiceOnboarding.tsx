@@ -2452,6 +2452,7 @@ type OverviewScreenProps = {
   currentTab: OverviewTabId;
   onSelectTab: (tab: OverviewTabId) => void;
   onOpenAccountSwitcher: () => void;
+  onSwitchToMatchedAccount: (partner: { userId: string; phoneNumber: string | null; firstName: string }) => Promise<void> | void;
   onEditProfileField: (screenId: EditableProfileScreenId) => void;
   onPauseAccount: () => Promise<void> | void;
   onSignOut: () => Promise<void> | void;
@@ -2470,6 +2471,7 @@ function OverviewScreen({
   currentTab,
   onSelectTab,
   onOpenAccountSwitcher,
+  onSwitchToMatchedAccount,
   onEditProfileField,
   onPauseAccount,
   onSignOut,
@@ -5605,6 +5607,20 @@ function OverviewScreen({
             </Text>
           </View>
           <View style={styles.overviewDecisionRow}>
+            {activePartnerUserId ? (
+              <Pressable
+                onPress={() =>
+                  void onSwitchToMatchedAccount({
+                    userId: activePartnerUserId,
+                    phoneNumber: remoteJourney?.partner?.phoneNumber ?? null,
+                    firstName: featuredProfile.firstName,
+                  })
+                }
+                style={styles.decisionGhostButton}
+              >
+                <Text style={styles.decisionGhostText}>Zu {featuredProfile.firstName} wechseln</Text>
+              </Pressable>
+            ) : null}
             <Pressable onPress={openChatFromOverview} style={styles.decisionSolidButton}>
               <Text style={styles.decisionSolidText}>Chat öffnen</Text>
             </Pressable>
@@ -5661,6 +5677,32 @@ function OverviewScreen({
           </Pressable>
 
           {renderFreshMatchNotice()}
+          {activePartnerUserId ? (
+            <Pressable
+              onPress={() =>
+                void onSwitchToMatchedAccount({
+                  userId: activePartnerUserId,
+                  phoneNumber: remoteJourney?.partner?.phoneNumber ?? null,
+                  firstName: featuredProfile.firstName,
+                })
+              }
+              style={styles.accountSwitchMatchCard}
+            >
+              <View style={styles.accountSwitchMatchCardAvatar}>
+                <Text style={styles.accountSwitchMatchCardAvatarText}>
+                  {featuredProfile.firstName.slice(0, 1).toUpperCase()}
+                </Text>
+              </View>
+              <View style={styles.accountSwitchMatchCardCopy}>
+                <Text style={styles.accountSwitchMatchCardEyebrow}>Gegenaccount</Text>
+                <Text style={styles.accountSwitchMatchCardTitle}>Direkt zu {featuredProfile.firstName} wechseln</Text>
+                <Text style={styles.accountSwitchMatchCardText}>
+                  Praktisch für den Test: öffnet sofort den anderen Account zu diesem Match.
+                </Text>
+              </View>
+              <Text style={styles.accountSwitchMatchCardArrow}>›</Text>
+            </Pressable>
+          ) : null}
           {renderChatDecisionCard()}
           {phaseTwoEntryCard}
           {phaseThreeEntryCard}
@@ -6166,7 +6208,7 @@ export function ChoiceOnboarding() {
     return "hint" in currentScreen ? currentScreen.hint : undefined;
   }, [currentScreen, entryMode, signedInReturningUser]);
 
-  function setSessionState(session: Omit<PersistedSession, "savedAt">) {
+  function setSessionState(session: Omit<PersistedSession, "savedAt">, preferredTab: OverviewTabId = "today") {
     setProfile(session.profile);
     setPhotoUris(session.photoUris);
     setIntroVideoUri(session.introVideoUri);
@@ -6174,7 +6216,7 @@ export function ChoiceOnboarding() {
     setVerifiedUserId(session.userId);
     setVerifiedPhone(session.phoneNumber);
     setCurrentSurface("overview");
-    setOverviewTab("today");
+    setOverviewTab(preferredTab);
     setSignedInReturningUser(true);
   }
 
@@ -6692,7 +6734,10 @@ export function ChoiceOnboarding() {
     setOverviewTab("today");
   }
 
-  async function switchToRememberedSession(session: Omit<PersistedSession, "savedAt"> | PersistedSession) {
+  async function switchToRememberedSession(
+    session: Omit<PersistedSession, "savedAt"> | PersistedSession,
+    options?: { preferredTab?: OverviewTabId },
+  ) {
     setShowAccountSwitcher(false);
     setAccountActionMessage(null);
     setError(null);
@@ -6735,7 +6780,44 @@ export function ChoiceOnboarding() {
         }
       }
 
-      setSessionState(nextSession);
+      setSessionState(nextSession, options?.preferredTab ?? "today");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function switchToMatchedAccount(partner: { userId: string; phoneNumber: string | null; firstName: string }) {
+    const rememberedPartnerSession = rememberedSessions.find((entry) => entry.userId === partner.userId) ?? null;
+
+    if (rememberedPartnerSession) {
+      await switchToRememberedSession(rememberedPartnerSession, { preferredTab: "match" });
+      return;
+    }
+
+    setShowAccountSwitcher(false);
+    setAccountActionMessage(null);
+    setError(null);
+    setIsSubmitting(true);
+
+    try {
+      if (await loadIsAccountPaused(partner.userId)) {
+        setAccountActionMessage("Dieses Konto ist pausiert.");
+        return;
+      }
+
+      const restoredProfile = await fetchRemoteProfile(partner.userId);
+      const nextSession = await persistLocalSession({
+        userId: partner.userId,
+        phoneNumber: partner.phoneNumber,
+        profile: restoredProfile.profile,
+        photoUris: restoredProfile.photoUrls,
+        introVideoUri: restoredProfile.videoUrl,
+        introVideoDurationMs: null,
+      });
+
+      setSessionState(nextSession, "match");
+    } catch {
+      setAccountActionMessage(`Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`);
     } finally {
       setIsSubmitting(false);
     }
@@ -7653,6 +7735,7 @@ export function ChoiceOnboarding() {
           currentTab={overviewTab}
           onSelectTab={setOverviewTab}
           onOpenAccountSwitcher={() => setShowAccountSwitcher(true)}
+          onSwitchToMatchedAccount={switchToMatchedAccount}
           onEditProfileField={startProfileFieldEditing}
           onPauseAccount={handlePauseAccount}
           onSignOut={handleSignOut}
@@ -10612,6 +10695,60 @@ const styles = StyleSheet.create({
   },
   accountSwitchList: {
     gap: 10,
+  },
+  accountSwitchMatchCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    padding: 15,
+    borderRadius: 22,
+    backgroundColor: "rgba(255, 66, 124, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 116, 165, 0.22)",
+  },
+  accountSwitchMatchCardPressed: {
+    backgroundColor: "rgba(255, 66, 124, 0.18)",
+  },
+  accountSwitchMatchCardAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 200, 220, 0.20)",
+  },
+  accountSwitchMatchCardAvatarText: {
+    color: "#ffe4f0",
+    fontSize: 18,
+    fontWeight: "800",
+  },
+  accountSwitchMatchCardCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  accountSwitchMatchCardEyebrow: {
+    color: "#ffd8e7",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.7,
+    textTransform: "uppercase",
+  },
+  accountSwitchMatchCardTitle: {
+    color: "#fff7ff",
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: "800",
+  },
+  accountSwitchMatchCardText: {
+    color: "#f0d5e0",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  accountSwitchMatchCardArrow: {
+    color: "#ffe6ef",
+    fontSize: 24,
+    lineHeight: 24,
+    fontWeight: "700",
   },
   accountSwitchOption: {
     flexDirection: "row",
