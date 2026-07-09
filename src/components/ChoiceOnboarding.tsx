@@ -3,6 +3,7 @@ import * as ImagePicker from "expo-image-picker";
 import DateTimePicker, { type DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import { VideoView, useVideoPlayer } from "expo-video";
 import {
+  Animated,
   Image,
   Keyboard,
   KeyboardAvoidingView,
@@ -2163,6 +2164,60 @@ function HeroArtwork() {
   );
 }
 
+function SendingMetaIndicator({ right }: { right: boolean }) {
+  const pulseOpacity = useRef(new Animated.Value(0.46)).current;
+  const [dotCount, setDotCount] = useState(1);
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseOpacity, {
+          toValue: 1,
+          duration: 650,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseOpacity, {
+          toValue: 0.46,
+          duration: 650,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    loop.start();
+
+    return () => {
+      loop.stop();
+    };
+  }, [pulseOpacity]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDotCount((current) => (current % 3) + 1);
+    }, 420);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, []);
+
+  return (
+    <View style={[styles.chatBubbleMetaRow, right ? styles.chatBubbleMetaRowRight : styles.chatBubbleMetaRowLeft]}>
+      <Animated.View style={[styles.chatBubbleSendingDot, { opacity: pulseOpacity }]} />
+      <Animated.Text
+        style={[
+          styles.chatBubbleMeta,
+          styles.chatBubbleMetaSending,
+          right ? styles.chatBubbleMetaRight : styles.chatBubbleMetaLeft,
+          { opacity: pulseOpacity },
+        ]}
+      >
+        {`Wird gesendet${".".repeat(dotCount)}`}
+      </Animated.Text>
+    </View>
+  );
+}
+
 type ChatSurfaceProps = {
   title: string;
   subtitle: string;
@@ -2378,9 +2433,15 @@ function ChatSurface({
                             </Text>
                           )}
                         </View>
-                        <Text style={[styles.chatBubbleMeta, right ? styles.chatBubbleMetaRight : styles.chatBubbleMetaLeft]}>
-                          {message.sending ? "Wird gesendet..." : formatMessageTime(message.createdAt)}
-                        </Text>
+                        {message.sending ? (
+                          <SendingMetaIndicator right={right} />
+                        ) : (
+                          <View style={[styles.chatBubbleMetaRow, right ? styles.chatBubbleMetaRowRight : styles.chatBubbleMetaRowLeft]}>
+                            <Text style={[styles.chatBubbleMeta, right ? styles.chatBubbleMetaRight : styles.chatBubbleMetaLeft]}>
+                              {formatMessageTime(message.createdAt)}
+                            </Text>
+                          </View>
+                        )}
                       </View>
                     </View>
                   );
@@ -10040,14 +10101,36 @@ const styles = StyleSheet.create({
   },
   chatBubbleMeta: {
     fontSize: 11,
-    lineHeight: 14,
+    lineHeight: 13,
     color: "#8d84a5",
+  },
+  chatBubbleMetaRow: {
+    minHeight: 14,
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  chatBubbleMetaRowLeft: {
+    justifyContent: "flex-start",
+  },
+  chatBubbleMetaRowRight: {
+    justifyContent: "flex-end",
   },
   chatBubbleMetaLeft: {
     textAlign: "left",
   },
   chatBubbleMetaRight: {
     textAlign: "right",
+  },
+  chatBubbleMetaSending: {
+    color: "#b4abcd",
+  },
+  chatBubbleSendingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: "#86e3ff",
   },
   chatBubbleImage: {
     width: 184,
