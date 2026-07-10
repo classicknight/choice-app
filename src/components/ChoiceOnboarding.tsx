@@ -268,6 +268,7 @@ type PersistedJourneyState = {
   ownerUserId: string;
   releaseAt: string;
   sharedChatMessages: SharedChatMessage[];
+  lastSeenPartnerMessageId: string | null;
   seenMatchReleaseAt: string | null;
   scheduledMatchNotificationId: string | null;
   scheduledMatchNotificationReleaseAt: string | null;
@@ -2614,6 +2615,9 @@ function OverviewScreen({
   const [phaseThreeDecisions, setPhaseThreeDecisions] = useState<Record<string, "stay" | "new-match">>({});
   const [chatDraft, setChatDraft] = useState("");
   const [chatSendPending, setChatSendPending] = useState(false);
+  const [lastSeenPartnerMessageId, setLastSeenPartnerMessageId] = useState<string | null>(null);
+  const [pendingPhaseOneDecision, setPendingPhaseOneDecision] = useState<"continue" | "new-match" | null>(null);
+  const [pendingPhaseThreeDecision, setPendingPhaseThreeDecision] = useState<"stay" | "new-match" | null>(null);
   const [showChatDecisionModal, setShowChatDecisionModal] = useState(false);
   const [pendingAccountAction, setPendingAccountAction] = useState<"pause" | "signout" | "delete" | null>(null);
   const [photoViewer, setPhotoViewer] = useState<{ uris: string[]; index: number } | null>(null);
@@ -2648,8 +2652,11 @@ function OverviewScreen({
   function applyJourneyState(state: PersistedJourneyState) {
     setRemoteJourney(null);
     setPhaseTwoSubmitPending(false);
+    setPendingPhaseOneDecision(null);
+    setPendingPhaseThreeDecision(null);
     setJourneyReleaseAt(state.releaseAt);
     setSharedChatMessages(normalizeSharedChatMessages(state.sharedChatMessages));
+    setLastSeenPartnerMessageId(state.lastSeenPartnerMessageId ?? null);
     setSeenMatchReleaseAt(state.seenMatchReleaseAt ?? null);
     setScheduledMatchNotificationId(state.scheduledMatchNotificationId ?? null);
     setScheduledMatchNotificationReleaseAt(state.scheduledMatchNotificationReleaseAt ?? null);
@@ -2675,8 +2682,32 @@ function OverviewScreen({
     setSharedChatMessages(currentUserId ? mapRemoteJourneyMessages(state.sharedChatMessages, currentUserId) : []);
     setPhaseOneStarterPenaltyAppliedAt(state.phaseOneStarterPenaltyAppliedAt);
     setPhaseTwoPenaltyAppliedAt(state.phaseTwoPenaltyAppliedAt);
-    setPhaseOneDecisions(state.phaseOneDecisions);
-    setPhaseThreeDecisions(state.phaseThreeDecisions);
+    const nextPhaseOneDecisions = { ...state.phaseOneDecisions };
+    const nextPhaseThreeDecisions = { ...state.phaseThreeDecisions };
+
+    if (currentUserId) {
+      const confirmedPhaseOneDecision = nextPhaseOneDecisions[currentUserId] ?? null;
+      const confirmedPhaseThreeDecision = nextPhaseThreeDecisions[currentUserId] ?? null;
+
+      if (pendingPhaseOneDecision) {
+        if (confirmedPhaseOneDecision === pendingPhaseOneDecision) {
+          setPendingPhaseOneDecision(null);
+        } else {
+          nextPhaseOneDecisions[currentUserId] = pendingPhaseOneDecision;
+        }
+      }
+
+      if (pendingPhaseThreeDecision) {
+        if (confirmedPhaseThreeDecision === pendingPhaseThreeDecision) {
+          setPendingPhaseThreeDecision(null);
+        } else {
+          nextPhaseThreeDecisions[currentUserId] = pendingPhaseThreeDecision;
+        }
+      }
+    }
+
+    setPhaseOneDecisions(nextPhaseOneDecisions);
+    setPhaseThreeDecisions(nextPhaseThreeDecisions);
     setPhaseTwoRounds(state.phaseTwoRounds);
     setPhaseTwoRoundIndex(state.phaseTwoRoundIndex);
     setPhaseTwoStage(state.phaseTwoStage);
@@ -2692,6 +2723,7 @@ function OverviewScreen({
       ownerUserId,
       releaseAt: createInitialReleaseAt(now).toISOString(),
       sharedChatMessages: [],
+      lastSeenPartnerMessageId: null,
       seenMatchReleaseAt: null,
       scheduledMatchNotificationId: null,
       scheduledMatchNotificationReleaseAt: null,
@@ -2716,6 +2748,7 @@ function OverviewScreen({
       ownerUserId,
       releaseAt,
       sharedChatMessages: [],
+      lastSeenPartnerMessageId: null,
       seenMatchReleaseAt: null,
       scheduledMatchNotificationId: null,
       scheduledMatchNotificationReleaseAt: null,
@@ -3056,6 +3089,36 @@ function OverviewScreen({
     () => (hasActiveChat ? mapSharedChatMessagesForViewer(sharedChatMessages) : []),
     [hasActiveChat, sharedChatMessages],
   );
+  const latestPartnerMessageId = useMemo(() => {
+    for (let index = sharedChatMessages.length - 1; index >= 0; index -= 1) {
+      const message = sharedChatMessages[index];
+
+      if (message.author === "partner") {
+        return message.id;
+      }
+    }
+
+    return null;
+  }, [sharedChatMessages]);
+  const unreadPartnerMessageCount = useMemo(() => {
+    const partnerMessages = sharedChatMessages.filter((message) => message.author === "partner");
+
+    if (!partnerMessages.length) {
+      return 0;
+    }
+
+    if (!lastSeenPartnerMessageId) {
+      return partnerMessages.length;
+    }
+
+    const seenIndex = partnerMessages.findIndex((message) => message.id === lastSeenPartnerMessageId);
+
+    if (seenIndex < 0) {
+      return partnerMessages.length;
+    }
+
+    return Math.max(partnerMessages.length - seenIndex - 1, 0);
+  }, [lastSeenPartnerMessageId, sharedChatMessages]);
   const latestSharedChatMessage = sharedChatMessages[sharedChatMessages.length - 1];
   const latestSharedChatPreview = getSharedChatMessagePreview(latestSharedChatMessage);
   const chatPreviewText = latestSharedChatPreview
@@ -3523,6 +3586,8 @@ function OverviewScreen({
     }
 
     const previousDecision = phaseOneDecisions[phaseOneViewerUserId];
+    const previousPendingDecision = pendingPhaseOneDecision;
+    setPendingPhaseOneDecision(nextDecision);
     setPhaseOneDecisions((current) => ({
       ...current,
       [phaseOneViewerUserId]: nextDecision,
@@ -3537,6 +3602,7 @@ function OverviewScreen({
           });
           applyRemoteJourneyState(journey);
         } catch {
+          setPendingPhaseOneDecision(previousPendingDecision);
           setPhaseOneDecisions((current) => {
             const next = { ...current };
 
@@ -3560,6 +3626,8 @@ function OverviewScreen({
     }
 
     const previousDecision = phaseThreeDecisions[phaseOneViewerUserId];
+    const previousPendingDecision = pendingPhaseThreeDecision;
+    setPendingPhaseThreeDecision(nextDecision);
     setPhaseThreeDecisions((current) => ({
       ...current,
       [phaseOneViewerUserId]: nextDecision,
@@ -3574,6 +3642,7 @@ function OverviewScreen({
           });
           applyRemoteJourneyState(journey);
         } catch {
+          setPendingPhaseThreeDecision(previousPendingDecision);
           setPhaseThreeDecisions((current) => {
             const next = { ...current };
 
@@ -4342,6 +4411,7 @@ function OverviewScreen({
           setRemoteJourney(null);
           setJourneyReleaseAt(null);
           setSharedChatMessages([]);
+          setLastSeenPartnerMessageId(null);
           setPhaseOneStarterPenaltyAppliedAt(null);
           setPhaseTwoPenaltyAppliedAt(null);
           setPhaseOneDecisions({});
@@ -4420,6 +4490,7 @@ function OverviewScreen({
       ownerUserId: journeyOwnerUserId,
       releaseAt: journeyReleaseAt,
       sharedChatMessages,
+      lastSeenPartnerMessageId,
       seenMatchReleaseAt,
       scheduledMatchNotificationId,
       scheduledMatchNotificationReleaseAt,
@@ -4443,6 +4514,7 @@ function OverviewScreen({
     journeyOwnerUserId,
     journeyReleaseAt,
     sharedChatMessages,
+    lastSeenPartnerMessageId,
     seenMatchReleaseAt,
     scheduledMatchNotificationId,
     scheduledMatchNotificationReleaseAt,
@@ -5021,6 +5093,16 @@ function OverviewScreen({
       setShowChatDecisionModal(false);
     }
   }, [currentTab]);
+
+  useEffect(() => {
+    if (currentTab !== "chats" || !chatOpen || !latestPartnerMessageId) {
+      return;
+    }
+
+    setLastSeenPartnerMessageId((current) => (
+      current === latestPartnerMessageId ? current : latestPartnerMessageId
+    ));
+  }, [chatOpen, currentTab, latestPartnerMessageId]);
 
   useEffect(() => {
     if (!phaseTwoOpen || phaseTwoStage === "result") {
@@ -5952,6 +6034,13 @@ function OverviewScreen({
                   <Text style={styles.chatListAvatarFallbackText}>C</Text>
                 </View>
               )}
+              {unreadPartnerMessageCount > 0 ? (
+                <View style={styles.chatListUnreadBadge}>
+                  <Text style={styles.chatListUnreadBadgeText}>
+                    {unreadPartnerMessageCount > 9 ? "9+" : unreadPartnerMessageCount}
+                  </Text>
+                </View>
+              ) : null}
             </View>
 
               <View style={styles.chatListBody}>
@@ -10770,6 +10859,26 @@ const styles = StyleSheet.create({
     color: "#eaf8ff",
     fontSize: 18,
     fontWeight: "800",
+  },
+  chatListUnreadBadge: {
+    position: "absolute",
+    top: 3,
+    right: 3,
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ff6f96",
+    borderWidth: 2,
+    borderColor: "#191320",
+  },
+  chatListUnreadBadgeText: {
+    color: "#fff7fb",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.2,
   },
   chatListBody: {
     flex: 1,
