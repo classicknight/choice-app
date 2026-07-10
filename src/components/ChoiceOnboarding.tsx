@@ -5115,17 +5115,6 @@ function OverviewScreen({
   }, [phaseTwoOpen, phaseTwoStage, phaseTwoViewerCanAnswer]);
 
   useEffect(() => {
-    if (!phaseThreeDecisionOpen || phaseThreeViewerDecisionRaw) {
-      return;
-    }
-
-    setPhaseThreeDecisions((current) => ({
-      ...current,
-      [phaseOneViewerUserId]: "stay",
-    }));
-  }, [phaseOneViewerUserId, phaseThreeDecisionOpen, phaseThreeViewerDecisionRaw]);
-
-  useEffect(() => {
     const intervalId = setInterval(() => {
       setCurrentTime(new Date());
     }, 1000);
@@ -5212,9 +5201,6 @@ function OverviewScreen({
       >
         <View style={styles.overviewHeaderStatic}>
           <Text style={styles.overviewHeaderEyebrow}>Choice</Text>
-          <Pressable onPress={onOpenAccountSwitcher} style={styles.overviewHeaderSwitchButton}>
-            <Text style={styles.overviewHeaderSwitchButtonText}>Wechseln</Text>
-          </Pressable>
         </View>
 
         <View style={styles.accountPausedWrap}>
@@ -6291,9 +6277,6 @@ function OverviewScreen({
       >
       <View style={styles.overviewHeaderStatic}>
         <Text style={styles.overviewHeaderEyebrow}>Choice</Text>
-        <Pressable onPress={onOpenAccountSwitcher} style={styles.overviewHeaderSwitchButton}>
-          <Text style={styles.overviewHeaderSwitchButtonText}>Wechseln</Text>
-        </Pressable>
       </View>
 
       <ScrollView
@@ -8574,7 +8557,7 @@ const styles = StyleSheet.create({
   overviewHeaderStatic: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "flex-start",
     paddingBottom: 0,
     gap: 12,
   },
