@@ -5981,9 +5981,9 @@ function OverviewScreen({
             featuredProfileFacts,
             featuredProfile.tagline,
           )}
-          {renderPillSection("Interessen", featuredProfile.interests)}
-          {renderPillSection("Eher pro", featuredProfile.greenFlags)}
-          {renderPillSection("No-Gos", featuredProfile.dealbreakers)}
+          {renderPillSection(`Interessen von ${featuredProfile.firstName}`, featuredProfile.interests)}
+          {renderPillSection(`Bei ${featuredProfile.firstName} eher pro`, featuredProfile.greenFlags)}
+          {renderPillSection(`${featuredProfile.firstName}s No-Gos`, featuredProfile.dealbreakers)}
           <View style={styles.overviewRuleCard}>
             <Text style={styles.overviewRuleTitle}>Dieses Match öffnet genau einen echten Chat</Text>
             <Text style={styles.overviewRuleText}>
