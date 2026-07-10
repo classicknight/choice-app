@@ -2139,6 +2139,8 @@ export async function submitPhaseTwoAnswer(input: {
   }
 
   const round = rounds[input.roundIndex];
+  const phaseTwoStarterUserId = getPhaseTwoStarterUserId(match);
+  const phaseTwoPartnerUserId = getPhaseTwoPartnerUserId(match);
 
   if (input.stage === "starter") {
     const branch = round.answerOptions[input.optionIndex];
@@ -2171,6 +2173,24 @@ export async function submitPhaseTwoAnswer(input: {
         phaseTwoStage: nextStage,
       },
     });
+
+    if (nextStage === PhaseTwoStage.PARTNER) {
+      await Promise.allSettled([
+        sendJourneyNotificationToUser({
+          userId: phaseTwoPartnerUserId,
+          matchId: match.id,
+          kind: "phase-two-partner-turn",
+          contextKey: `phase-two-partner-turn:${match.id}:${phaseTwoPartnerUserId}`,
+          title: "Du bist jetzt in Phase 2 dran",
+          body: `${getParticipantProfileName(match, phaseTwoStarterUserId)} hat die ersten 3 Antworten abgeschlossen. Jetzt bist du dran.`,
+          channelId: "phase-updates",
+          data: {
+            type: "phase-two-partner-turn",
+            matchId: match.id,
+          },
+        }),
+      ]);
+    }
   } else {
     const currentResult = results[input.roundIndex];
 
@@ -2203,6 +2223,24 @@ export async function submitPhaseTwoAnswer(input: {
         phaseTwoStage: nextStage,
       },
     });
+
+    if (nextStage === PhaseTwoStage.RESULT) {
+      await Promise.allSettled([
+        sendJourneyNotificationToUser({
+          userId: phaseTwoStarterUserId,
+          matchId: match.id,
+          kind: "phase-two-result-ready",
+          contextKey: `phase-two-result-ready:${match.id}:${phaseTwoStarterUserId}`,
+          title: "Eure Phase-2-Auswertung ist da",
+          body: `${getParticipantProfileName(match, phaseTwoPartnerUserId)} hat die Choice-Runde abgeschlossen. Die ausführliche Auswertung ist jetzt da.`,
+          channelId: "phase-updates",
+          data: {
+            type: "phase-two-result-ready",
+            matchId: match.id,
+          },
+        }),
+      ]);
+    }
   }
 
   return {

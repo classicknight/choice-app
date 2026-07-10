@@ -595,11 +595,40 @@ function formatClockTime(value: Date) {
   });
 }
 
+function formatRelativeDateTimeLabel(target: Date, now: Date) {
+  const clockLabel = formatClockTime(target);
+
+  if (target.toDateString() === now.toDateString()) {
+    return `heute um ${clockLabel}`;
+  }
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+
+  if (target.toDateString() === tomorrow.toDateString()) {
+    return `morgen um ${clockLabel}`;
+  }
+
+  return `am ${formatDateTime(target.toISOString())}`;
+}
+
 function formatDateTime(value: string) {
   return new Intl.DateTimeFormat("de-DE", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function buildPenaltyEntryGroupKey(entry: {
+  source: "system" | "report";
+  reasonCode: string;
+  reasonLabel: string;
+}) {
+  if (entry.source === "system") {
+    return `system:${entry.reasonCode.trim()}`;
+  }
+
+  return `report:${entry.reasonLabel.trim().toLocaleLowerCase("de-DE")}`;
 }
 
 function formatMessageTime(value: string) {
@@ -2240,7 +2269,6 @@ type ChatSurfaceProps = {
   headerActionState?: "idle" | "keep";
   onHeaderActionPress?: () => void;
   onComposerChangeText: (value: string) => void;
-  onPickImage: () => void;
   onSend: () => void;
   topInset?: number;
   bottomInset?: number;
@@ -2269,17 +2297,17 @@ function ChatSurface({
   headerActionState = "idle",
   onHeaderActionPress,
   onComposerChangeText,
-  onPickImage,
   onSend,
   topInset = 0,
   bottomInset = 0,
   threadSupplement,
 }: ChatSurfaceProps) {
   const threadRef = useRef<ScrollView | null>(null);
+  const composerInputRef = useRef<TextInput | null>(null);
   const [threadViewportHeight, setThreadViewportHeight] = useState(0);
   const [threadContentHeight, setThreadContentHeight] = useState(0);
   const canSend = composerEditable && !composerBusy && composerValue.trim().length > 0;
-  const composerInteractive = composerEditable && !composerBusy;
+  const composerInteractive = composerEditable;
   const composerBottomPadding = fullScreen ? 4 : 10;
   const canScrollThread = threadContentHeight > threadViewportHeight + 1;
   const dockedThreadSupplement = threadSupplement && fullScreen
@@ -2372,6 +2400,7 @@ function ChatSurface({
         ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         scrollEnabled={canScrollThread}
         onLayout={(event) => {
           setThreadViewportHeight(event.nativeEvent.layout.height);
@@ -2478,15 +2507,9 @@ function ChatSurface({
             fullScreen && { paddingBottom: Math.max(bottomInset, 10) },
           ]}
         >
-          <Pressable
-            onPress={onPickImage}
-            disabled={!composerInteractive}
-            style={[styles.chatComposerAccessoryButton, !composerInteractive && styles.chatComposerAccessoryButtonDisabled]}
-          >
-            <Text style={styles.chatComposerAccessoryButtonText}>＋</Text>
-          </Pressable>
           <View style={styles.chatComposerField}>
             <TextInput
+              ref={composerInputRef}
               value={composerValue}
               onChangeText={onComposerChangeText}
               placeholder={composerPlaceholder}
@@ -2500,7 +2523,16 @@ function ChatSurface({
               onSubmitEditing={canSend ? onSend : undefined}
             />
           </View>
-          <Pressable onPress={onSend} disabled={!canSend} style={[styles.chatComposerSendButton, !canSend && styles.chatComposerSendButtonDisabled]}>
+          <Pressable
+            onPress={() => {
+              onSend();
+              requestAnimationFrame(() => {
+                composerInputRef.current?.focus();
+              });
+            }}
+            disabled={!canSend}
+            style={[styles.chatComposerSendButton, !canSend && styles.chatComposerSendButtonDisabled]}
+          >
             <Text style={styles.chatComposerSendButtonText}>{composerBusy ? "…" : "↑"}</Text>
           </Pressable>
         </View>
@@ -2552,6 +2584,7 @@ function OverviewScreen({
   const [phaseTwoRoundIndex, setPhaseTwoRoundIndex] = useState(0);
   const [phaseTwoStage, setPhaseTwoStage] = useState<"starter" | "partner" | "result">("starter");
   const [phaseTwoResults, setPhaseTwoResults] = useState<PhaseTwoRoundResult[]>([]);
+  const [phaseTwoSubmitPending, setPhaseTwoSubmitPending] = useState(false);
   const [phaseTwoStarterUserId, setPhaseTwoStarterUserId] = useState<string | null>(null);
   const [phaseTwoPartnerUserId, setPhaseTwoPartnerUserId] = useState<string | null>(null);
   const [phaseTwoStarterName, setPhaseTwoStarterName] = useState("");
@@ -2590,6 +2623,7 @@ function OverviewScreen({
 
   function applyJourneyState(state: PersistedJourneyState) {
     setRemoteJourney(null);
+    setPhaseTwoSubmitPending(false);
     setJourneyReleaseAt(state.releaseAt);
     setSharedChatMessages(normalizeSharedChatMessages(state.sharedChatMessages));
     setSeenMatchReleaseAt(state.seenMatchReleaseAt ?? null);
@@ -2612,6 +2646,7 @@ function OverviewScreen({
 
   function applyRemoteJourneyState(state: RemoteJourneyState) {
     setRemoteJourney(state);
+    setPhaseTwoSubmitPending(false);
     setJourneyReleaseAt(state.releaseAt);
     setSharedChatMessages(currentUserId ? mapRemoteJourneyMessages(state.sharedChatMessages, currentUserId) : []);
     setPhaseOneStarterPenaltyAppliedAt(state.phaseOneStarterPenaltyAppliedAt);
@@ -2711,6 +2746,38 @@ function OverviewScreen({
   const forfeitedPaidMatchCredits = accountState?.forfeitedPaidMatchCredits ?? 0;
   const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
   const recentPenaltyEntries = accountState?.recentPenalties ?? [];
+  const activePenaltyEntryIds = useMemo(() => {
+    const latestByReason = new Map<string, { id: string; createdAtMs: number }>();
+    const recoveryWindowMs = penaltyRecoveryWindowDays * 24 * 60 * 60 * 1000;
+
+    for (const entry of recentPenaltyEntries) {
+      const createdAtMs = new Date(entry.createdAt).getTime();
+
+      if (!Number.isFinite(createdAtMs)) {
+        continue;
+      }
+
+      const key = buildPenaltyEntryGroupKey(entry);
+      const existing = latestByReason.get(key);
+
+      if (!existing || createdAtMs > existing.createdAtMs) {
+        latestByReason.set(key, {
+          id: entry.id,
+          createdAtMs,
+        });
+      }
+    }
+
+    const nextIds = new Set<string>();
+
+    for (const entry of latestByReason.values()) {
+      if (currentTime.getTime() - entry.createdAtMs < recoveryWindowMs) {
+        nextIds.add(entry.id);
+      }
+    }
+
+    return nextIds;
+  }, [currentTime, penaltyRecoveryWindowDays, recentPenaltyEntries]);
   const profileAge = calculateAgeFromProfile(profile);
   const profileSelfDescription = profile.selfDescription ? getOptionLabel(selfDescriptionOptions, profile.selfDescription) : "";
   const profileIdentity = profile.identity ? getOptionLabel(identityOptions, profile.identity) : "";
@@ -2870,6 +2937,7 @@ function OverviewScreen({
       ? `heute um ${nextScheduledMatchReleaseClockLabel}`
       : `morgen um ${nextScheduledMatchReleaseClockLabel}`;
   const phaseTwoStartsInLabel = formatDurationLabel(phaseTwoStartTime.getTime() - currentTime.getTime());
+  const phaseTwoStartLabel = formatRelativeDateTimeLabel(phaseTwoStartTime, currentTime);
   const renderedChatMessages = useMemo(
     () => (hasActiveChat ? mapSharedChatMessagesForViewer(sharedChatMessages) : []),
     [hasActiveChat, sharedChatMessages],
@@ -2999,7 +3067,7 @@ function OverviewScreen({
       : phaseOneWaitingOnPartner
         ? `Du hast Phase 2 gewählt. Choice wartet jetzt noch bis ${decisionClockLabel} auf ${featuredProfile.firstName}.`
       : phaseOnePartnerWaitingOnViewer
-        ? `${featuredProfile.firstName} hat Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 heute um ${phaseTwoClockLabel}.`
+        ? `${featuredProfile.firstName} hat Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 ${phaseTwoStartLabel}.`
       : phaseFiveUnlocked
         ? "Der Choice Award ist da. Ihr habt alle fünf Phasen geschafft."
         : phaseFourWindowLocked
@@ -3022,7 +3090,7 @@ function OverviewScreen({
           ? phaseOneBothContinue
             ? phaseTwoAvailableByTime
               ? "Beide haben zugestimmt. Erst die Choice-Runde, danach öffnet sich der Chat wieder."
-              : `Beide haben zugestimmt. Phase 2 startet heute um ${phaseTwoClockLabel}.`
+              : `Beide haben zugestimmt. Phase 2 startet ${phaseTwoStartLabel}.`
             : "Die Zeit ist um. Ohne Zustimmung von beiden endet dieses Match."
           : phaseOneChatStarted
             ? decisionCountdownText
@@ -3068,7 +3136,7 @@ function OverviewScreen({
           ? phaseOneBothContinue
             ? phaseTwoAvailableByTime
               ? "Erst die Choice-Runde spielen"
-              : `Phase 2 startet heute um ${phaseTwoClockLabel}`
+              : `Phase 2 startet ${phaseTwoStartLabel}`
             : "Dieses Match ist beendet"
           : phaseOneChatStarted
             ? "Nachricht schreiben"
@@ -3127,7 +3195,7 @@ function OverviewScreen({
       : phaseOneWaitingOnPartner
         ? `Du hast bereits Phase 2 gewählt. Choice wartet jetzt noch bis ${decisionClockLabel} auf die Entscheidung von ${featuredProfile.firstName}.`
       : phaseOnePartnerWaitingOnViewer
-        ? `${featuredProfile.firstName} hat bereits Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 heute um ${phaseTwoClockLabel}.`
+        ? `${featuredProfile.firstName} hat bereits Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 ${phaseTwoStartLabel}.`
       : phaseFiveUnlocked
         ? "Ihr habt die letzte Phase erreicht. Choice zeigt euch jetzt den Award für das, was zwischen euch geblieben ist."
         : phaseFourWindowLocked
@@ -3150,7 +3218,7 @@ function OverviewScreen({
           ? phaseOneBothContinue
             ? phaseTwoAvailableByTime
               ? "Ihr habt beide zugestimmt. Jetzt kommt zuerst die Choice-Runde. Direkt danach öffnet sich dieser Chat wieder."
-              : `Ihr habt beide zugestimmt. Phase 1 ist für heute vorbei und heute um ${phaseTwoClockLabel} beginnt Phase 2.`
+              : `Ihr habt beide zugestimmt. Phase 1 ist für heute vorbei und Phase 2 beginnt ${phaseTwoStartLabel}.`
             : `Bis ${decisionClockLabel} kam keine gemeinsame Zusage zustande. Danach startet wieder ein neues Match.`
           : phaseOneViewerStarts
             ? "In Phase 1 eröffnest du den Chat. Sobald deine erste Nachricht raus ist, kann die andere Person direkt antworten."
@@ -3244,7 +3312,7 @@ function OverviewScreen({
   }
 
   function openOrStartPhaseTwo() {
-    if (phaseTwoHasStarted && !phaseTwoReady) {
+    if (phaseTwoHasStarted) {
       setChatOpen(false);
       setShowChatDecisionModal(false);
       setPhaseTwoOpen(true);
@@ -3256,6 +3324,62 @@ function OverviewScreen({
     }
 
     void startPhaseTwo();
+  }
+
+  function applyPhaseTwoAnswerAOptimistically(answer: PhaseTwoAnswerBranch) {
+    if (!phaseTwoCurrentRound) {
+      return;
+    }
+
+    setPhaseTwoResults((current) => {
+      const next = [...current];
+      next[phaseTwoRoundIndex] = {
+        roundId: phaseTwoCurrentRound.id,
+        prompt: phaseTwoCurrentRound.prompt,
+        personALabel: answer.label,
+        personAScore: answer.score,
+        followUpPrompt: answer.followUpPrompt,
+        followUpOptions: answer.followUpOptions,
+        personBLabel: "",
+        personBScore: 0,
+        compatibility: 0,
+      };
+      return next;
+    });
+
+    if (phaseTwoRoundIndex >= phaseTwoRounds.length - 1) {
+      setPhaseTwoRoundIndex(0);
+      setPhaseTwoStage("partner");
+      return;
+    }
+
+    setPhaseTwoRoundIndex((current) => current + 1);
+  }
+
+  function applyPhaseTwoAnswerBOptimistically(answer: PhaseTwoResponseOption) {
+    if (!phaseTwoCurrentResult) {
+      return;
+    }
+
+    const compatibility = getCompatibilityPoints(phaseTwoCurrentResult.personAScore, answer.score);
+
+    setPhaseTwoResults((current) => {
+      const next = [...current];
+      next[phaseTwoRoundIndex] = {
+        ...phaseTwoCurrentResult,
+        personBLabel: answer.label,
+        personBScore: answer.score,
+        compatibility,
+      };
+      return next;
+    });
+
+    if (phaseTwoRoundIndex >= phaseTwoRounds.length - 1) {
+      setPhaseTwoStage("result");
+      return;
+    }
+
+    setPhaseTwoRoundIndex((current) => current + 1);
   }
 
   function setViewerPhaseOneDecision(nextDecision: "continue" | "new-match") {
@@ -3333,11 +3457,13 @@ function OverviewScreen({
   }
 
   function selectPhaseTwoAnswerA(answer: PhaseTwoAnswerBranch) {
-    if (!phaseTwoCurrentRound || !phaseTwoViewerCanAnswer) {
+    if (!phaseTwoCurrentRound || !phaseTwoViewerCanAnswer || phaseTwoSubmitPending) {
       return;
     }
 
     if (isServerJourneyMode && journeyOwnerUserId) {
+      setPhaseTwoSubmitPending(true);
+      applyPhaseTwoAnswerAOptimistically(answer);
       void (async () => {
         try {
           const journey = await submitRemotePhaseTwoAnswer({
@@ -3348,43 +3474,27 @@ function OverviewScreen({
           });
           applyRemoteJourneyState(journey);
         } catch {
-          // Keep the current round open if syncing fails.
+          void refreshJourneyState(journeyOwnerUserId).catch(() => {
+            setPhaseTwoSubmitPending(false);
+          });
+        } finally {
+          setPhaseTwoSubmitPending(false);
         }
       })();
       return;
     }
 
-    setPhaseTwoResults((current) => {
-      const next = [...current];
-      next[phaseTwoRoundIndex] = {
-        roundId: phaseTwoCurrentRound.id,
-        prompt: phaseTwoCurrentRound.prompt,
-        personALabel: answer.label,
-        personAScore: answer.score,
-        followUpPrompt: answer.followUpPrompt,
-        followUpOptions: answer.followUpOptions,
-        personBLabel: "",
-        personBScore: 0,
-        compatibility: 0,
-      };
-      return next;
-    });
-
-    if (phaseTwoRoundIndex >= phaseTwoRounds.length - 1) {
-      setPhaseTwoRoundIndex(0);
-      setPhaseTwoStage("partner");
-      return;
-    }
-
-    setPhaseTwoRoundIndex((current) => current + 1);
+    applyPhaseTwoAnswerAOptimistically(answer);
   }
 
   function selectPhaseTwoAnswerB(answer: PhaseTwoResponseOption) {
-    if (!phaseTwoCurrentRound || !phaseTwoCurrentResult || !phaseTwoViewerCanAnswer) {
+    if (!phaseTwoCurrentRound || !phaseTwoCurrentResult || !phaseTwoViewerCanAnswer || phaseTwoSubmitPending) {
       return;
     }
 
     if (isServerJourneyMode && journeyOwnerUserId) {
+      setPhaseTwoSubmitPending(true);
+      applyPhaseTwoAnswerBOptimistically(answer);
       void (async () => {
         try {
           const journey = await submitRemotePhaseTwoAnswer({
@@ -3395,31 +3505,17 @@ function OverviewScreen({
           });
           applyRemoteJourneyState(journey);
         } catch {
-          // Keep the current round open if syncing fails.
+          void refreshJourneyState(journeyOwnerUserId).catch(() => {
+            setPhaseTwoSubmitPending(false);
+          });
+        } finally {
+          setPhaseTwoSubmitPending(false);
         }
       })();
       return;
     }
 
-    const compatibility = getCompatibilityPoints(phaseTwoCurrentResult.personAScore, answer.score);
-
-    setPhaseTwoResults((current) => {
-      const next = [...current];
-      next[phaseTwoRoundIndex] = {
-        ...phaseTwoCurrentResult,
-        personBLabel: answer.label,
-        personBScore: answer.score,
-        compatibility,
-      };
-      return next;
-    });
-
-    if (phaseTwoRoundIndex >= phaseTwoRounds.length - 1) {
-      setPhaseTwoStage("result");
-      return;
-    }
-
-    setPhaseTwoRoundIndex((current) => current + 1);
+    applyPhaseTwoAnswerBOptimistically(answer);
   }
 
   function sendChatMessage() {
@@ -3793,12 +3889,12 @@ function OverviewScreen({
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneViewerDecision === "continue" && phaseOnePartnerDecision === "undecided") {
       phaseTwoStatusTitle = "Du hast zugestimmt.";
-      phaseTwoStatusText = `Choice wartet jetzt noch auf ${featuredProfile.firstName}. Wenn ihr beide bis ${decisionClockLabel} weitermachen wollt, startet Phase 2 heute um ${phaseTwoClockLabel}.`;
+      phaseTwoStatusText = `Choice wartet jetzt noch auf ${featuredProfile.firstName}. Wenn ihr beide bis ${decisionClockLabel} weitermachen wollt, startet Phase 2 ${phaseTwoStartLabel}.`;
     }
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneViewerDecision === "undecided" && phaseOnePartnerDecision === "continue") {
       phaseTwoStatusTitle = `${featuredProfile.firstName} möchte weitermachen.`;
-      phaseTwoStatusText = `Wenn du auch zustimmst, endet Phase 1 heute um ${decisionClockLabel} und heute um ${phaseTwoClockLabel} beginnt Phase 2.`;
+      phaseTwoStatusText = `Wenn du auch zustimmst, endet Phase 1 heute um ${decisionClockLabel} und Phase 2 beginnt ${phaseTwoStartLabel}.`;
     }
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneAnyDeclined) {
@@ -3819,7 +3915,7 @@ function OverviewScreen({
 
     if (!phaseTwoHasStarted && phaseOneBothContinue && !phaseTwoAvailableByTime) {
       phaseTwoStatusTitle = "Beide haben zugestimmt.";
-      phaseTwoStatusText = `Phase 1 endet heute um ${decisionClockLabel}. Heute um ${phaseTwoClockLabel} startet Phase 2. Noch ${phaseTwoStartsInLabel}.`;
+      phaseTwoStatusText = `Phase 1 endet heute um ${decisionClockLabel}. Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
     }
 
     if (!phaseTwoHasStarted && phaseOneBothContinue && phaseTwoAvailableByTime) {
@@ -3893,6 +3989,15 @@ function OverviewScreen({
                 : "nicht genug für Phase 3"}
             </Text>
           </View>
+        ) : null}
+
+        {phaseTwoReady ? (
+          <Pressable
+            onPress={openOrStartPhaseTwo}
+            style={styles.phaseTwoEntryButton}
+          >
+            <Text style={styles.phaseTwoEntryButtonText}>Auswertung öffnen</Text>
+          </Pressable>
         ) : null}
 
         {!phaseTwoReady && phaseTwoCanOpen && !phaseTwoViewerWaiting ? (
@@ -4695,77 +4800,6 @@ function OverviewScreen({
     setSharedChatMessages((current) => current.filter((message) => message.id !== messageId));
   }
 
-  async function pickChatImage() {
-    if (!hasActiveChat || !chatComposerEditable || chatSendPending) {
-      return;
-    }
-
-    try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-
-      if (!permission.granted) {
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [4, 5],
-        quality: 0.8,
-      });
-
-      if (result.canceled || !result.assets?.length) {
-        return;
-      }
-
-      const nextUri = result.assets[0]?.uri;
-
-      if (!nextUri) {
-        return;
-      }
-
-      if (isServerJourneyMode && journeyOwnerUserId) {
-        const optimisticMessageId = appendSharedChatMessage(
-          {
-            kind: "image",
-            imageUri: nextUri,
-          },
-          { sending: true },
-        );
-
-        setChatSendPending(true);
-
-        try {
-          const [uploadedImageUri] = await uploadProfilePhotos([nextUri]);
-
-          if (!uploadedImageUri) {
-            removeSharedChatMessage(optimisticMessageId);
-            return;
-          }
-
-          const journey = await sendRemoteJourneyMessage({
-            userId: journeyOwnerUserId,
-            kind: "image",
-            imageUri: uploadedImageUri,
-          });
-          applyRemoteJourneyState(journey);
-        } catch {
-          removeSharedChatMessage(optimisticMessageId);
-        } finally {
-          setChatSendPending(false);
-        }
-        return;
-      }
-
-      appendSharedChatMessage({
-        kind: "image",
-        imageUri: nextUri,
-      });
-    } catch {
-      // Ignore picker edge cases in the demo flow.
-    }
-  }
-
   function openReportModal() {
     setReportReason("");
     setReportDetails("");
@@ -5116,6 +5150,9 @@ function OverviewScreen({
                     <Text style={styles.phaseTwoQuestionText}>
                       {phaseTwoStage === "starter" ? phaseTwoCurrentRound.prompt : phaseTwoCurrentResult?.followUpPrompt}
                     </Text>
+                    {phaseTwoSubmitPending ? (
+                      <Text style={styles.phaseTwoSavingText}>Choice speichert deine Antwort gerade ...</Text>
+                    ) : null}
                   </View>
 
                   <View style={styles.phaseTwoAnswerList}>
@@ -5199,7 +5236,6 @@ function OverviewScreen({
           headerActionState={chatHeaderActionState}
           onHeaderActionPress={hasActiveChat && (phaseOneWindowOpen || (phaseThreeUnlocked && !phaseFourUnlocked)) ? () => setShowChatDecisionModal(true) : undefined}
           onComposerChangeText={setChatDraft}
-          onPickImage={() => void pickChatImage()}
           onSend={sendChatMessage}
           topInset={insets.top}
           bottomInset={insets.bottom}
@@ -5383,6 +5419,7 @@ function OverviewScreen({
         </View>
 
         <View style={styles.penaltyReasonList}>
+          <Text style={styles.penaltyReasonIntro}>Dafür kann es Strafpunkte geben:</Text>
           {penaltyReasons.map((reason) => (
             <View key={reason} style={styles.penaltyReasonItem}>
               <View style={styles.penaltyReasonDot} />
@@ -5392,12 +5429,36 @@ function OverviewScreen({
         </View>
 
         <View style={styles.penaltyHistoryBlock}>
-          <Text style={styles.penaltyProgressTitle}>Deine letzten Strafpunkte</Text>
+          <Text style={styles.penaltyProgressTitle}>Deine letzten Verstöße</Text>
+          <Text style={styles.penaltyFootnote}>
+            Oben zählt nur, was aktuell noch aktiv ist. Hier siehst du auch ältere oder schon wieder abgebaute Punkte.
+          </Text>
           {recentPenaltyEntries.length ? (
             <View style={styles.penaltyHistoryList}>
               {recentPenaltyEntries.map((entry) => (
                 <View key={entry.id} style={styles.penaltyHistoryItem}>
-                  <Text style={styles.penaltyHistoryReason}>{entry.reasonLabel}</Text>
+                  <View style={styles.penaltyHistoryHeader}>
+                    <Text style={styles.penaltyHistoryReason}>{entry.reasonLabel}</Text>
+                    <View
+                      style={[
+                        styles.penaltyHistoryStatusBadge,
+                        activePenaltyEntryIds.has(entry.id)
+                          ? styles.penaltyHistoryStatusBadgeActive
+                          : styles.penaltyHistoryStatusBadgeInactive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.penaltyHistoryStatusText,
+                          activePenaltyEntryIds.has(entry.id)
+                            ? styles.penaltyHistoryStatusTextActive
+                            : styles.penaltyHistoryStatusTextInactive,
+                        ]}
+                      >
+                        {activePenaltyEntryIds.has(entry.id) ? "Aktiv" : "Abgebaut"}
+                      </Text>
+                    </View>
+                  </View>
                   <Text style={styles.penaltyHistoryMeta}>
                     {formatDateTime(entry.createdAt)}
                     {entry.note ? ` · ${entry.note}` : ""}
@@ -8514,6 +8575,12 @@ const styles = StyleSheet.create({
   penaltyReasonList: {
     gap: 10,
   },
+  penaltyReasonIntro: {
+    color: "#f1d3df",
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+  },
   penaltyReasonItem: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -8547,11 +8614,43 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.06)",
     gap: 4,
   },
+  penaltyHistoryHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 8,
+  },
   penaltyHistoryReason: {
+    flex: 1,
     color: "#fff0f6",
     fontSize: 13,
     fontWeight: "700",
     lineHeight: 18,
+  },
+  penaltyHistoryStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  penaltyHistoryStatusBadgeActive: {
+    backgroundColor: "rgba(255, 123, 157, 0.14)",
+    borderColor: "rgba(255, 123, 157, 0.32)",
+  },
+  penaltyHistoryStatusBadgeInactive: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  penaltyHistoryStatusText: {
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  penaltyHistoryStatusTextActive: {
+    color: "#ffd4e1",
+  },
+  penaltyHistoryStatusTextInactive: {
+    color: "#b798aa",
   },
   penaltyHistoryMeta: {
     color: "#b798aa",
@@ -9054,6 +9153,13 @@ const styles = StyleSheet.create({
     lineHeight: 30,
     fontWeight: "700",
     letterSpacing: -0.5,
+  },
+  phaseTwoSavingText: {
+    marginTop: 10,
+    color: "#9adfff",
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: "700",
   },
   phaseTwoAnswerList: {
     gap: 12,
