@@ -3171,6 +3171,27 @@ function OverviewScreen({
     )
     ? "keep"
     : "idle";
+  const chatListDeadlinePillText = phaseOneBeforeRelease
+    ? nextMatchReleaseLabel === `heute um ${releaseClockLabel}`
+      ? `heute ${releaseClockLabel}`
+      : `morgen ${releaseClockLabel}`
+    : phaseFiveUnlocked
+      ? "Phase 5"
+      : phaseFourWindowLocked
+        ? "Phase 4"
+        : phaseThreeUnlocked
+          ? "Phase 3"
+          : phaseTwoChatUnlocked || phaseTwoHasStarted || phaseOneBothContinue
+            ? "Phase 2"
+            : remainingDecisionMs > 0
+              ? decisionCountdownLabel
+              : "Phase 1 vorbei";
+  const chatListDeadlinePillEnded =
+    !phaseOneBeforeRelease
+    && !phaseTwoChatUnlocked
+    && !phaseTwoHasStarted
+    && !phaseOneBothContinue
+    && remainingDecisionMs <= 0;
   const chatHintText = hasActiveChat
     ? phaseOneBeforeRelease
       ? `Dein erstes Match öffnet ${nextMatchReleaseLabel}.`
@@ -5937,15 +5958,9 @@ function OverviewScreen({
                 <View style={styles.chatListTopRow}>
                   <Text style={styles.chatListName}>{chatTitle}</Text>
                   {hasActiveChat ? (
-                    <View style={[styles.chatListDeadlinePill, remainingDecisionMs <= 0 && styles.chatListDeadlinePillEnded]}>
-                      <Text style={[styles.chatListDeadlineText, remainingDecisionMs <= 0 && styles.chatListDeadlineTextEnded]}>
-                        {phaseOneBeforeRelease
-                          ? nextMatchReleaseLabel === `heute um ${releaseClockLabel}`
-                            ? `heute ${releaseClockLabel}`
-                            : `morgen ${releaseClockLabel}`
-                          : remainingDecisionMs > 0
-                            ? decisionCountdownLabel
-                            : `${decisionClockLabel} vorbei`}
+                    <View style={[styles.chatListDeadlinePill, chatListDeadlinePillEnded && styles.chatListDeadlinePillEnded]}>
+                      <Text style={[styles.chatListDeadlineText, chatListDeadlinePillEnded && styles.chatListDeadlineTextEnded]}>
+                        {chatListDeadlinePillText}
                       </Text>
                     </View>
                   ) : (
