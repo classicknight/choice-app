@@ -645,6 +645,20 @@ function formatMessageTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatPenaltyCountdownLabel(milliseconds: number) {
+  const safeMilliseconds = Math.max(0, milliseconds);
+  const totalSeconds = Math.floor(safeMilliseconds / 1000);
+  const totalDays = Math.floor(totalSeconds / (24 * 60 * 60));
+  const remainingMs = safeMilliseconds - totalDays * 24 * 60 * 60 * 1000;
+  const clockLabel = formatDurationLabel(remainingMs);
+
+  if (totalDays <= 0) {
+    return clockLabel;
+  }
+
+  return `${totalDays} Tag${totalDays === 1 ? "" : "e"} ${clockLabel}`;
+}
+
 function getJourneyPhaseLabel(journey: RemoteJourneyState, now = new Date()) {
   const releaseAt = journey.releaseAt ? new Date(journey.releaseAt) : null;
   const phaseTwoStartAt = journey.phaseTwoStartAt ? new Date(journey.phaseTwoStartAt) : null;
@@ -2827,7 +2841,7 @@ function OverviewScreen({
   const forfeitedPaidMatchCredits = accountState?.forfeitedPaidMatchCredits ?? 0;
   const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
   const recentPenaltyEntries = accountState?.recentPenalties ?? [];
-  const activePenaltyEntryIds = useMemo(() => {
+  const activePenaltyEntries = useMemo(() => {
     const latestByReason = new Map<string, { id: string; createdAtMs: number }>();
     const recoveryWindowMs = penaltyRecoveryWindowDays * 24 * 60 * 60 * 1000;
 
@@ -2849,15 +2863,34 @@ function OverviewScreen({
       }
     }
 
-    const nextIds = new Set<string>();
+    const nextEntries: Array<(typeof recentPenaltyEntries)[number] & { expiresAtMs: number }> = [];
 
-    for (const entry of latestByReason.values()) {
-      if (currentTime.getTime() - entry.createdAtMs < recoveryWindowMs) {
-        nextIds.add(entry.id);
+    for (const entry of recentPenaltyEntries) {
+      const createdAtMs = new Date(entry.createdAt).getTime();
+
+      if (!Number.isFinite(createdAtMs)) {
+        continue;
+      }
+
+      const latestEntry = latestByReason.get(buildPenaltyEntryGroupKey(entry));
+
+      if (!latestEntry || latestEntry.id !== entry.id) {
+        continue;
+      }
+
+      if (currentTime.getTime() - createdAtMs < recoveryWindowMs) {
+        nextEntries.push({
+          ...entry,
+          expiresAtMs: createdAtMs + recoveryWindowMs,
+        });
       }
     }
 
-    return nextIds;
+    return nextEntries.sort((entryA, entryB) => {
+      const entryATime = new Date(entryA.createdAt).getTime();
+      const entryBTime = new Date(entryB.createdAt).getTime();
+      return entryBTime - entryATime;
+    });
   }, [currentTime, penaltyRecoveryWindowDays, recentPenaltyEntries]);
   const profileAge = calculateAgeFromProfile(profile);
   const profileSelfDescription = profile.selfDescription ? getOptionLabel(selfDescriptionOptions, profile.selfDescription) : "";
@@ -5556,33 +5589,29 @@ function OverviewScreen({
         </View>
 
         <View style={styles.penaltyHistoryBlock}>
-          <Text style={styles.penaltyProgressTitle}>Deine letzten Verstöße</Text>
+          <Text style={styles.penaltyProgressTitle}>Aktive Strafpunkte</Text>
           <Text style={styles.penaltyFootnote}>
-            Oben zählt nur, was aktuell noch aktiv ist. Hier siehst du auch ältere oder schon wieder abgebaute Punkte.
+            Hier siehst du nur die Punkte, die gerade noch aktiv sind. Nach {penaltyRecoveryWindowDays} Tagen ohne denselben Verstoß baut sich der jeweilige Punkt automatisch wieder ab.
           </Text>
-          {recentPenaltyEntries.length ? (
+          {activePenaltyEntries.length ? (
             <View style={styles.penaltyHistoryList}>
-              {recentPenaltyEntries.map((entry) => (
+              {activePenaltyEntries.map((entry) => (
                 <View key={entry.id} style={styles.penaltyHistoryItem}>
                   <View style={styles.penaltyHistoryHeader}>
                     <Text style={styles.penaltyHistoryReason}>{entry.reasonLabel}</Text>
                     <View
                       style={[
                         styles.penaltyHistoryStatusBadge,
-                        activePenaltyEntryIds.has(entry.id)
-                          ? styles.penaltyHistoryStatusBadgeActive
-                          : styles.penaltyHistoryStatusBadgeInactive,
+                        styles.penaltyHistoryStatusBadgeActive,
                       ]}
                     >
                       <Text
                         style={[
                           styles.penaltyHistoryStatusText,
-                          activePenaltyEntryIds.has(entry.id)
-                            ? styles.penaltyHistoryStatusTextActive
-                            : styles.penaltyHistoryStatusTextInactive,
+                          styles.penaltyHistoryStatusTextActive,
                         ]}
                       >
-                        {activePenaltyEntryIds.has(entry.id) ? "Aktiv" : "Abgebaut"}
+                        Aktiv
                       </Text>
                     </View>
                   </View>
@@ -5590,11 +5619,14 @@ function OverviewScreen({
                     {formatDateTime(entry.createdAt)}
                     {entry.note ? ` · ${entry.note}` : ""}
                   </Text>
+                  <Text style={styles.penaltyHistoryCountdown}>
+                    Noch {formatPenaltyCountdownLabel(entry.expiresAtMs - currentTime.getTime())}
+                  </Text>
                 </View>
               ))}
             </View>
           ) : (
-            <Text style={styles.penaltyFootnote}>Bisher wurde dir noch kein Strafpunkt gegeben.</Text>
+            <Text style={styles.penaltyFootnote}>Gerade ist kein Strafpunkt mehr aktiv.</Text>
           )}
         </View>
       </View>
@@ -8819,6 +8851,12 @@ const styles = StyleSheet.create({
     color: "#b798aa",
     fontSize: 12,
     lineHeight: 17,
+  },
+  penaltyHistoryCountdown: {
+    color: "#ffd4e1",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "700",
   },
   moderationHeaderRow: {
     flexDirection: "row",
