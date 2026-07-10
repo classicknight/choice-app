@@ -1886,10 +1886,11 @@ function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyState["partn
   }
 
   const primaryPhoto = partner.photoUrls.find((entry) => entry?.trim()) ?? partner.avatarUrl ?? demoProfiles[0].imageUri;
-  const tagline =
-    partner.greenFlags.slice(0, 2).join(" • ")
-    || partner.interests.slice(0, 2).join(" • ")
-    || "Choice Match";
+  const preferenceTagline = partner.greenFlags.slice(0, 2).join(" • ");
+  const interestTagline = partner.interests.slice(0, 2).join(" • ");
+  const tagline = preferenceTagline
+    ? `Mag eher: ${preferenceTagline}`
+    : interestTagline || "Choice Match";
 
   return {
     id: partner.userId,
@@ -5748,7 +5749,7 @@ function OverviewScreen({
         <Text style={styles.matchReleaseNoticeEyebrow}>Neu für dich</Text>
         <Text style={styles.matchReleaseNoticeTitle}>Dein Match ist jetzt freigeschaltet.</Text>
         <Text style={styles.matchReleaseNoticeText}>
-          Choice hat {featuredProfile.firstName} jetzt für dich geöffnet. Du solltest dazu auch eine Benachrichtigung auf dein Handy bekommen haben.
+          Choice hat {featuredProfile.firstName} jetzt für dich geöffnet. Schau dir kurz an, warum dieses Match heute passen könnte.
         </Text>
 
         <View style={styles.matchReleaseProfilePreview}>
@@ -5984,7 +5985,7 @@ function OverviewScreen({
             featuredProfile.tagline,
           )}
           {renderPillSection(`Interessen von ${featuredProfile.firstName}`, featuredProfile.interests)}
-          {renderPillSection(`Bei ${featuredProfile.firstName} eher pro`, featuredProfile.greenFlags)}
+          {renderPillSection(`Was ${featuredProfile.firstName} bei jemandem mag`, featuredProfile.greenFlags)}
           {renderPillSection(`${featuredProfile.firstName}s No-Gos`, featuredProfile.dealbreakers)}
           <View style={styles.overviewRuleCard}>
             <Text style={styles.overviewRuleTitle}>Dieses Match öffnet genau einen echten Chat</Text>
