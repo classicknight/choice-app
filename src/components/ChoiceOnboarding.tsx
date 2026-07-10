@@ -3962,6 +3962,9 @@ function OverviewScreen({
     const continueText = decisionIsAfterGame
       ? "Mit dieser Person würdest du morgen weitermachen."
       : "Mit dieser Person würdest du weitermachen.";
+    const viewerContinueVisualSelected = decisionIsAfterGame
+      ? phaseThreeViewerDecision !== "new-match"
+      : phaseOneViewerDecision !== "new-match";
     const viewerSelectedNewMatchHere = decisionIsAfterGame
       ? phaseThreeViewerDecision === "new-match"
       : phaseOneViewerDecision === "new-match";
@@ -3989,8 +3992,8 @@ function OverviewScreen({
             style={({ pressed }) => [
               styles.chatDecisionInlineOption,
               pressed && styles.chatDecisionInlineOptionPressed,
-              (decisionIsAfterGame ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") && styles.chatDecisionInlineOptionActive,
-              (decisionIsAfterGame ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") && pressed && styles.chatDecisionInlineOptionActivePressed,
+              viewerContinueVisualSelected && styles.chatDecisionInlineOptionActive,
+              viewerContinueVisualSelected && pressed && styles.chatDecisionInlineOptionActivePressed,
             ]}
           >
             <Text style={styles.chatDecisionInlineIcon}>♥</Text>
@@ -3998,14 +4001,14 @@ function OverviewScreen({
               <Text
                 style={[
                   styles.chatDecisionInlineOptionTitle,
-                  (decisionIsAfterGame ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") && styles.chatDecisionInlineOptionTitleActive,
+                  viewerContinueVisualSelected && styles.chatDecisionInlineOptionTitleActive,
                 ]}
               >
                 {continueTitle}
               </Text>
               <Text style={styles.chatDecisionInlineOptionText}>{continueText}</Text>
             </View>
-            {(decisionIsAfterGame ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") ? (
+            {viewerContinueVisualSelected ? (
               <View style={styles.chatDecisionInlineMark}>
                 <Text style={styles.chatDecisionInlineMarkText}>✓</Text>
               </View>
@@ -4223,6 +4226,9 @@ function OverviewScreen({
       return null;
     }
 
+    const stayVisualSelected = phaseThreeViewerDecision !== "new-match";
+    const newMatchVisualSelected = phaseThreeViewerDecision === "new-match";
+
     let phaseThreeTitle = "Choice macht euch jetzt einen neuen Vorschlag.";
     let phaseThreeText =
       `Für morgen schlägt Choice ${phaseThreeSuggestedProfile.firstName} vor. Nur wenn ihr beide euch aktiv dagegen entscheidet, bleibt dieser Chat offen und ihr könnt weiterschreiben.`;
@@ -4278,20 +4284,20 @@ function OverviewScreen({
               styles.phaseThreeDecisionOption,
               styles.phaseThreeDecisionOptionStay,
               pressed && styles.phaseThreeDecisionOptionPressed,
-              phaseThreeViewerDecision === "stay" && styles.phaseThreeDecisionOptionActive,
-              phaseThreeViewerDecision === "stay" && pressed && styles.phaseThreeDecisionOptionActivePressed,
+              stayVisualSelected && styles.phaseThreeDecisionOptionActive,
+              stayVisualSelected && pressed && styles.phaseThreeDecisionOptionActivePressed,
             ]}
           >
             <View style={styles.phaseThreeDecisionHeader}>
               <Text style={styles.phaseThreeDecisionIcon}>♥</Text>
-              {phaseThreeViewerDecision === "stay" ? (
+              {stayVisualSelected ? (
                 <View style={styles.phaseThreeDecisionMark}>
                   <Text style={styles.phaseThreeDecisionMarkText}>✓</Text>
                 </View>
               ) : null}
             </View>
             <View style={styles.phaseThreeDecisionCopy}>
-              <Text style={[styles.phaseThreeDecisionTitle, phaseThreeViewerDecision === "stay" && styles.phaseThreeDecisionTitleActive]}>
+              <Text style={[styles.phaseThreeDecisionTitle, stayVisualSelected && styles.phaseThreeDecisionTitleActive]}>
                 Bleiben
               </Text>
               <Text style={styles.phaseThreeDecisionText}>Morgen mit diesem Match weiterschreiben.</Text>
@@ -4304,13 +4310,13 @@ function OverviewScreen({
               styles.phaseThreeDecisionOption,
               styles.phaseThreeDecisionOptionNewMatch,
               pressed && styles.phaseThreeDecisionOptionPressed,
-              phaseThreeViewerDecision === "new-match" && styles.phaseThreeDecisionOptionMuted,
-              phaseThreeViewerDecision === "new-match" && pressed && styles.phaseThreeDecisionOptionMutedPressed,
+              newMatchVisualSelected && styles.phaseThreeDecisionOptionMuted,
+              newMatchVisualSelected && pressed && styles.phaseThreeDecisionOptionMutedPressed,
             ]}
           >
             <View style={styles.phaseThreeDecisionHeader}>
               <Text style={styles.phaseThreeDecisionIcon}>○</Text>
-              {phaseThreeViewerDecision === "new-match" ? (
+              {newMatchVisualSelected ? (
                 <View style={styles.phaseThreeDecisionMarkMuted}>
                   <Text style={styles.phaseThreeDecisionMarkMutedText}>✓</Text>
                 </View>
@@ -4320,7 +4326,7 @@ function OverviewScreen({
               <Text
                 style={[
                   styles.phaseThreeDecisionTitle,
-                  phaseThreeViewerDecision === "new-match" && styles.phaseThreeDecisionTitleMuted,
+                  newMatchVisualSelected && styles.phaseThreeDecisionTitleMuted,
                 ]}
               >
                 Neu starten
@@ -5504,6 +5510,13 @@ function OverviewScreen({
               </Text>
 
               <View style={styles.chatDecisionButtonColumn}>
+              {(() => {
+                const viewerContinueVisualSelected = phaseThreeUnlocked
+                  ? phaseThreeViewerDecision !== "new-match"
+                  : phaseOneViewerDecision !== "new-match";
+
+                return (
+                  <>
                 <Pressable
                   onPress={() => {
                     if (phaseThreeUnlocked) {
@@ -5516,13 +5529,13 @@ function OverviewScreen({
                   style={({ pressed }) => [
                     styles.chatDecisionOptionButton,
                     pressed && styles.chatDecisionOptionButtonPressed,
-                    (phaseThreeUnlocked ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") && styles.chatDecisionOptionButtonActive,
-                    (phaseThreeUnlocked ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") && pressed && styles.chatDecisionOptionButtonActivePressed,
+                    viewerContinueVisualSelected && styles.chatDecisionOptionButtonActive,
+                    viewerContinueVisualSelected && pressed && styles.chatDecisionOptionButtonActivePressed,
                   ]}
                 >
                   <Text style={styles.chatDecisionOptionIcon}>♥</Text>
                   <View style={styles.chatDecisionOptionCopy}>
-                    <Text style={[styles.chatDecisionOptionTitle, (phaseThreeUnlocked ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") && styles.chatDecisionOptionTitleActive]}>
+                    <Text style={[styles.chatDecisionOptionTitle, viewerContinueVisualSelected && styles.chatDecisionOptionTitleActive]}>
                       {phaseThreeUnlocked ? "Bleiben" : "Phase 2 vormerken"}
                     </Text>
                     <Text style={styles.chatDecisionOptionText}>
@@ -5531,7 +5544,7 @@ function OverviewScreen({
                         : "Diesen Chat würdest du gern weiterführen."}
                     </Text>
                   </View>
-                  {(phaseThreeUnlocked ? phaseThreeViewerDecision === "stay" : phaseOneViewerDecision === "continue") ? (
+                  {viewerContinueVisualSelected ? (
                     <View style={styles.chatDecisionOptionMark}>
                       <Text style={styles.chatDecisionOptionMarkText}>✓</Text>
                     </View>
@@ -5576,6 +5589,9 @@ function OverviewScreen({
                     </View>
                   ) : null}
                 </Pressable>
+                  </>
+                );
+              })()}
               </View>
             </Pressable>
           </Pressable>
@@ -6148,9 +6164,21 @@ function OverviewScreen({
                 (!canBuyMatchPack || purchasePending) && styles.unlockPurchaseButtonDisabled,
               ]}
             >
-              <Text style={styles.unlockPurchaseButtonText}>
-                {purchasePending ? "Wird vorbereitet ..." : `8 weitere Matches für ${matchPackPriceLabel}`}
-              </Text>
+              <View style={styles.unlockPurchaseButtonContent}>
+                <View style={styles.unlockPurchaseButtonCopy}>
+                  <Text style={styles.unlockPurchaseButtonTitle}>8 weitere Matches</Text>
+                  <Text style={styles.unlockPurchaseButtonSubtitle}>
+                    {purchasePending
+                      ? "Wird vorbereitet ..."
+                      : canBuyMatchPack
+                        ? "sofort freischalten"
+                        : "Kauf bald verfügbar"}
+                  </Text>
+                </View>
+                <View style={styles.unlockPurchasePricePill}>
+                  <Text style={styles.unlockPurchasePriceText}>{matchPackPriceLabel}</Text>
+                </View>
+              </View>
             </Pressable>
 
             <Text style={styles.unlockPurchaseHint}>
@@ -9175,18 +9203,48 @@ const styles = StyleSheet.create({
   unlockPurchaseButton: {
     minHeight: 50,
     borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
     paddingHorizontal: 18,
     backgroundColor: "#ffb65f",
   },
   unlockPurchaseButtonDisabled: {
     opacity: 0.55,
   },
-  unlockPurchaseButtonText: {
+  unlockPurchaseButtonContent: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  unlockPurchaseButtonCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  unlockPurchaseButtonTitle: {
     color: "#2a150a",
     fontSize: 15,
     fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+  unlockPurchaseButtonSubtitle: {
+    color: "rgba(42, 21, 10, 0.72)",
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: "700",
+  },
+  unlockPurchasePricePill: {
+    minWidth: 74,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(42, 21, 10, 0.12)",
+  },
+  unlockPurchasePriceText: {
+    color: "#2a150a",
+    fontSize: 15,
+    fontWeight: "900",
     letterSpacing: -0.2,
   },
   unlockPurchaseHint: {
