@@ -23,7 +23,7 @@ const config: ExpoConfig = {
   },
   ios: {
     supportsTablet: true,
-    bundleIdentifier: "com.choice.app",
+    bundleIdentifier: "com.choice.dating",
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
     },
@@ -31,7 +31,7 @@ const config: ExpoConfig = {
   android: {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
-    package: "com.choice.app",
+    package: "com.choice.dating",
     adaptiveIcon: {
       foregroundImage: "./src/assets/pink.jpeg",
       backgroundColor: "#0f0b0d",
