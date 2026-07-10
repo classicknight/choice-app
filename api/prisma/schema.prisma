@@ -65,6 +65,20 @@ enum ReportStatus {
   DISMISSED
 }
 
+enum PurchasePlatform {
+  APPLE
+  GOOGLE
+  UNKNOWN
+}
+
+enum PurchaseStatus {
+  RECEIVED
+  GRANTED
+  REVOKED
+  IGNORED
+  FAILED
+}
+
 model User {
   id                String                  @id @default(cuid())
   createdAt         DateTime                @default(now())
@@ -97,6 +111,7 @@ model User {
   systemPenaltyEvents SystemPenaltyEvent[]
   pushDevices       PushDevice[]
   notificationDispatches NotificationDispatch[]
+  purchases         Purchase[]
 }
 
 model Profile {
@@ -280,4 +295,29 @@ model NotificationDispatch {
 
   @@index([userId, createdAt])
   @@index([matchId, createdAt])
+}
+
+model Purchase {
+  id                    String           @id @default(cuid())
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  userId                String
+  platform              PurchasePlatform @default(UNKNOWN)
+  status                PurchaseStatus   @default(RECEIVED)
+  productId             String
+  creditsGranted        Int              @default(0)
+  grantedAt             DateTime?
+  purchasedAt           DateTime?
+  environment           String?
+  storeTransactionId    String?          @unique
+  revenueCatEventId     String?          @unique
+  revenueCatAppUserId   String?
+  revenueCatOfferingId  String?
+  revocationReason      String?
+  rawPayload            Json?
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([productId, createdAt])
 }

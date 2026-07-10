@@ -53,6 +53,13 @@ import {
   type DemoProfile,
 } from "../lib/mock-data";
 import {
+  getMatchPackStoreProduct,
+  hasRevenueCatConfig,
+  purchaseMatchPackProduct,
+  syncRevenueCatUser,
+  logOutRevenueCat,
+} from "../lib/purchases";
+import {
   buildSummary,
   calculateAgeFromProfile,
   dealbreakerOptions,
@@ -2609,6 +2616,9 @@ function OverviewScreen({
   const [phaseOneStarterPenaltyAppliedAt, setPhaseOneStarterPenaltyAppliedAt] = useState<string | null>(null);
   const [phaseTwoPenaltyAppliedAt, setPhaseTwoPenaltyAppliedAt] = useState<string | null>(null);
   const [accountState, setAccountState] = useState<RemoteAccountState | null>(null);
+  const [purchasePending, setPurchasePending] = useState(false);
+  const [purchaseMessage, setPurchaseMessage] = useState<string | null>(null);
+  const [matchPackPriceLabel, setMatchPackPriceLabel] = useState("3,99 €");
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState("");
   const [reportDetails, setReportDetails] = useState("");
@@ -2723,6 +2733,76 @@ function OverviewScreen({
     return journey;
   }
 
+  async function waitForGrantedMatchPack(userId: string, previousCredits: number) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 1500);
+      });
+
+      try {
+        const updatedAccount = await refreshAccountState(userId);
+
+        if (updatedAccount.paidMatchCredits > previousCredits) {
+          return updatedAccount;
+        }
+      } catch {
+        // Keep polling briefly while the webhook is still catching up.
+      }
+    }
+
+    return null;
+  }
+
+  async function handleBuyMatchPack() {
+    if (!currentUserId) {
+      setPurchaseMessage("Bitte zuerst normal eingeloggt sein.");
+      return;
+    }
+
+    const activeUserId = currentUserId;
+
+    if (!hasRevenueCatConfig()) {
+      setPurchaseMessage("Der Store-Schlüssel fehlt noch. Sobald RevenueCat verbunden ist, kannst du hier direkt testen.");
+      return;
+    }
+
+    setPurchasePending(true);
+    setPurchaseMessage(null);
+
+    try {
+      await syncRevenueCatUser(activeUserId);
+      const previousCredits = accountState?.paidMatchCredits ?? 0;
+      const product = await getMatchPackStoreProduct();
+
+      if (!product) {
+        setPurchaseMessage("Das Match-Paket ist im Store noch nicht bereit. Lege zuerst das Produkt `match_pack_8` an.");
+        return;
+      }
+
+      await purchaseMatchPackProduct(product);
+
+      const updatedAccount = await waitForGrantedMatchPack(activeUserId, previousCredits);
+
+      if (updatedAccount) {
+        setAccountState(updatedAccount);
+        setPurchaseMessage("8 weitere Matches wurden freigeschaltet.");
+      } else {
+        setPurchaseMessage("Der Kauf wurde erfasst. Choice schreibt die 8 Matches gleich gut, sobald der Webhook angekommen ist.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const normalizedMessage = message.toLocaleLowerCase("de-DE");
+
+      if (normalizedMessage.includes("cancel")) {
+        setPurchaseMessage("Kauf abgebrochen.");
+      } else {
+        setPurchaseMessage("Der Kauf konnte gerade nicht abgeschlossen werden.");
+      }
+    } finally {
+      setPurchasePending(false);
+    }
+  }
+
   const featuredProfile = useMemo<DemoProfile>(() => {
     const remotePartnerProfile = mapRemoteJourneyPartnerToDemoProfile(remoteJourney?.partner ?? null);
 
@@ -2738,6 +2818,7 @@ function OverviewScreen({
   const remainingPenaltyPoints = Math.max(maxPenaltyPoints - penaltyPoints, 0);
   const accountPaused = accountState?.accountPaused ?? false;
   const accountBanned = accountState?.accountBanned ?? false;
+  const canBuyMatchPack = Boolean(currentUserId && !accountPaused && !accountBanned && hasRevenueCatConfig());
   const activePartnerUserId = remoteJourney?.partner?.userId ?? null;
   const hasActiveChat = Boolean(currentUserId && remoteJourney?.partner);
   const includedMatchLimit = 8;
@@ -4369,6 +4450,52 @@ function OverviewScreen({
 
   useEffect(() => {
     if (!currentUserId) {
+      setPurchaseMessage(null);
+      setMatchPackPriceLabel("3,99 €");
+      void logOutRevenueCat().catch(() => {
+        // Ignore logout cleanup errors while leaving the app surface.
+      });
+      return;
+    }
+
+    void syncRevenueCatUser(currentUserId).catch(() => {
+      // The purchase layer can reconnect on the next session or app reload.
+    });
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId || !hasRevenueCatConfig()) {
+      setMatchPackPriceLabel("3,99 €");
+      return;
+    }
+
+    const activeUserId = currentUserId;
+    let cancelled = false;
+
+    async function loadMatchPackPrice() {
+      try {
+        await syncRevenueCatUser(activeUserId);
+        const product = await getMatchPackStoreProduct();
+
+        if (!cancelled && product?.priceString) {
+          setMatchPackPriceLabel(product.priceString);
+        }
+      } catch {
+        if (!cancelled) {
+          setMatchPackPriceLabel("3,99 €");
+        }
+      }
+    }
+
+    void loadMatchPackPrice();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!currentUserId) {
       pushRegistrationRef.current = null;
       return;
     }
@@ -5888,6 +6015,33 @@ function OverviewScreen({
                 </Text>
               </View>
             </View>
+
+            <Pressable
+              onPress={() => {
+                void handleBuyMatchPack();
+              }}
+              disabled={!canBuyMatchPack || purchasePending}
+              style={[
+                styles.unlockPurchaseButton,
+                (!canBuyMatchPack || purchasePending) && styles.unlockPurchaseButtonDisabled,
+              ]}
+            >
+              <Text style={styles.unlockPurchaseButtonText}>
+                {purchasePending ? "Wird vorbereitet ..." : `8 weitere Matches für ${matchPackPriceLabel}`}
+              </Text>
+            </Pressable>
+
+            <Text style={styles.unlockPurchaseHint}>
+              {canBuyMatchPack
+                ? "Der Kauf läuft über den App Store oder Google Play. Die 8 Matches werden danach serverseitig gutgeschrieben."
+                : "Sobald RevenueCat und die Store-Keys gesetzt sind, kannst du den Kauf hier direkt testen."}
+            </Text>
+
+            {purchaseMessage ? (
+              <View style={styles.unlockPurchaseFeedbackCard}>
+                <Text style={styles.unlockPurchaseFeedbackText}>{purchaseMessage}</Text>
+              </View>
+            ) : null}
           </View>
 
           {renderPenaltyCard()}
@@ -6954,6 +7108,9 @@ export function ChoiceOnboarding() {
     setAccountActionPending(true);
 
     try {
+      await logOutRevenueCat().catch(() => {
+        // Ignore RevenueCat cleanup errors while pausing locally.
+      });
       await clearPersistedSession();
       resetToIntroSurface();
     } finally {
@@ -6965,6 +7122,9 @@ export function ChoiceOnboarding() {
     setAccountActionPending(true);
 
     try {
+      await logOutRevenueCat().catch(() => {
+        // Ignore RevenueCat cleanup errors while signing out locally.
+      });
       await clearPersistedSession();
       resetToIntroSurface();
     } finally {
@@ -6983,6 +7143,9 @@ export function ChoiceOnboarding() {
         setRememberedSessions((current) => current.filter((entry) => entry.userId !== verifiedUserId));
       }
 
+      await logOutRevenueCat().catch(() => {
+        // Ignore RevenueCat cleanup errors while deleting the account.
+      });
       await clearTransientState();
       await clearPersistedSession();
       resetToIntroSurface();
@@ -8883,6 +9046,42 @@ const styles = StyleSheet.create({
     color: "#b8a79d",
     fontSize: 12,
     lineHeight: 18,
+  },
+  unlockPurchaseButton: {
+    minHeight: 50,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+    backgroundColor: "#ffb65f",
+  },
+  unlockPurchaseButtonDisabled: {
+    opacity: 0.55,
+  },
+  unlockPurchaseButtonText: {
+    color: "#2a150a",
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
+  unlockPurchaseHint: {
+    color: "#ceb9ac",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  unlockPurchaseFeedbackCard: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 203, 130, 0.18)",
+  },
+  unlockPurchaseFeedbackText: {
+    color: "#fff2e6",
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: "600",
   },
   phaseJumpCard: {
     padding: 18,
