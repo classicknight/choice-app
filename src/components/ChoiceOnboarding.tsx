@@ -2676,6 +2676,13 @@ function OverviewScreen({
     setPhaseTwoPartnerName(state.phaseTwoPartnerName);
   }
 
+  function applyStoredJourneyClientState(state: PersistedJourneyState) {
+    setLastSeenPartnerMessageId(state.lastSeenPartnerMessageId ?? null);
+    setSeenMatchReleaseAt(state.seenMatchReleaseAt ?? null);
+    setScheduledMatchNotificationId(state.scheduledMatchNotificationId ?? null);
+    setScheduledMatchNotificationReleaseAt(state.scheduledMatchNotificationReleaseAt ?? null);
+  }
+
   function applyRemoteJourneyState(state: RemoteJourneyState) {
     setRemoteJourney(state);
     setPhaseTwoSubmitPending(false);
@@ -4439,6 +4446,12 @@ function OverviewScreen({
 
       if (isServerJourneyMode) {
         try {
+          const stored = await loadTransientState<PersistedJourneyState>();
+
+          if (!cancelled && stored && stored.ownerUserId === journeyOwnerUserId) {
+            applyStoredJourneyClientState(stored);
+          }
+
           const journey = await refreshJourneyState(journeyOwnerUserId);
 
           if (!cancelled) {
@@ -4489,7 +4502,7 @@ function OverviewScreen({
   }, [isServerJourneyMode, journeyOwnerUserId]);
 
   useEffect(() => {
-    if (isServerJourneyMode || !isJourneyHydrated || !journeyOwnerUserId || !journeyReleaseAt) {
+    if (!isJourneyHydrated || !journeyOwnerUserId || !journeyReleaseAt) {
       return;
     }
 
