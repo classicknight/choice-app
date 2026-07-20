@@ -642,6 +642,13 @@ function formatRelativeDateTimeLabel(target: Date, now: Date) {
     return `heute um ${clockLabel}`;
   }
 
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  if (target.toDateString() === yesterday.toDateString()) {
+    return `gestern um ${clockLabel}`;
+  }
+
   const tomorrow = new Date(now);
   tomorrow.setDate(now.getDate() + 1);
 
@@ -3261,6 +3268,13 @@ function OverviewScreen({
       ? `heute um ${nextScheduledMatchReleaseClockLabel}`
       : `morgen um ${nextScheduledMatchReleaseClockLabel}`;
   const phaseTwoStartsInLabel = formatDurationLabel(phaseTwoStartTime.getTime() - currentTime.getTime());
+  const decisionDeadlineLabel = formatRelativeDateTimeLabel(decisionDeadline, currentTime);
+  const phaseOneEndPhrase = currentTime >= decisionDeadline
+    ? `Phase 1 endete ${decisionDeadlineLabel}`
+    : `Phase 1 endet ${decisionDeadlineLabel}`;
+  const phaseOneEndClause = currentTime >= decisionDeadline
+    ? `endete Phase 1 ${decisionDeadlineLabel}`
+    : `endet Phase 1 ${decisionDeadlineLabel}`;
   const phaseTwoStartLabel = formatRelativeDateTimeLabel(phaseTwoStartTime, currentTime);
   const phaseThreeStartsInLabel = formatDurationLabel(phaseThreeStartTime.getTime() - currentTime.getTime());
   const phaseThreeStartLabel = formatRelativeDateTimeLabel(phaseThreeStartTime, currentTime);
@@ -4522,12 +4536,12 @@ function OverviewScreen({
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneViewerDecision === "continue" && phaseOnePartnerDecision === "undecided") {
       phaseTwoStatusTitle = "Du hast aktiv Weiter gewählt.";
-      phaseTwoStatusText = `Wenn ${featuredProfile.firstName} nichts ändert, startet Phase 2 ${phaseTwoStartLabel}. Bis ${decisionClockLabel} kann diese Entscheidung noch geändert werden.`;
+      phaseTwoStatusText = `Wenn ${featuredProfile.firstName} nichts ändert, startet Phase 2 ${phaseTwoStartLabel}. Bis ${decisionDeadlineLabel} kann diese Entscheidung noch geändert werden.`;
     }
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneViewerDecision === "undecided" && phaseOnePartnerDecision === "continue") {
       phaseTwoStatusTitle = `${featuredProfile.firstName} möchte weitermachen.`;
-      phaseTwoStatusText = `Wenn du nichts änderst, endet Phase 1 heute um ${decisionClockLabel} und Phase 2 beginnt ${phaseTwoStartLabel}.`;
+      phaseTwoStatusText = `Wenn du nichts änderst, ${phaseOneEndClause} und Phase 2 beginnt ${phaseTwoStartLabel}.`;
     }
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneAnyDeclined) {
@@ -4535,11 +4549,11 @@ function OverviewScreen({
       phaseTwoStatusText =
         phaseOneViewerDecision === "new-match" && phaseOnePartnerDecision !== "new-match"
           ? phaseOneClosed
-            ? `Du wolltest danach ein neues Match. Deshalb endet dieses Match heute um ${decisionClockLabel} und direkt danach startet ein neues.`
+            ? `Du wolltest danach ein neues Match. Deshalb endete dieses Match ${decisionDeadlineLabel} und direkt danach startete ein neues.`
             : `Du hast gewählt, dass du danach ein neues Match willst. Bis ${decisionClockLabel} kannst du diese Entscheidung noch ändern.`
           : phaseOneViewerDecision !== "new-match" && phaseOnePartnerDecision === "new-match"
             ? phaseOneClosed
-              ? `${featuredProfile.firstName} wollte danach ein neues Match. Deshalb endet dieses Match heute um ${decisionClockLabel} und direkt danach startet wieder ein neues.`
+              ? `${featuredProfile.firstName} wollte danach ein neues Match. Deshalb endete dieses Match ${decisionDeadlineLabel} und direkt danach startete wieder ein neues.`
               : `${featuredProfile.firstName} möchte danach ein neues Match. Bis ${decisionClockLabel} könnt ihr diese Entscheidung noch ändern.`
             : phaseOneClosed
               ? `Bis ${decisionClockLabel} hat mindestens eine Person Neues Match gewählt. Direkt danach startet wieder ein neues Match.`
@@ -4548,7 +4562,7 @@ function OverviewScreen({
 
     if (!phaseTwoHasStarted && phaseOneCanAdvanceToPhaseTwo && !phaseTwoAvailableByTime) {
       phaseTwoStatusTitle = "Dieses Match läuft weiter.";
-      phaseTwoStatusText = `Solange niemand Neues Match wählt, endet Phase 1 heute um ${decisionClockLabel} und Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
+      phaseTwoStatusText = `${phaseOneEndPhrase}. Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
     }
 
     if (!phaseTwoHasStarted && phaseOneCanAdvanceToPhaseTwo && phaseTwoAvailableByTime) {
@@ -6641,7 +6655,7 @@ function OverviewScreen({
     } else if (phaseOneCanAdvanceToPhaseTwo) {
       eyebrow = "Phase 1";
       title = "Dieses Match läuft weiter.";
-      text = `Solange niemand Neues Match wählt, endet Phase 1 heute um ${decisionClockLabel}. Danach startet eure Choice-Runde ${phaseTwoStartLabel}.`;
+      text = `${phaseOneEndPhrase}. Danach startet eure Choice-Runde ${phaseTwoStartLabel}.`;
       pills.push(`Noch ${phaseTwoStartsInLabel}`);
       pills.push(`Start ${phaseTwoStartLabel}`);
     } else {
