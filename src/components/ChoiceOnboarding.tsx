@@ -30,6 +30,8 @@ import Svg, {
 } from "react-native-svg";
 import {
   applyRemoteSystemPenalty,
+  blockRemoteJourneyPartner,
+  bootstrapDevSession,
   createRemoteReport,
   createRemoteProfile,
   deleteRemoteAccount,
@@ -37,6 +39,8 @@ import {
   fetchRemoteJourney,
   fetchRemoteProfile,
   registerRemotePushToken,
+  setApiAccessToken,
+  type RemoteJourneyPartnerProfile,
   type RemoteJourneyState,
   sendRemoteJourneyMessage,
   setRemotePhaseOneDecision,
@@ -148,7 +152,13 @@ const LEGAL_URLS = {
   datenschutz: "https://choice-dating.app/datenschutz",
   rechtliches: "https://choice-dating.app/rechtliches",
   agb: "https://choice-dating.app/agb",
+  supportModeration: "mailto:kontakt@autovisa.de?subject=Choice%20Moderationspr%C3%BCfung",
 } as const;
+const authRequestErrors = new Set(["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_FORBIDDEN"]);
+
+async function openExternalUrl(url: string) {
+  await Linking.openURL(url);
+}
 
 type GermanCityRecord = {
   city: string;
@@ -304,7 +314,6 @@ const overviewTabs: { id: OverviewTabId; label: string }[] = [
 const reportReasonOptions: readonly SelectOption[] = [
   { value: "unangemessenes-verhalten", label: "Unangemessenes Verhalten" },
   { value: "respektloser-chat", label: "Respektlose oder sexualisierte Nachrichten" },
-  { value: "anstoessige-bilder", label: "Anstößige Bilder" },
   { value: "choice-regel-ignoriert", label: "Choice-Regel wurde ignoriert" },
 ];
 
@@ -319,6 +328,11 @@ function normalizeLookup(value: string) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/ß/g, "ss");
+}
+
+function isAuthRequestError(value: unknown) {
+  const message = value instanceof Error ? value.message : "";
+  return authRequestErrors.has(message);
 }
 
 const cityCoordinates: Record<string, { lat: number; lon: number }> = {
@@ -541,6 +555,10 @@ function padDatePart(value: number) {
   return String(value).padStart(2, "0");
 }
 
+function getDateKey(date: Date) {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
 function setTimeOfDay(date: Date, hour: number, minute: number) {
   const next = new Date(date);
   next.setHours(hour, minute, 0, 0);
@@ -565,6 +583,20 @@ function buildPhaseSchedule(now: Date) {
     phaseThreeStart,
     phaseFourStart,
     phaseFiveStart,
+  };
+}
+
+function resolveJourneyPhaseSchedule(journey: RemoteJourneyState | null, fallbackDate: Date) {
+  const fallbackBase = journey?.releaseAt ? new Date(journey.releaseAt) : fallbackDate;
+  const fallback = buildPhaseSchedule(fallbackBase);
+
+  return {
+    release: journey?.releaseAt ? new Date(journey.releaseAt) : fallback.release,
+    decisionDeadline: journey?.decisionDeadlineAt ? new Date(journey.decisionDeadlineAt) : fallback.decisionDeadline,
+    phaseTwoStart: journey?.phaseTwoStartAt ? new Date(journey.phaseTwoStartAt) : fallback.phaseTwoStart,
+    phaseThreeStart: journey?.phaseThreeStartAt ? new Date(journey.phaseThreeStartAt) : fallback.phaseThreeStart,
+    phaseFourStart: journey?.phaseFourStartAt ? new Date(journey.phaseFourStartAt) : fallback.phaseFourStart,
+    phaseFiveStart: journey?.phaseFiveStartAt ? new Date(journey.phaseFiveStartAt) : fallback.phaseFiveStart,
   };
 }
 
@@ -618,6 +650,61 @@ function formatRelativeDateTimeLabel(target: Date, now: Date) {
   }
 
   return `am ${formatDateTime(target.toISOString())}`;
+}
+
+type TimelinePhaseState = "upcoming" | "active" | "done";
+
+type TimelinePhaseStatus = {
+  state: TimelinePhaseState;
+  label: string;
+};
+
+function buildTimelinePhaseStatus(input: {
+  now: Date;
+  start: Date;
+  end?: Date | null;
+  upcomingPrefix?: string;
+  activePrefix?: string;
+  doneLabel?: string;
+  activeUntilLabel?: string;
+  activeWithoutEndLabel?: string;
+}) {
+  const {
+    now,
+    start,
+    end,
+    upcomingPrefix = "Startet in",
+    activePrefix = "Läuft noch",
+    doneLabel = "Vorbei",
+    activeUntilLabel,
+    activeWithoutEndLabel = "Jetzt offen",
+  } = input;
+
+  if (now < start) {
+    return {
+      state: "upcoming",
+      label: `${upcomingPrefix} ${formatDurationLabel(start.getTime() - now.getTime())} • ${formatRelativeDateTimeLabel(start, now)}`,
+    } satisfies TimelinePhaseStatus;
+  }
+
+  if (!end) {
+    return {
+      state: "active",
+      label: activeWithoutEndLabel,
+    } satisfies TimelinePhaseStatus;
+  }
+
+  if (now < end) {
+    return {
+      state: "active",
+      label: `${activePrefix} ${formatDurationLabel(end.getTime() - now.getTime())} • ${activeUntilLabel ?? `bis ${formatRelativeDateTimeLabel(end, now)}`}`,
+    } satisfies TimelinePhaseStatus;
+  }
+
+  return {
+    state: "done",
+    label: doneLabel,
+  } satisfies TimelinePhaseStatus;
 }
 
 function formatDateTime(value: string) {
@@ -819,6 +906,65 @@ function buildProfileFromDemoProfile(entry: DemoProfile): RegistrationProfile {
     conversationStyle: "direct",
     consent: true,
   };
+}
+
+function classifyLocalProfileTarget(profile: { lookingFor: string; pronouns: string }) {
+  if (profile.lookingFor === "Alle") {
+    return "Alle";
+  }
+
+  if (profile.pronouns === "sie/ihr") {
+    return "Frauen";
+  }
+
+  if (profile.pronouns === "er/ihm") {
+    return "Männer";
+  }
+
+  return "Alle";
+}
+
+function isLocallyCompatible(
+  viewer: {
+    lookingFor: string;
+    pronouns: string;
+    age: number;
+    ageRangeMin: number;
+    ageRangeMax: number;
+  },
+  candidate: DemoProfile,
+) {
+  const viewerTarget = classifyLocalProfileTarget(candidate);
+  const candidateTarget = classifyLocalProfileTarget(viewer);
+
+  const viewerAccepts = viewer.lookingFor === "Alle" || viewer.lookingFor === viewerTarget;
+  const candidateAccepts = candidate.lookingFor === "Alle" || candidate.lookingFor === candidateTarget;
+  const viewerAgeOk = candidate.age >= viewer.ageRangeMin && candidate.age <= viewer.ageRangeMax;
+  const candidateAgeOk = viewer.age >= candidate.ageRangeMin && viewer.age <= candidate.ageRangeMax;
+
+  return viewerAccepts && candidateAccepts && viewerAgeOk && candidateAgeOk;
+}
+
+function calculateLocalCandidateScore(
+  viewer: {
+    city: string;
+    interests: string[];
+    lookingFor: string;
+    datingIntent: string;
+  },
+  candidate: DemoProfile,
+) {
+  const sharedInterests = viewer.interests.filter((interest) => candidate.interests.includes(interest));
+  const sameCity = viewer.city.trim().toLocaleLowerCase("de-DE") === candidate.city.trim().toLocaleLowerCase("de-DE");
+  const sameIntent = viewer.datingIntent === candidate.datingIntent;
+  const sameLookingFor = viewer.lookingFor === candidate.lookingFor;
+
+  return (
+    sharedInterests.length * 18
+    + (sameCity ? 12 : 0)
+    + (sameIntent ? 10 : 0)
+    + (sameLookingFor ? 6 : 0)
+  );
 }
 
 function getPhaseTwoDifferenceLabel(compatibility: number) {
@@ -1684,7 +1830,7 @@ const screens: Screen[] = [
     id: "interests",
     kind: "multi",
     title: "Wofür begeisterst du dich?",
-    hint: "Wähl 3 bis 5 Dinge, über die du gern sprichst",
+    hint: "Wähl 3 bis 5 Dinge wie Musik, Reisen, Kochen oder Cafés",
     options: optionify(interestOptions),
   },
   {
@@ -1880,7 +2026,7 @@ function mapRemoteJourneyMessages(
   }, []);
 }
 
-function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyState["partner"]): DemoProfile | null {
+function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyPartnerProfile | null): DemoProfile | null {
   if (!partner) {
     return null;
   }
@@ -2002,6 +2148,7 @@ type ProgressRingProps = {
   total: number;
   activeColor: string;
   label: string;
+  displayValue?: string;
   unlocked?: boolean;
   unlockedColor?: string;
   unlockedValue?: string;
@@ -2013,6 +2160,7 @@ function ProgressRing({
   total,
   activeColor,
   label,
+  displayValue,
   unlocked = false,
   unlockedColor = "#8dffb8",
   unlockedValue = "∞",
@@ -2051,7 +2199,7 @@ function ProgressRing({
       </Svg>
 
       <View style={styles.unlockRingCenter}>
-        <Text style={styles.unlockRingValue}>{unlocked ? unlockedValue : `${current}/${total}`}</Text>
+        <Text style={styles.unlockRingValue}>{unlocked ? unlockedValue : displayValue ?? `${current}/${total}`}</Text>
         <Text style={styles.unlockRingLabel}>{unlocked ? unlockedLabel : label}</Text>
       </View>
     </View>
@@ -2285,6 +2433,7 @@ type ChatSurfaceProps = {
   composerBusy?: boolean;
   composerHidden?: boolean;
   composerLockedText?: string | null;
+  composerStatusText?: string | null;
   fullScreen?: boolean;
   onBack?: () => void;
   onOpenProfile?: () => void;
@@ -2296,6 +2445,7 @@ type ChatSurfaceProps = {
   topInset?: number;
   bottomInset?: number;
   threadSupplement?: ReactNode;
+  threadSupplementPlacement?: "inline" | "docked";
 };
 
 function ChatSurface({
@@ -2313,6 +2463,7 @@ function ChatSurface({
   composerBusy = false,
   composerHidden = false,
   composerLockedText = null,
+  composerStatusText = null,
   fullScreen = false,
   onBack,
   onOpenProfile,
@@ -2324,6 +2475,7 @@ function ChatSurface({
   topInset = 0,
   bottomInset = 0,
   threadSupplement,
+  threadSupplementPlacement = "docked",
 }: ChatSurfaceProps) {
   const threadRef = useRef<ScrollView | null>(null);
   const composerInputRef = useRef<TextInput | null>(null);
@@ -2333,10 +2485,11 @@ function ChatSurface({
   const composerInteractive = composerEditable;
   const composerBottomPadding = fullScreen ? 4 : 10;
   const canScrollThread = threadContentHeight > threadViewportHeight + 1;
-  const dockedThreadSupplement = threadSupplement && fullScreen
+  const shouldDockThreadSupplement = fullScreen && threadSupplementPlacement === "docked";
+  const dockedThreadSupplement = threadSupplement && shouldDockThreadSupplement
     ? <View style={[styles.chatThreadSupplement, styles.chatThreadSupplementDock]}>{threadSupplement}</View>
     : null;
-  const inlineThreadSupplement = threadSupplement && !fullScreen
+  const inlineThreadSupplement = threadSupplement && !shouldDockThreadSupplement
     ? <View style={styles.chatThreadSupplement}>{threadSupplement}</View>
     : null;
 
@@ -2512,6 +2665,12 @@ function ChatSurface({
 
       {dockedThreadSupplement}
 
+      {composerStatusText ? (
+        <View style={styles.chatComposerStatusCard}>
+          <Text style={styles.chatComposerStatusText}>{composerStatusText}</Text>
+        </View>
+      ) : null}
+
       {composerHidden ? (
         <View
           style={[
@@ -2616,6 +2775,7 @@ function OverviewScreen({
   const [phaseThreeDecisions, setPhaseThreeDecisions] = useState<Record<string, "stay" | "new-match">>({});
   const [chatDraft, setChatDraft] = useState("");
   const [chatSendPending, setChatSendPending] = useState(false);
+  const [chatSendError, setChatSendError] = useState<string | null>(null);
   const [lastSeenPartnerMessageId, setLastSeenPartnerMessageId] = useState<string | null>(null);
   const [pendingPhaseOneDecision, setPendingPhaseOneDecision] = useState<"continue" | "new-match" | null>(null);
   const [pendingPhaseThreeDecision, setPendingPhaseThreeDecision] = useState<"stay" | "new-match" | null>(null);
@@ -2642,8 +2802,11 @@ function OverviewScreen({
   const [reportReason, setReportReason] = useState("");
   const [reportDetails, setReportDetails] = useState("");
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
+  const [reportActionPending, setReportActionPending] = useState<"report" | "block" | null>(null);
   const photoViewerRef = useRef<ScrollView | null>(null);
   const pushRegistrationRef = useRef<string | null>(null);
+  const phaseOneDecisionRequestRef = useRef(0);
+  const phaseThreeDecisionRequestRef = useRef(0);
   const { width: viewportWidth } = useWindowDimensions();
   const photoViewerPageWidth = Math.max(viewportWidth - 36, 1);
   const insets = useSafeAreaInsets();
@@ -2692,13 +2855,14 @@ function OverviewScreen({
     setPhaseTwoPenaltyAppliedAt(state.phaseTwoPenaltyAppliedAt);
     const nextPhaseOneDecisions = { ...state.phaseOneDecisions };
     const nextPhaseThreeDecisions = { ...state.phaseThreeDecisions };
+    const journeyIdentityChanged = state.matchId !== remoteJourney?.matchId || state.releaseAt !== journeyReleaseAt;
 
     if (currentUserId) {
       const confirmedPhaseOneDecision = nextPhaseOneDecisions[currentUserId] ?? null;
       const confirmedPhaseThreeDecision = nextPhaseThreeDecisions[currentUserId] ?? null;
 
       if (pendingPhaseOneDecision) {
-        if (confirmedPhaseOneDecision === pendingPhaseOneDecision) {
+        if (journeyIdentityChanged || confirmedPhaseOneDecision === pendingPhaseOneDecision) {
           setPendingPhaseOneDecision(null);
         } else {
           nextPhaseOneDecisions[currentUserId] = pendingPhaseOneDecision;
@@ -2706,7 +2870,7 @@ function OverviewScreen({
       }
 
       if (pendingPhaseThreeDecision) {
-        if (confirmedPhaseThreeDecision === pendingPhaseThreeDecision) {
+        if (journeyIdentityChanged || confirmedPhaseThreeDecision === pendingPhaseThreeDecision) {
           setPendingPhaseThreeDecision(null);
         } else {
           nextPhaseThreeDecisions[currentUserId] = pendingPhaseThreeDecision;
@@ -2876,11 +3040,14 @@ function OverviewScreen({
   const canBuyMatchPack = Boolean(currentUserId && !accountPaused && !accountBanned && hasRevenueCatConfig());
   const activePartnerUserId = remoteJourney?.partner?.userId ?? null;
   const hasActiveChat = Boolean(currentUserId && remoteJourney?.partner);
-  const includedMatchLimit = 8;
+  const includedMatchLimit = accountState?.includedMatchLimit ?? 8;
   const paidMatchCredits = accountState?.paidMatchCredits ?? 0;
   const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
   const forfeitedPaidMatchCredits = accountState?.forfeitedPaidMatchCredits ?? 0;
   const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
+  const totalMatchCount = accountState?.totalMatchCount ?? 0;
+  const consumedIncludedMatchCount = Math.min(totalMatchCount, includedMatchLimit);
+  const totalMatchCountLabel = `${totalMatchCount} Match${totalMatchCount === 1 ? "" : "es"}`;
   const recentPenaltyEntries = accountState?.recentPenalties ?? [];
   const activePenaltyEntries = useMemo(() => {
     const latestByReason = new Map<string, { id: string; createdAtMs: number }>();
@@ -3015,12 +3182,11 @@ function OverviewScreen({
   const phaseOneViewerStarts = phaseOneStarterUserId === phaseOneViewerUserId;
   const phaseOneChatStarted = sharedChatMessages.length > 0;
   const phaseSchedule = useMemo(
-    () => buildPhaseSchedule(journeyReleaseAt ? new Date(journeyReleaseAt) : currentTime),
-    [currentTime, journeyReleaseAt],
+    () => resolveJourneyPhaseSchedule(remoteJourney, journeyReleaseAt ? new Date(journeyReleaseAt) : currentTime),
+    [currentTime, journeyReleaseAt, remoteJourney],
   );
   const matchReleaseTime = phaseSchedule.release;
-  const completedMatchCount = hasActiveChat && currentTime >= matchReleaseTime ? 1 : 0;
-  const remainingIncludedMatches = Math.max(includedMatchLimit - completedMatchCount, 0);
+  const remainingIncludedMatches = accountState?.remainingIncludedMatches ?? Math.max(includedMatchLimit - consumedIncludedMatchCount, 0);
   const decisionDeadline = phaseSchedule.decisionDeadline;
   const phaseTwoStartTime = phaseSchedule.phaseTwoStart;
   const phaseThreeStartTime = phaseSchedule.phaseThreeStart;
@@ -3036,7 +3202,10 @@ function OverviewScreen({
     phaseOneDecisions[phaseOneViewerUserId] ?? "undecided";
   const phaseOnePartnerDecision: "continue" | "new-match" | "undecided" =
     phaseOneDecisions[phaseOnePartnerUserId] ?? "undecided";
-  const phaseOneBothContinue = phaseOneViewerDecision === "continue" && phaseOnePartnerDecision === "continue";
+  const phaseOneViewerKeepsMatch = phaseOneViewerDecision !== "new-match";
+  const phaseOnePartnerKeepsMatch = phaseOnePartnerDecision !== "new-match";
+  const phaseOneBothContinue = phaseOneViewerKeepsMatch && phaseOnePartnerKeepsMatch;
+  const phaseOneCanAdvanceToPhaseTwo = phaseOneBothContinue && phaseOneChatStarted;
   const phaseOneAnyDeclined = phaseOneViewerDecision === "new-match" || phaseOnePartnerDecision === "new-match";
   const phaseOneWindowOpen = currentTime >= matchReleaseTime && currentTime < decisionDeadline;
   const phaseOneBeforeRelease = currentTime < matchReleaseTime;
@@ -3045,15 +3214,15 @@ function OverviewScreen({
   const phaseOneViewerSelectedNewMatch = phaseOneViewerDecision === "new-match";
   const phaseOnePartnerSelectedContinue = phaseOnePartnerDecision === "continue";
   const phaseOnePartnerSelectedNewMatch = phaseOnePartnerDecision === "new-match";
+  const phaseOneViewerUndecided = !phaseOneViewerSelectedContinue && !phaseOneViewerSelectedNewMatch;
+  const phaseOnePartnerUndecided = !phaseOnePartnerSelectedContinue && !phaseOnePartnerSelectedNewMatch;
   const phaseOneWaitingOnPartner =
     phaseOneWindowOpen
     && phaseOneViewerSelectedContinue
-    && !phaseOnePartnerSelectedContinue
-    && !phaseOnePartnerSelectedNewMatch;
+    && phaseOnePartnerUndecided;
   const phaseOnePartnerWaitingOnViewer =
     phaseOneWindowOpen
-    && !phaseOneViewerSelectedContinue
-    && !phaseOneViewerSelectedNewMatch
+    && phaseOneViewerUndecided
     && phaseOnePartnerSelectedContinue;
   const currentReleaseKey = journeyReleaseAt ?? matchReleaseTime.toISOString();
   const notificationSyncMinute = Math.floor(currentTime.getTime() / 60_000);
@@ -3093,6 +3262,8 @@ function OverviewScreen({
       : `morgen um ${nextScheduledMatchReleaseClockLabel}`;
   const phaseTwoStartsInLabel = formatDurationLabel(phaseTwoStartTime.getTime() - currentTime.getTime());
   const phaseTwoStartLabel = formatRelativeDateTimeLabel(phaseTwoStartTime, currentTime);
+  const phaseThreeStartsInLabel = formatDurationLabel(phaseThreeStartTime.getTime() - currentTime.getTime());
+  const phaseThreeStartLabel = formatRelativeDateTimeLabel(phaseThreeStartTime, currentTime);
   const renderedChatMessages = useMemo(
     () => (hasActiveChat ? mapSharedChatMessagesForViewer(sharedChatMessages) : []),
     [hasActiveChat, sharedChatMessages],
@@ -3129,20 +3300,83 @@ function OverviewScreen({
   }, [lastSeenPartnerMessageId, sharedChatMessages]);
   const latestSharedChatMessage = sharedChatMessages[sharedChatMessages.length - 1];
   const latestSharedChatPreview = getSharedChatMessagePreview(latestSharedChatMessage);
+  const phaseFiveViewerHasWritten = useMemo(
+    () => sharedChatMessages.some((message) => (
+      message.author === "primary"
+      && new Date(message.createdAt).getTime() >= phaseFiveStartTime.getTime()
+    )),
+    [phaseFiveStartTime, sharedChatMessages],
+  );
   const chatPreviewText = latestSharedChatPreview
     ?? (hasActiveChat
       ? phaseOneBeforeRelease
         ? "Choice zeigt dir vorher noch nicht, wer dein erstes Match wird."
         : `Choice hat ${phaseOneStarterName} ausgewählt, den Chat zu eröffnen.`
       : "Choice hat gerade noch kein Match für dich freigegeben.");
-  const phaseThreeSuggestedProfile = useMemo(() => {
-    const excludedIds = new Set<string>([featuredProfile.id, activePartnerUserId ?? ""]);
-
-    return demoProfiles.find((entry) => !excludedIds.has(entry.id)) ?? demoProfiles[0];
-  }, [activePartnerUserId, featuredProfile.id]);
-  const phaseThreeSuggestedDistanceLabel = formatDistanceLabel(
-    estimateDistanceKm(profile.city || "Berlin", phaseThreeSuggestedProfile.city),
+  const remotePhaseThreeSuggestedProfile = useMemo(
+    () => mapRemoteJourneyPartnerToDemoProfile(remoteJourney?.phaseThreeSuggestion ?? null),
+    [remoteJourney?.phaseThreeSuggestion],
   );
+  const phaseThreeSuggestedProfile = useMemo<DemoProfile | null>(() => {
+    if (remoteJourney) {
+      return remotePhaseThreeSuggestedProfile;
+    }
+
+    const excludedIds = new Set<string>([featuredProfile.id, activePartnerUserId ?? ""]);
+    const viewerAge = profileAge ?? Number(profile.ageRangeMin || 0);
+    const viewerAgeRangeMin = Number(profile.ageRangeMin || 0);
+    const viewerAgeRangeMax = Number(profile.ageRangeMax || 0);
+
+    if (!viewerAge || !viewerAgeRangeMin || !viewerAgeRangeMax) {
+      return null;
+    }
+
+    const viewerProfile = {
+      city: profile.city || "Berlin",
+      interests: profile.interests,
+      pronouns: profile.pronouns || "keine-angabe",
+      lookingFor: profile.lookingFor || "Alle",
+      datingIntent: profile.datingIntent,
+      age: viewerAge,
+      ageRangeMin: viewerAgeRangeMin,
+      ageRangeMax: viewerAgeRangeMax,
+    };
+
+    const compatibleCandidates = demoProfiles
+      .filter((entry) => !excludedIds.has(entry.id))
+      .filter((entry) => isLocallyCompatible(viewerProfile, entry))
+      .map((entry) => ({
+        entry,
+        score: calculateLocalCandidateScore(viewerProfile, entry),
+      }))
+      .sort((candidateA, candidateB) => {
+        if (candidateB.score !== candidateA.score) {
+          return candidateB.score - candidateA.score;
+        }
+
+        return candidateA.entry.firstName.localeCompare(candidateB.entry.firstName, "de-DE");
+      });
+
+    return compatibleCandidates[0]?.entry ?? null;
+  }, [
+    activePartnerUserId,
+    featuredProfile.id,
+    remoteJourney,
+    remotePhaseThreeSuggestedProfile,
+    profile.ageRangeMax,
+    profile.ageRangeMin,
+    profile.city,
+    profile.datingIntent,
+    profile.interests,
+    profile.lookingFor,
+    profile.pronouns,
+    profileAge,
+  ]);
+  const phaseThreeSuggestedDistanceLabel = phaseThreeSuggestedProfile
+    ? formatDistanceLabel(estimateDistanceKm(profile.city || "Berlin", phaseThreeSuggestedProfile.city))
+    : "";
+  const phaseThreeSuggestedNewMatchLabel = phaseThreeSuggestedProfile?.firstName ?? "ein neues Match";
+  const phaseThreeSuggestedWithMatchLabel = phaseThreeSuggestedProfile?.firstName ?? "einem neuen Match";
   const phaseTwoViewerUserId = currentUserId ?? "choice_local_viewer";
   const phaseTwoFallbackPartnerUserId = activePartnerUserId ?? "choice_partner_placeholder";
   const phaseTwoAssignedStarterUserId = remoteJourney?.phaseTwoStarterUserId ?? chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId);
@@ -3182,11 +3416,13 @@ function OverviewScreen({
   const phaseTwoCurrentResponderName = phaseTwoHasStarted
     ? (phaseTwoStage === "starter" ? phaseTwoEffectiveStarterName : phaseTwoEffectivePartnerName)
     : phaseTwoEffectiveStarterName;
+  const phaseTwoDeadlinePassed = currentTime >= phaseThreeStartTime;
   const phaseTwoViewerCanAnswer =
     phaseTwoStage !== "result"
     && Boolean(phaseTwoCurrentResponderUserId)
     && phaseTwoViewerUserId === phaseTwoCurrentResponderUserId
-    && (phaseTwoHasStarted || (phaseOneBothContinue && phaseTwoAvailableByTime));
+    && !phaseTwoDeadlinePassed
+    && (phaseTwoHasStarted || (phaseOneCanAdvanceToPhaseTwo && phaseTwoAvailableByTime));
   const phaseTwoCompletedRounds = phaseTwoResults.filter((entry) => entry.personBLabel).length;
   const phaseTwoCompatibility = phaseTwoCompletedRounds
     ? Math.round(
@@ -3196,33 +3432,56 @@ function OverviewScreen({
       )
     : 0;
   const phaseTwoReady = phaseTwoHasStarted && phaseTwoRounds.length > 0 && phaseTwoCompletedRounds === phaseTwoRounds.length;
-  const phaseTwoOverdue = phaseOneBothContinue && !phaseTwoReady && currentTime >= phaseThreeStartTime;
+  const phaseTwoOverdue = phaseOneCanAdvanceToPhaseTwo && !phaseTwoReady && phaseTwoDeadlinePassed;
   const phaseTwoPenaltyJustApplied = phaseTwoPenaltyAppliedAt === currentReleaseKey;
   const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
   const phaseThreeUnlocked =
     currentTime >= phaseThreeStartTime
     && phaseThreeQualified;
+  const phaseThreeWindowOpen = phaseThreeUnlocked && currentTime < phaseFourStartTime;
   const phaseThreeViewerDecisionRaw = phaseThreeDecisions[phaseOneViewerUserId];
   const phaseThreeViewerDecision: "stay" | "new-match" | "undecided" =
     phaseThreeViewerDecisionRaw ?? "undecided";
   const phaseThreePartnerDecision: "stay" | "new-match" | "undecided" =
     phaseThreeDecisions[phaseOnePartnerUserId] ?? "undecided";
-  const phaseThreeBothStay = phaseThreeViewerDecision === "stay" && phaseThreePartnerDecision === "stay";
+  const phaseThreeViewerStayedExplicitly = phaseThreeViewerDecision === "stay";
+  const phaseThreePartnerStayedExplicitly = phaseThreePartnerDecision === "stay";
+  const phaseThreeViewerKeepsChat = phaseThreeViewerDecision !== "new-match";
+  const phaseThreePartnerKeepsChat = phaseThreePartnerDecision !== "new-match";
+  const phaseThreeBothStay = phaseThreeViewerKeepsChat && phaseThreePartnerKeepsChat;
+  const phaseThreeBothStayExplicit = phaseThreeViewerStayedExplicitly && phaseThreePartnerStayedExplicitly;
   const phaseThreeAnyLeave = phaseThreeViewerDecision === "new-match" || phaseThreePartnerDecision === "new-match";
+  const phaseFourUnlocked = currentTime >= phaseFourStartTime && phaseThreeQualified;
+  const phaseFourWindowLocked = phaseFourUnlocked && currentTime < phaseFiveStartTime;
+  const phaseFiveUnlocked =
+    phaseThreeQualified
+    && phaseThreeBothStay
+    && currentTime >= phaseFiveStartTime;
+  const phaseFiveRestartSelected =
+    phaseThreeQualified
+    && currentTime >= phaseFiveStartTime
+    && phaseThreeAnyLeave;
+  const phaseFiveViewerSelectedNewMatch =
+    phaseFiveRestartSelected
+    && phaseThreeViewerDecision === "new-match";
+  const phaseFivePartnerSelectedNewMatch =
+    phaseFiveRestartSelected
+    && phaseThreePartnerDecision === "new-match";
+  const phaseThreeDecisionOpen = phaseThreeUnlocked && currentTime < phaseFiveStartTime;
   const phaseThreeDecisionPending =
-    phaseThreeUnlocked
-    && currentTime >= phaseThreeStartTime
-    && !phaseThreeBothStay
-    && !phaseThreeAnyLeave;
-  const phaseFourUnlocked = currentTime >= phaseFourStartTime && phaseThreeUnlocked && phaseThreeBothStay;
-  const phaseThreeDecisionOpen = phaseThreeQualified && !phaseFourUnlocked;
-  const phaseThreeViewerKeepsChat = phaseThreeDecisionOpen && phaseThreeViewerDecision !== "new-match";
+    phaseThreeDecisionOpen
+    && !phaseThreeAnyLeave
+    && (!phaseThreeViewerStayedExplicitly || !phaseThreePartnerStayedExplicitly);
+  const phaseThreeStartsLater = phaseThreeQualified && !phaseThreeDecisionOpen && currentTime < phaseThreeStartTime;
   const viewerSelectedNewMatch =
     (phaseOneWindowOpen && phaseOneViewerDecision === "new-match")
-    || (phaseThreeDecisionOpen && phaseThreeViewerDecision === "new-match");
+    || (phaseThreeUnlocked && phaseThreeViewerDecision === "new-match");
   const phaseFourStartsInLabel = formatDurationLabel(phaseFourStartTime.getTime() - currentTime.getTime());
-  const phaseFourWindowLocked = phaseFourUnlocked && currentTime >= phaseFourStartTime && currentTime < phaseFiveStartTime;
-  const phaseFiveUnlocked = phaseFourUnlocked && currentTime >= phaseFiveStartTime;
+  const phaseThreeWindowFinished =
+    phaseThreeQualified
+    && currentTime >= phaseFiveStartTime
+    && !phaseFiveUnlocked
+    && !phaseFiveRestartSelected;
   const phaseTwoChatUnlocked =
     hasActiveChat
     && (
@@ -3232,12 +3491,12 @@ function OverviewScreen({
         && currentTime < phaseThreeStartTime
         && (!phaseThreeDecisionOpen || phaseThreeViewerKeepsChat)
       )
-      || (phaseThreeUnlocked && phaseThreeViewerKeepsChat && currentTime >= phaseThreeStartTime && currentTime < phaseFourStartTime)
+      || (phaseThreeWindowOpen && phaseThreeViewerKeepsChat)
     );
   const chatHeaderActionState = hasActiveChat
     && (
       phaseTwoReady
-        ? phaseThreeViewerDecision === "stay"
+        ? phaseThreeViewerKeepsChat
         : phaseOneViewerDecision === "continue"
     )
     ? "keep"
@@ -3248,11 +3507,19 @@ function OverviewScreen({
       : `morgen ${releaseClockLabel}`
     : phaseFiveUnlocked
       ? "Phase 5"
+      : phaseFiveRestartSelected
+        ? "Neustart gewählt"
       : phaseFourWindowLocked
         ? "Phase 4"
-        : phaseThreeUnlocked
+      : phaseThreeDecisionOpen
           ? "Phase 3"
-          : phaseTwoChatUnlocked || phaseTwoHasStarted || phaseOneBothContinue
+      : phaseThreeStartsLater
+          ? `P3 ${phaseThreeStartsInLabel}`
+        : phaseThreeWindowFinished
+          ? phaseThreeAnyLeave
+            ? "Neustart gewählt"
+            : "Phase 4 vorbei"
+        : phaseTwoChatUnlocked || phaseTwoHasStarted || (phaseOneCanAdvanceToPhaseTwo && phaseTwoAvailableByTime)
             ? "Phase 2"
             : remainingDecisionMs > 0
               ? decisionCountdownLabel
@@ -3261,7 +3528,7 @@ function OverviewScreen({
     !phaseOneBeforeRelease
     && !phaseTwoChatUnlocked
     && !phaseTwoHasStarted
-    && !phaseOneBothContinue
+    && !phaseOneCanAdvanceToPhaseTwo
     && remainingDecisionMs <= 0;
   const chatHintText = hasActiveChat
     ? phaseOneBeforeRelease
@@ -3271,12 +3538,16 @@ function OverviewScreen({
       : phaseOnePartnerSelectedNewMatch && !phaseTwoChatUnlocked && !phaseOneClosed
         ? `${featuredProfile.firstName} hat Neues Match gewählt. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} schreibt nicht weiter und dieses Match endet um ${decisionClockLabel}.`
       : phaseOneWaitingOnPartner
-        ? `Du hast Phase 2 gewählt. Choice wartet jetzt noch bis ${decisionClockLabel} auf ${featuredProfile.firstName}.`
+        ? `Du hast aktiv Weiter gewählt. Wenn ${featuredProfile.firstName} nichts ändert, startet Phase 2 ${phaseTwoStartLabel}.`
       : phaseOnePartnerWaitingOnViewer
-        ? `${featuredProfile.firstName} hat Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 ${phaseTwoStartLabel}.`
+        ? `${featuredProfile.firstName} hat aktiv Weiter gewählt. Wenn du nichts änderst, startet Phase 2 ${phaseTwoStartLabel}.`
+      : phaseFiveViewerSelectedNewMatch
+        ? "Du hast dieses Match nach Phase 5 losgelassen. Choice sucht dir für morgen wieder ein neues Match."
+      : phaseFivePartnerSelectedNewMatch
+        ? `${featuredProfile.firstName} hat dieses Match nach Phase 5 losgelassen. Dieses Match endet damit.`
       : phaseFiveUnlocked
         ? "Der Choice Award ist da. Ihr habt alle fünf Phasen geschafft."
-        : phaseFourWindowLocked
+      : phaseFourWindowLocked
           ? `Phase 4 läuft gerade. Zwischen ${phaseFourClockLabel} und ${phaseFiveClockLabel} bleibt euer Chat bewusst geschlossen.`
       : phaseTwoChatUnlocked
         ? phaseThreeUnlocked
@@ -3286,18 +3557,24 @@ function OverviewScreen({
               ? `${featuredProfile.firstName} möchte morgen lieber mit dem neuen Vorschlag weitermachen. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} schreibt nicht weiter.`
               : "Ihr habt euch beide gegen das neue Match entschieden. Jetzt könnt ihr in Phase 3 weiterschreiben."
           : "Die Choice-Runde ist abgeschlossen. Jetzt könnt ihr in Phase 2 ganz normal weiterschreiben."
+        : phaseThreeStartsLater
+          ? `Phase 2 ist ausgewertet. Phase 3 startet ${phaseThreeStartLabel}. Noch ${phaseThreeStartsInLabel}.`
         : phaseThreeViewerDecision === "new-match"
           ? "Du hast dich für ein neues Match entschieden. Für dich bleibt dieser Chat jetzt zu."
         : phaseThreeAnyLeave
           ? "Mindestens eine Person möchte morgen lieber mit dem neuen Vorschlag weitermachen. Dieser Chat bleibt zu."
-          : phaseThreeDecisionPending
-            ? `Choice schlägt euch für morgen ${phaseThreeSuggestedProfile.firstName} vor. Erst wenn ihr beide dagegen entscheidet, geht dieser Chat weiter.`
+          : phaseThreeWindowFinished
+            ? "Das Zeitfenster für Phase 3 ist vorbei."
+        : phaseThreeDecisionPending
+            ? `Choice zeigt euch für morgen ${phaseThreeSuggestedNewMatchLabel} als Alternative. Dieses Match bleibt aktuell bestehen, außer jemand wechselt noch bewusst auf ein neues Match.`
         : phaseOneClosed
-          ? phaseOneBothContinue
+          ? !phaseOneChatStarted
+            ? "Die erste Nachricht ist ausgeblieben. Deshalb endet dieses Match jetzt und danach startet wieder ein neues Match."
+            : phaseOneCanAdvanceToPhaseTwo
             ? phaseTwoAvailableByTime
-              ? "Beide haben zugestimmt. Erst die Choice-Runde, danach öffnet sich der Chat wieder."
-              : `Beide haben zugestimmt. Phase 2 startet ${phaseTwoStartLabel}.`
-            : "Die Zeit ist um. Ohne Zustimmung von beiden endet dieses Match."
+              ? "Niemand hat dieses Match beendet. Erst kommt die Choice-Runde, danach öffnet sich der Chat wieder."
+              : `Niemand hat Neues Match gewählt. Phase 2 startet ${phaseTwoStartLabel}.`
+            : "Dieses Match endet, weil mindestens eine Person Neues Match gewählt hat."
           : phaseOneChatStarted
             ? decisionCountdownText
             : phaseOneViewerStarts
@@ -3307,13 +3584,16 @@ function OverviewScreen({
   const chatComposerEditable = hasActiveChat && (
     !viewerSelectedNewMatch
       && (
-        phaseTwoChatUnlocked
+        phaseFiveUnlocked
+        || phaseTwoChatUnlocked
         || (phaseOneWindowOpen && (phaseOneChatStarted || phaseOneViewerStarts))
       )
   );
   const chatComposerHidden = hasActiveChat && viewerSelectedNewMatch;
   const chatComposerLockedText = chatComposerHidden
-    ? phaseThreeDecisionOpen
+    ? phaseFiveViewerSelectedNewMatch
+      ? "Du kannst hier nicht mehr schreiben, weil du dieses Match nach Phase 5 losgelassen hast. Choice sucht dir für morgen wieder ein neues Match."
+      : phaseThreeDecisionOpen
       ? `Du kannst hier nicht mehr schreiben, weil du Neues Match gewählt hast. Für dich ist dieser Chat damit vorbei.`
       : `Du kannst hier nicht mehr schreiben, weil du morgen ein neues Match gewählt hast. Wenn du deine Wahl änderst, öffnet sich dieser Chat wieder.`
     : null;
@@ -3321,8 +3601,12 @@ function OverviewScreen({
     ? phaseOneBeforeRelease
       ? `Chat öffnet ${nextMatchReleaseLabel}`
       : phaseFiveUnlocked
-        ? "Ihr habt den Choice Award erreicht"
-        : phaseFourWindowLocked
+        ? `Schreib ${featuredProfile.firstName} jetzt weiter`
+      : phaseFiveRestartSelected
+        ? phaseFiveViewerSelectedNewMatch
+          ? "Neues Match für morgen gewählt"
+          : `${featuredProfile.firstName} lässt dieses Match los`
+      : phaseFourWindowLocked
           ? `Chat ist heute bis ${phaseFiveClockLabel} gesperrt`
       : phaseTwoChatUnlocked
         ? phaseThreeUnlocked
@@ -3332,14 +3616,22 @@ function OverviewScreen({
               ? `${featuredProfile.firstName} schreibt nicht weiter`
               : "Jetzt in Phase 3 weiterschreiben"
           : "Jetzt in Phase 2 weiterschreiben"
+        : phaseThreeStartsLater
+          ? `Phase 3 startet ${phaseThreeStartLabel}`
         : phaseThreeViewerDecision === "new-match"
           ? "Neues Match gewählt"
         : phaseThreeAnyLeave
           ? "Morgen startet ein neues Match"
-          : phaseThreeDecisionPending
-            ? "Erst Phase 3 entscheiden"
+          : phaseThreeWindowFinished
+            ? phaseThreeAnyLeave
+              ? "Dieses Match endet hier"
+              : "Phase 4 ist vorbei"
+        : phaseThreeDecisionPending
+            ? "Phase 3 läuft gerade"
         : phaseOneClosed
-          ? phaseOneBothContinue
+          ? !phaseOneChatStarted
+            ? "Dieses Match ist beendet"
+            : phaseOneCanAdvanceToPhaseTwo
             ? phaseTwoAvailableByTime
               ? "Erst die Choice-Runde spielen"
               : `Phase 2 startet ${phaseTwoStartLabel}`
@@ -3356,14 +3648,18 @@ function OverviewScreen({
       : phaseOneViewerSelectedNewMatch
         ? "Du hast Neues Match gewählt."
       : phaseOnePartnerSelectedNewMatch && !phaseTwoChatUnlocked && !phaseOneClosed
-        ? `${featuredProfile.firstName} möchte kein Phase 2.`
+        ? `${featuredProfile.firstName} möchte dieses Match nicht weiterführen.`
       : phaseOneWaitingOnPartner
-        ? "Du wartest auf die Entscheidung der anderen Person."
+        ? "Dieses Match läuft gerade weiter."
       : phaseOnePartnerWaitingOnViewer
-        ? `${featuredProfile.firstName} wartet auf deine Entscheidung.`
+        ? `${featuredProfile.firstName} hat aktiv Weiter gewählt.`
+      : phaseFiveViewerSelectedNewMatch
+        ? "Für morgen ist wieder ein neues Match vorgemerkt."
+      : phaseFivePartnerSelectedNewMatch
+        ? `${featuredProfile.firstName} hat dieses Match losgelassen.`
       : phaseFiveUnlocked
         ? "Der Choice Award ist da."
-        : phaseFourWindowLocked
+      : phaseFourWindowLocked
           ? "Phase 4 läuft."
       : phaseTwoChatUnlocked
         ? phaseThreeUnlocked
@@ -3373,17 +3669,25 @@ function OverviewScreen({
               ? `${featuredProfile.firstName} möchte morgen neu starten.`
               : "Phase 3 ist offen."
           : "Phase 2 ist offen."
+        : phaseThreeStartsLater
+          ? "Phase 2 ist abgeschlossen."
         : phaseThreeViewerDecision === "new-match"
           ? "Du möchtest morgen ein neues Match."
         : phaseThreeAnyLeave
           ? "Morgen geht es nicht weiter."
-          : phaseThreeDecisionPending
+          : phaseThreeWindowFinished
+            ? phaseThreeAnyLeave
+              ? "Dieses Match endet hier."
+              : "Phase 4 ist vorbei."
+        : phaseThreeDecisionPending
             ? "Choice macht euch einen Vorschlag."
         : phaseOneClosed
-          ? phaseOneBothContinue
+          ? !phaseOneChatStarted
+            ? "Die erste Nachricht ist ausgeblieben."
+            : phaseOneCanAdvanceToPhaseTwo
             ? phaseTwoAvailableByTime
               ? "Phase 2 ist freigeschaltet."
-              : "Beide haben zugestimmt."
+              : "Dieses Match läuft weiter."
             : "Phase 1 ist beendet."
           : phaseOneViewerStarts
             ? "Choice hat dich ausgewählt."
@@ -3399,75 +3703,136 @@ function OverviewScreen({
       : phaseOnePartnerSelectedNewMatch && !phaseTwoChatUnlocked && !phaseOneClosed
         ? `${featuredProfile.firstName} hat entschieden, morgen lieber ein neues Match zu nehmen. Du kannst bis ${decisionClockLabel} noch schreiben, aber ${featuredProfile.firstName} wird nicht mehr antworten.`
       : phaseOneWaitingOnPartner
-        ? `Du hast bereits Phase 2 gewählt. Choice wartet jetzt noch bis ${decisionClockLabel} auf die Entscheidung von ${featuredProfile.firstName}.`
+        ? `Du hast bereits aktiv Weiter gewählt. Wenn ${featuredProfile.firstName} nichts ändert, startet Phase 2 ${phaseTwoStartLabel}.`
       : phaseOnePartnerWaitingOnViewer
-        ? `${featuredProfile.firstName} hat bereits Phase 2 gewählt. Wenn du auch zustimmst, startet Phase 2 ${phaseTwoStartLabel}.`
+        ? `${featuredProfile.firstName} hat bereits aktiv Weiter gewählt. Wenn du nichts änderst, startet Phase 2 ${phaseTwoStartLabel}.`
+      : phaseFiveViewerSelectedNewMatch
+        ? "Du hast dieses Match nach dem Award losgelassen. Choice sucht dir für morgen wieder ein neues Match, und dieser Chat endet damit."
+      : phaseFivePartnerSelectedNewMatch
+        ? `${featuredProfile.firstName} hat dieses Match nach dem Award losgelassen. Deshalb endet dieser Chat jetzt.`
       : phaseFiveUnlocked
         ? "Ihr habt die letzte Phase erreicht. Choice zeigt euch jetzt den Award für das, was zwischen euch geblieben ist."
-        : phaseFourWindowLocked
+      : phaseFourWindowLocked
           ? `Zwischen ${phaseFourClockLabel} und ${phaseFiveClockLabel} bleibt euer Chat in Phase 4 bewusst geschlossen. Danach zeigt Choice, was trotz Abstand geblieben ist.`
       : phaseTwoChatUnlocked
         ? phaseThreeUnlocked
           ? phaseFourUnlocked
             ? "Die Pause ist vorbei. Jetzt ist der Choice Award da."
             : phaseThreePartnerDecision === "new-match"
-              ? `${featuredProfile.firstName} möchte morgen lieber mit ${phaseThreeSuggestedProfile.firstName} starten. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} wird nicht mehr antworten.`
-              : "Ihr habt euch beide gegen den neuen Vorschlag entschieden. Jetzt könnt ihr hier in Phase 3 weiterschreiben."
+              ? `${featuredProfile.firstName} möchte morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} starten. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} wird nicht mehr antworten.`
+              : "Ihr bleibt bei diesem Match. Jetzt könnt ihr hier in Phase 3 weiterschreiben."
           : "Die Choice-Runde ist geschafft. Jetzt könnt ihr hier in Phase 2 weiterschreiben."
+        : phaseThreeStartsLater
+          ? `Choice hat eure Runde ausgewertet. Phase 3 startet ${phaseThreeStartLabel}. Noch ${phaseThreeStartsInLabel}.`
         : phaseThreeViewerDecision === "new-match"
-          ? `Du hast dich für ${phaseThreeSuggestedProfile.firstName} entschieden. Für dich bleibt dieser Chat jetzt zu, und morgen startet für dich ein neues Match.`
+          ? `Du hast dich für ${phaseThreeSuggestedNewMatchLabel} entschieden. Für dich bleibt dieser Chat jetzt zu, und morgen startet für dich ein neues Match.`
         : phaseThreeAnyLeave
-          ? `Mindestens eine Person möchte morgen lieber mit ${phaseThreeSuggestedProfile.firstName} starten. Deshalb bleibt dieser Chat jetzt zu.`
-          : phaseThreeDecisionPending
-            ? `Choice schlägt euch für morgen ${phaseThreeSuggestedProfile.firstName} vor. Erst wenn ihr beide sagt, dass ihr trotzdem miteinander weitermachen wollt, öffnet sich dieser Chat wieder.`
+          ? `Mindestens eine Person möchte morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} starten. Deshalb bleibt dieser Chat jetzt zu.`
+          : phaseThreeWindowFinished
+            ? phaseThreeAnyLeave
+              ? `Mindestens eine Person möchte lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten. Deshalb endet dieses Match nach Phase 4.`
+              : "Die Pause ist vorbei. Für dieses Match wurde danach aber kein gemeinsamer nächster Schritt mehr freigeschaltet."
+        : phaseThreeDecisionPending
+            ? `Choice zeigt euch für morgen ${phaseThreeSuggestedNewMatchLabel} als Alternative. Standardmäßig bleibt ihr bei diesem Match. Wenn jemand lieber wechseln möchte, kann das bis zum Ende von Phase 4 noch geändert werden.`
         : phaseOneClosed
-          ? phaseOneBothContinue
+          ? !phaseOneChatStarted
+            ? `Bis ${decisionClockLabel} kam keine erste Nachricht. Die Start-Person bekommt dafür einen Strafpunkt, und danach startet wieder ein neues Match.`
+            : phaseOneCanAdvanceToPhaseTwo
             ? phaseTwoAvailableByTime
-              ? "Ihr habt beide zugestimmt. Jetzt kommt zuerst die Choice-Runde. Direkt danach öffnet sich dieser Chat wieder."
-              : `Ihr habt beide zugestimmt. Phase 1 ist für heute vorbei und Phase 2 beginnt ${phaseTwoStartLabel}.`
-            : `Bis ${decisionClockLabel} kam keine gemeinsame Zusage zustande. Danach startet wieder ein neues Match.`
+              ? "Niemand hat dieses Match beendet. Jetzt kommt zuerst die Choice-Runde. Direkt danach öffnet sich dieser Chat wieder."
+              : `Bis ${decisionClockLabel} hat niemand Neues Match gewählt. Phase 2 beginnt ${phaseTwoStartLabel}.`
+            : `Bis ${decisionClockLabel} hat mindestens eine Person Neues Match gewählt. Danach startet wieder ein neues Match.`
           : phaseOneViewerStarts
             ? "In Phase 1 eröffnest du den Chat. Sobald deine erste Nachricht raus ist, kann die andere Person direkt antworten."
             : `${phaseOneStarterName} eröffnet diesen Chat. Sobald die erste Nachricht da ist, kannst du direkt weiterschreiben.`
     : !hasActiveChat
       ? "Im Moment hat Choice noch kein passendes Match für dich gefunden. Gerade am Anfang kann es sein, dass noch zu wenige passende Nutzer da sind. Mit der Zeit kommen mehr dazu, also hab bitte etwas Geduld."
       : undefined;
+  const homeTimelineSchedule = useMemo(
+    () => buildPhaseSchedule(hasActiveChat ? matchReleaseTime : nextScheduledMatchReleaseTime),
+    [hasActiveChat, matchReleaseTime, nextScheduledMatchReleaseTime],
+  );
+  const homePhaseOneStatus = buildTimelinePhaseStatus({
+    now: currentTime,
+    start: homeTimelineSchedule.release,
+    end: homeTimelineSchedule.decisionDeadline,
+    doneLabel: "Phase 1 vorbei",
+  });
+  const homePhaseTwoStatus = buildTimelinePhaseStatus({
+    now: currentTime,
+    start: homeTimelineSchedule.phaseTwoStart,
+    end: homeTimelineSchedule.phaseThreeStart,
+    doneLabel: "Phase 2 vorbei",
+  });
+  const homePhaseThreeStatus = buildTimelinePhaseStatus({
+    now: currentTime,
+    start: homeTimelineSchedule.phaseThreeStart,
+    end: homeTimelineSchedule.phaseFourStart,
+    doneLabel: "Phase 3 vorbei",
+  });
+  const homePhaseFourStatus = buildTimelinePhaseStatus({
+    now: currentTime,
+    start: homeTimelineSchedule.phaseFourStart,
+    end: homeTimelineSchedule.phaseFiveStart,
+    activePrefix: "Pause endet in",
+    doneLabel: "Phase 4 vorbei",
+  });
+  const homePhaseFiveStatus: TimelinePhaseStatus = phaseFiveUnlocked
+    ? {
+        state: "active",
+        label: "Jetzt offen",
+      }
+    : currentTime >= homeTimelineSchedule.phaseFiveStart
+      ? {
+          state: "done",
+          label: phaseThreeAnyLeave ? "Nicht freigeschaltet" : "Noch nicht freigeschaltet",
+        }
+      : buildTimelinePhaseStatus({
+          now: currentTime,
+          start: homeTimelineSchedule.phaseFiveStart,
+          activeWithoutEndLabel: "Jetzt offen",
+        });
   const homePhases: Array<{
     phase: string;
     icon: string;
     title: string;
     text: string;
-    muted?: boolean;
+    status: TimelinePhaseStatus;
   }> = [
     {
       phase: "Phase 1",
       icon: "✦",
       title: "Ein kuratiertes Match und ein klarer Start",
       text: `Choice stellt euch um ${releaseClockLabel} ein Match vor, bestimmt, wer den ersten Schritt macht, und gibt euch bis ${decisionClockLabel} Zeit, euch kennenzulernen und die Richtung für danach zu wählen.`,
+      status: homePhaseOneStatus,
     },
     {
       phase: "Phase 2",
       icon: "≈",
       title: "Die Choice-Runde macht Haltung sichtbar",
       text: "Drei Dilemma-Fragen zeigen, wie ihr denkt und entscheidet. Danach prüft Choice, wie ähnlich ihr geantwortet hättet, und berechnet daraus eure Kompatibilität.",
+      status: homePhaseTwoStatus,
     },
     {
       phase: "Phase 3",
       icon: "↻",
       title: "Ein neuer Reiz zeigt, wie stark das Interesse ist",
       text: "Beide bekommen erneut die Chance auf ein neues Match. Genau daran wird sichtbar, ob man bei dieser Person bleiben will oder sich sofort neu orientiert.",
+      status: homePhaseThreeStatus,
     },
     {
       phase: "Phase 4",
       icon: "◐",
       title: "Eine bewusste Chat-Pause schafft Abstand",
       text: `In Phase 4 bleibt euer Chat zwischen ${phaseFourClockLabel} und ${phaseFiveClockLabel} geschlossen. Der Abstand soll zeigen, ob auch ohne ständigen Kontakt noch wirklich etwas trägt.`,
+      status: homePhaseFourStatus,
     },
     {
       phase: "Phase 5",
       icon: "♡",
       title: "Der Choice Award markiert, was geblieben ist",
       text: "Am Ende zeigt der Choice Award, was zwischen euch geblieben ist: ein gemeinsames Herz mit einer Seite für dich und einer für dein Gegenüber. Im besten Fall braucht ihr Choice danach nicht mehr.",
+      status: homePhaseFiveStatus,
     },
   ];
 
@@ -3525,7 +3890,7 @@ function OverviewScreen({
       return;
     }
 
-    if (!phaseOneBothContinue || !phaseTwoAvailableByTime) {
+    if (!phaseOneCanAdvanceToPhaseTwo || !phaseTwoAvailableByTime) {
       return;
     }
 
@@ -3593,6 +3958,8 @@ function OverviewScreen({
       return;
     }
 
+    const requestId = phaseOneDecisionRequestRef.current + 1;
+    phaseOneDecisionRequestRef.current = requestId;
     const previousDecision = phaseOneDecisions[phaseOneViewerUserId];
     const previousPendingDecision = pendingPhaseOneDecision;
     setPendingPhaseOneDecision(nextDecision);
@@ -3608,8 +3975,17 @@ function OverviewScreen({
             userId: journeyOwnerUserId,
             decision: nextDecision,
           });
+
+          if (phaseOneDecisionRequestRef.current !== requestId) {
+            return;
+          }
+
           applyRemoteJourneyState(journey);
         } catch {
+          if (phaseOneDecisionRequestRef.current !== requestId) {
+            return;
+          }
+
           setPendingPhaseOneDecision(previousPendingDecision);
           setPhaseOneDecisions((current) => {
             const next = { ...current };
@@ -3629,10 +4005,12 @@ function OverviewScreen({
   }
 
   function setViewerPhaseThreeDecision(nextDecision: "stay" | "new-match") {
-    if (!phaseThreeDecisionOpen) {
+    if (!phaseThreeDecisionOpen && !phaseFiveUnlocked) {
       return;
     }
 
+    const requestId = phaseThreeDecisionRequestRef.current + 1;
+    phaseThreeDecisionRequestRef.current = requestId;
     const previousDecision = phaseThreeDecisions[phaseOneViewerUserId];
     const previousPendingDecision = pendingPhaseThreeDecision;
     setPendingPhaseThreeDecision(nextDecision);
@@ -3648,8 +4026,17 @@ function OverviewScreen({
             userId: journeyOwnerUserId,
             decision: nextDecision,
           });
+
+          if (phaseThreeDecisionRequestRef.current !== requestId) {
+            return;
+          }
+
           applyRemoteJourneyState(journey);
         } catch {
+          if (phaseThreeDecisionRequestRef.current !== requestId) {
+            return;
+          }
+
           setPendingPhaseThreeDecision(previousPendingDecision);
           setPhaseThreeDecisions((current) => {
             const next = { ...current };
@@ -3746,6 +4133,7 @@ function OverviewScreen({
         },
         { sending: true },
       );
+      setChatSendError(null);
       setChatDraft("");
       setChatSendPending(true);
 
@@ -3757,9 +4145,22 @@ function OverviewScreen({
             text: previousDraft,
           });
           applyRemoteJourneyState(journey);
-        } catch {
+          setChatSendError(null);
+        } catch (error) {
           removeSharedChatMessage(optimisticMessageId);
           setChatDraft(previousDraft);
+          const message = error instanceof Error ? error.message : "REQUEST_FAILED";
+          setChatSendError(
+            message === "REQUEST_TIMEOUT"
+              ? "Nachricht konnte gerade nicht gesendet werden. Sie liegt wieder im Eingabefeld."
+              : message === "CONTACT_SHARING_NOT_ALLOWED"
+                ? "Kontaktdaten und externe Links kannst du im Choice-Chat nicht verschicken."
+                : message === "OBJECTIONABLE_CONTENT"
+                  ? "Diese Nachricht wurde aus Sicherheitsgründen nicht freigegeben."
+              : message === "CHAT_LOCKED"
+                ? "Dieser Chat ist gerade nicht offen. Deine Nachricht liegt wieder im Eingabefeld."
+                : "Nachricht konnte gerade nicht gesendet werden. Bitte versuch es gleich nochmal.",
+          );
         } finally {
           setChatSendPending(false);
         }
@@ -3767,6 +4168,7 @@ function OverviewScreen({
       return;
     }
 
+    setChatSendError(null);
     appendSharedChatMessage({
       kind: "text",
       text: nextText,
@@ -3936,7 +4338,7 @@ function OverviewScreen({
         : pendingAccountAction === "delete"
           ? {
               title: "Konto wirklich löschen?",
-              text: "Dein Profil, deine Matches und deine Chats werden dauerhaft entfernt.",
+              text: "Dein Profil, deine Matches und deine Chats werden dauerhaft entfernt. Bereits verbrauchte Match-Freischaltungen bleiben aber an deine Telefonnummer gebunden.",
               confirmLabel: "Konto löschen",
               confirmTone: "danger" as const,
               onConfirm: onDeleteAccount,
@@ -3961,15 +4363,28 @@ function OverviewScreen({
       return null;
     }
 
-    const decisionIsAfterGame = phaseThreeQualified;
-    const decisionEyebrow = decisionIsAfterGame ? "Für morgen" : "Vor dem Öffnen";
+    if (phaseTwoReady && !phaseThreeDecisionOpen) {
+      return null;
+    }
+
+    const decisionIsAfterGame = phaseThreeDecisionOpen;
+    const decisionInPause = decisionIsAfterGame && phaseFourWindowLocked;
+    const decisionEyebrow = decisionIsAfterGame
+      ? decisionInPause
+        ? "Phase 4"
+        : "Für morgen"
+      : "Vor dem Öffnen";
     const decisionTitle = decisionIsAfterGame
-      ? "Wie möchtest du morgen weitermachen?"
+      ? decisionInPause
+        ? "Wie möchtest du nach der Pause weitermachen?"
+        : "Wie möchtest du morgen weitermachen?"
       : "Wohin tendierst du gerade?";
-    const continueTitle = decisionIsAfterGame ? "Bleiben" : "Phase 2";
+    const continueTitle = decisionIsAfterGame ? "Bleiben" : "Weiter";
     const continueText = decisionIsAfterGame
-      ? "Mit dieser Person würdest du morgen weitermachen."
-      : "Mit dieser Person würdest du weitermachen.";
+      ? decisionInPause
+        ? `Nach ${phaseFiveClockLabel} mit dieser Person weitermachen.`
+        : "Mit dieser Person würdest du morgen weitermachen."
+      : "Mit dieser Person würdest du weitermachen. Solange du nicht Neues Match wählst, bleibt das automatisch so.";
     const viewerContinueVisualSelected = decisionIsAfterGame
       ? phaseThreeViewerDecision !== "new-match"
       : phaseOneViewerDecision !== "new-match";
@@ -3977,7 +4392,9 @@ function OverviewScreen({
       ? phaseThreeViewerDecision === "new-match"
       : phaseOneViewerDecision === "new-match";
     const newMatchConsequenceText = decisionIsAfterGame
-      ? `Du startest morgen nicht mehr mit ${featuredProfile.firstName}. Für dich bleibt dieser Chat ab jetzt zu.`
+      ? decisionInPause
+        ? `Nach ${phaseFiveClockLabel} startest du nicht mehr mit ${featuredProfile.firstName}. Für dich bleibt dieser Chat danach zu.`
+        : `Du startest morgen nicht mehr mit ${featuredProfile.firstName}. Für dich bleibt dieser Chat ab jetzt zu.`
       : `Für dich bleibt dieser Chat sofort zu. Bis ${decisionClockLabel} kannst du deine Entscheidung noch ändern.`;
 
     return (
@@ -4049,7 +4466,13 @@ function OverviewScreen({
               >
                 Neues Match
               </Text>
-              <Text style={styles.chatDecisionInlineOptionText}>Du möchtest morgen ein neues Match.</Text>
+              <Text style={styles.chatDecisionInlineOptionText}>
+                {decisionIsAfterGame
+                  ? decisionInPause
+                    ? `Nach der Pause lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten.`
+                    : "Du möchtest morgen ein neues Match."
+                  : "Du möchtest morgen ein neues Match."}
+              </Text>
             </View>
             {viewerSelectedNewMatchHere ? (
               <View style={styles.chatDecisionInlineMarkMuted}>
@@ -4069,18 +4492,13 @@ function OverviewScreen({
   }
 
   function renderPhaseTwoEntryCard() {
-    if (phaseFourUnlocked) {
+    if (phaseThreeUnlocked || phaseFourWindowLocked || phaseFiveUnlocked) {
       return null;
     }
 
     if (
       !hasActiveChat
-      || (
-        !phaseTwoHasStarted
-        && !phaseTwoReady
-        && phaseOneViewerDecision === "undecided"
-        && phaseOnePartnerDecision === "undecided"
-      )
+      || (!phaseTwoHasStarted && !phaseTwoReady && !phaseOneChatStarted)
     ) {
       return null;
     }
@@ -4095,21 +4513,21 @@ function OverviewScreen({
           ? "Deine 3 Fragen öffnen"
           : "Deine Einordnung starten"
         : `Jetzt ist ${phaseTwoCurrentResponderName} dran`
-      : phaseOneBothContinue
+      : phaseOneCanAdvanceToPhaseTwo
         ? "Zum Spiel"
         : "Phase 2 starten";
-    let phaseTwoStatusTitle = "Phase 2 startet mit einer Person zuerst.";
+    let phaseTwoStatusTitle = "Phase 2 startet automatisch, solange niemand Neues Match wählt.";
     let phaseTwoStatusText =
-      "Sobald ihr startet, beantwortet eine Person zuerst alle 3 Fragen komplett. Danach ist die andere Person dran.";
+      "Sobald Phase 1 vorbei ist, beantwortet eine Person zuerst alle 3 Fragen komplett. Danach ist die andere Person dran.";
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneViewerDecision === "continue" && phaseOnePartnerDecision === "undecided") {
-      phaseTwoStatusTitle = "Du hast zugestimmt.";
-      phaseTwoStatusText = `Choice wartet jetzt noch auf ${featuredProfile.firstName}. Wenn ihr beide bis ${decisionClockLabel} weitermachen wollt, startet Phase 2 ${phaseTwoStartLabel}.`;
+      phaseTwoStatusTitle = "Du hast aktiv Weiter gewählt.";
+      phaseTwoStatusText = `Wenn ${featuredProfile.firstName} nichts ändert, startet Phase 2 ${phaseTwoStartLabel}. Bis ${decisionClockLabel} kann diese Entscheidung noch geändert werden.`;
     }
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneViewerDecision === "undecided" && phaseOnePartnerDecision === "continue") {
       phaseTwoStatusTitle = `${featuredProfile.firstName} möchte weitermachen.`;
-      phaseTwoStatusText = `Wenn du auch zustimmst, endet Phase 1 heute um ${decisionClockLabel} und Phase 2 beginnt ${phaseTwoStartLabel}.`;
+      phaseTwoStatusText = `Wenn du nichts änderst, endet Phase 1 heute um ${decisionClockLabel} und Phase 2 beginnt ${phaseTwoStartLabel}.`;
     }
 
     if (!phaseTwoHasStarted && !phaseTwoReady && phaseOneAnyDeclined) {
@@ -4124,16 +4542,16 @@ function OverviewScreen({
               ? `${featuredProfile.firstName} wollte danach ein neues Match. Deshalb endet dieses Match heute um ${decisionClockLabel} und direkt danach startet wieder ein neues.`
               : `${featuredProfile.firstName} möchte danach ein neues Match. Bis ${decisionClockLabel} könnt ihr diese Entscheidung noch ändern.`
             : phaseOneClosed
-              ? `Bis ${decisionClockLabel} kam keine gemeinsame Zusage zustande. Direkt danach startet wieder ein neues Match.`
+              ? `Bis ${decisionClockLabel} hat mindestens eine Person Neues Match gewählt. Direkt danach startet wieder ein neues Match.`
               : `Mindestens eine Person möchte danach ein neues Match. Bis ${decisionClockLabel} könnt ihr diese Entscheidung noch ändern.`;
     }
 
-    if (!phaseTwoHasStarted && phaseOneBothContinue && !phaseTwoAvailableByTime) {
-      phaseTwoStatusTitle = "Beide haben zugestimmt.";
-      phaseTwoStatusText = `Phase 1 endet heute um ${decisionClockLabel}. Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
+    if (!phaseTwoHasStarted && phaseOneCanAdvanceToPhaseTwo && !phaseTwoAvailableByTime) {
+      phaseTwoStatusTitle = "Dieses Match läuft weiter.";
+      phaseTwoStatusText = `Solange niemand Neues Match wählt, endet Phase 1 heute um ${decisionClockLabel} und Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
     }
 
-    if (!phaseTwoHasStarted && phaseOneBothContinue && phaseTwoAvailableByTime) {
+    if (!phaseTwoHasStarted && phaseOneCanAdvanceToPhaseTwo && phaseTwoAvailableByTime) {
       phaseTwoStatusTitle = phaseTwoCurrentResponderUserId === phaseTwoViewerUserId
         ? "Du beginnst jetzt Phase 2."
         : `${phaseTwoCurrentResponderName} beginnt jetzt Phase 2.`;
@@ -4143,17 +4561,17 @@ function OverviewScreen({
     }
 
     if (phaseTwoOverdue) {
-      phaseTwoStatusTitle = "Phase 2 wartet noch auf Antworten.";
+      phaseTwoStatusTitle = "Phase 2 wurde nicht rechtzeitig gespielt.";
       phaseTwoStatusText = phaseTwoPenaltyJustApplied
         ? phaseTwoCurrentResponderUserId === phaseTwoViewerUserId
-          ? `Du warst für diese Runde dran und hast dafür bereits einen Strafpunkt bekommen. Wenn du jetzt weitermachst, kann die Runde trotzdem noch abgeschlossen werden.`
-          : `${phaseTwoCurrentResponderName} war für diese Runde dran und hat dafür bereits einen Strafpunkt bekommen. Sobald die Antworten da sind, kann es trotzdem noch weitergehen.`
+          ? "Du warst für diese Runde dran. Dafür hast du einen Strafpunkt bekommen, und dieses Match endet jetzt."
+          : `${phaseTwoCurrentResponderName} war für diese Runde dran. Dafür wurde ein Strafpunkt vergeben, und dieses Match endet jetzt.`
         : phaseTwoCurrentResponderUserId === phaseTwoViewerUserId
-          ? `Bis ${phaseThreeClockLabel} war deine Runde fällig. Wenn du jetzt nicht spielst, gibt es dafür einen Strafpunkt.`
-          : `${phaseTwoCurrentResponderName} ist mit der Runde dran. Wenn bis ${phaseThreeClockLabel} nichts kommt, gibt es dafür einen Strafpunkt.`;
+          ? `Bis ${phaseThreeClockLabel} war deine Runde fällig. Dafür endet dieses Match jetzt.`
+          : `${phaseTwoCurrentResponderName} war bis ${phaseThreeClockLabel} mit der Runde dran. Deshalb endet dieses Match jetzt.`;
     }
 
-    if (phaseTwoHasStarted && phaseTwoStage === "starter") {
+    if (!phaseTwoOverdue && phaseTwoHasStarted && phaseTwoStage === "starter") {
       if (viewerIsStarter) {
         phaseTwoStatusTitle = "Du beginnst diese Runde.";
         phaseTwoStatusText = `Beantworte jetzt zuerst alle 3 Fragen. Danach ist ${phaseTwoPartnerName} dran.`;
@@ -4163,7 +4581,7 @@ function OverviewScreen({
       }
     }
 
-    if (phaseTwoHasStarted && phaseTwoStage === "partner") {
+    if (!phaseTwoOverdue && phaseTwoHasStarted && phaseTwoStage === "partner") {
       if (viewerIsPartner) {
         phaseTwoStatusTitle = `${phaseTwoStarterName} hat schon geantwortet.`;
         phaseTwoStatusText = `Die ersten 3 Antworten sind drin. Jetzt bist du dran und beantwortest deine Seite der Runde.`;
@@ -4176,9 +4594,9 @@ function OverviewScreen({
     if (phaseTwoReady) {
       phaseTwoStatusTitle = "Die Choice-Runde ist abgeschlossen.";
       phaseTwoStatusText = phaseThreeQualified
-        ? phaseThreeUnlocked
-          ? `Choice hat eure Runde ausgewertet. Jetzt zeigt euch Choice ${phaseThreeSuggestedProfile.firstName} für morgen. Erst wenn ihr beide euch dagegen entscheidet, bleibt euer Chat offen.`
-          : `Choice hat eure Runde ausgewertet. Ihr seid über 50% und könnt morgen in Phase 3 weitergehen.`
+        ? phaseThreeDecisionOpen
+          ? `Choice hat eure Runde ausgewertet. Für morgen zeigt euch Choice ${phaseThreeSuggestedNewMatchLabel} als Alternative. Dieses Match bleibt erstmal offen, solange niemand bewusst auf ein neues Match wechselt.`
+          : `Choice hat eure Runde ausgewertet. Ihr seid über 50%. Phase 3 startet ${phaseThreeStartLabel}. Noch ${phaseThreeStartsInLabel}.`
         : "Choice hat eure Runde ausgewertet. Der Chat ist jetzt in Phase 2 wieder offen, auch wenn es noch nicht für Phase 3 reicht.";
     }
 
@@ -4198,9 +4616,9 @@ function OverviewScreen({
             <Text style={[styles.phaseTwoEntryResultText, !phaseThreeQualified && styles.phaseTwoStatusPillText]}>
               Letztes Ergebnis: {phaseTwoCompatibility}% •{" "}
               {phaseThreeQualified
-                ? phaseThreeUnlocked
-                  ? `heute um ${phaseThreeClockLabel} geht es in Phase 3 weiter`
-                  : `über 50% • morgen startet Phase 3`
+                ? phaseThreeDecisionOpen
+                  ? "Phase 3 läuft jetzt"
+                  : `Phase 3 in ${phaseThreeStartsInLabel}`
                 : "nicht genug für Phase 3"}
             </Text>
           </View>
@@ -4230,60 +4648,87 @@ function OverviewScreen({
   }
 
   function renderPhaseThreeEntryCard() {
-    if (!hasActiveChat || !phaseThreeUnlocked || phaseFourUnlocked) {
+    if (!hasActiveChat || !phaseThreeDecisionOpen) {
       return null;
     }
 
+    const decisionWindowInPause = phaseFourWindowLocked;
     const stayVisualSelected = phaseThreeViewerDecision !== "new-match";
     const newMatchVisualSelected = phaseThreeViewerDecision === "new-match";
 
-    let phaseThreeTitle = "Choice macht euch jetzt einen neuen Vorschlag.";
-    let phaseThreeText =
-      `Für morgen schlägt Choice ${phaseThreeSuggestedProfile.firstName} vor. Nur wenn ihr beide euch aktiv dagegen entscheidet, bleibt dieser Chat offen und ihr könnt weiterschreiben.`;
+    let phaseThreeTitle = decisionWindowInPause
+      ? "Die Pause läuft. Euer Match bleibt aktuell bestehen."
+      : "Choice zeigt euch jetzt eine Alternative.";
+    let phaseThreeText = decisionWindowInPause
+      ? `Bis ${phaseFiveClockLabel} kannst du noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn du lieber neu starten willst. Sonst geht euer Chat danach einfach weiter.`
+      : `Für morgen schlägt Choice ${phaseThreeSuggestedNewMatchLabel} vor. Dieses Match bleibt erstmal ausgewählt. Wenn du lieber wechseln willst, kannst du das bis ${phaseFourClockLabel} noch anpassen.`;
 
-    if (phaseThreeViewerDecision === "stay" && phaseThreePartnerDecision === "undecided") {
-      phaseThreeTitle = "Du möchtest bei diesem Match bleiben.";
-      phaseThreeText = `Choice wartet jetzt noch auf ${featuredProfile.firstName}. Erst wenn ihr beide euch gegen ${phaseThreeSuggestedProfile.firstName} entscheidet, geht euer Chat weiter.`;
+    if (phaseThreeViewerStayedExplicitly && phaseThreePartnerDecision === "undecided") {
+      phaseThreeTitle = "Du bleibst bei diesem Match.";
+      phaseThreeText = decisionWindowInPause
+        ? `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFiveClockLabel} noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn es sich richtiger anfühlt.`
+        : `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFourClockLabel} noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn es sich richtiger anfühlt.`;
     }
 
-    if (phaseThreeViewerDecision === "undecided" && phaseThreePartnerDecision === "stay") {
-      phaseThreeTitle = `${featuredProfile.firstName} möchte bei euch bleiben.`;
-      phaseThreeText = `Wenn du dich auch gegen ${phaseThreeSuggestedProfile.firstName} entscheidest, bleibt euer Chat offen und ihr könnt weiterschreiben.`;
+    if (phaseThreeViewerDecision !== "stay" && phaseThreePartnerStayedExplicitly) {
+      phaseThreeTitle = `${featuredProfile.firstName} bleibt bei euch.`;
+      phaseThreeText = decisionWindowInPause
+        ? `Wenn du nichts mehr änderst, geht euer Chat nach ${phaseFiveClockLabel} einfach weiter. Bis dahin kannst du trotzdem noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln.`
+        : `Wenn du nichts mehr änderst, bleibt ihr bei diesem Match. Bis ${phaseFourClockLabel} kannst du trotzdem noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln.`;
     }
 
-    if (phaseThreeBothStay) {
-      phaseThreeTitle = "Ihr habt euch beide gegen den neuen Vorschlag entschieden.";
-      phaseThreeText = "Choice lässt euren Chat offen. Ihr könnt jetzt in Phase 3 weiterschreiben.";
+    if (phaseThreeBothStayExplicit) {
+      phaseThreeTitle = decisionWindowInPause
+        ? "Ihr bleibt nach der Pause bei diesem Match."
+        : "Ihr bleibt bei diesem Match.";
+      phaseThreeText = decisionWindowInPause
+        ? `Choice hält euren Chat noch bis ${phaseFiveClockLabel} geschlossen. Danach könnt ihr weiterschreiben.`
+        : `Choice lässt euren Chat offen. Bis ${phaseFourClockLabel} könnt ihr eure Wahl noch ändern, wenn ihr lieber neu starten wollt.`;
     }
 
     if (phaseThreeAnyLeave) {
-      phaseThreeTitle = "Mindestens eine Person möchte morgen ein neues Match.";
-      phaseThreeText = `Damit endet euer aktueller Chat. Morgen würde stattdessen ${phaseThreeSuggestedProfile.firstName} in Phase 1 bereitstehen.`;
+      phaseThreeTitle = decisionWindowInPause
+        ? "Mindestens eine Person möchte nach der Pause neu starten."
+        : "Mindestens eine Person möchte morgen ein neues Match.";
+      phaseThreeText = decisionWindowInPause
+        ? `Nach ${phaseFiveClockLabel} endet euer aktueller Chat. Danach würde stattdessen ${phaseThreeSuggestedWithMatchLabel} in Phase 1 bereitstehen.`
+        : `Damit endet euer aktueller Chat. Morgen würde stattdessen ${phaseThreeSuggestedWithMatchLabel} in Phase 1 bereitstehen.`;
     }
 
     return (
       <View style={styles.phaseThreeEntryCard}>
-        <Text style={styles.phaseTwoEyebrow}>Phase 3</Text>
+        <Text style={styles.phaseTwoEyebrow}>{decisionWindowInPause ? "Phase 4" : "Phase 3"}</Text>
         <Text style={styles.phaseThreeEntryTitle}>{phaseThreeTitle}</Text>
         <Text style={styles.phaseTwoEntryText}>{phaseThreeText}</Text>
 
-        <View style={styles.phaseThreePreviewWrap}>
-          <Image source={{ uri: phaseThreeSuggestedProfile.imageUri }} style={styles.phaseThreePreviewImage} />
-          <View style={styles.phaseThreePreviewCopy}>
-            <View style={styles.phaseThreePreviewTopRow}>
-              <Text style={styles.phaseThreePreviewName}>
-                {phaseThreeSuggestedProfile.firstName}, {phaseThreeSuggestedProfile.age}
-              </Text>
-              <View style={styles.phaseThreePreviewPill}>
-                <Text style={styles.phaseThreePreviewPillText}>{`heute ${phaseThreeClockLabel}`}</Text>
+        {phaseThreeSuggestedProfile ? (
+          <View style={styles.phaseThreePreviewWrap}>
+            <Image source={{ uri: phaseThreeSuggestedProfile.imageUri }} style={styles.phaseThreePreviewImage} />
+            <View style={styles.phaseThreePreviewCopy}>
+              <View style={styles.phaseThreePreviewTopRow}>
+                <Text style={styles.phaseThreePreviewName}>
+                  {phaseThreeSuggestedProfile.firstName}, {phaseThreeSuggestedProfile.age}
+                </Text>
+                <View style={styles.phaseThreePreviewPill}>
+                  <Text style={styles.phaseThreePreviewPillText}>
+                    {decisionWindowInPause ? `offen bis ${phaseFiveClockLabel}` : `heute ${phaseThreeClockLabel}`}
+                  </Text>
+                </View>
               </View>
+              <Text style={styles.phaseThreePreviewMeta}>
+                {[phaseThreeSuggestedProfile.city, phaseThreeSuggestedDistanceLabel].filter(Boolean).join(" • ")}
+              </Text>
+              <Text style={styles.phaseThreePreviewTagline}>{phaseThreeSuggestedProfile.tagline}</Text>
             </View>
-            <Text style={styles.phaseThreePreviewMeta}>
-              {[phaseThreeSuggestedProfile.city, phaseThreeSuggestedDistanceLabel].filter(Boolean).join(" • ")}
-            </Text>
-            <Text style={styles.phaseThreePreviewTagline}>{phaseThreeSuggestedProfile.tagline}</Text>
           </View>
-        </View>
+        ) : (
+          <View style={styles.phaseThreePreviewFallback}>
+            <Text style={styles.phaseThreePreviewFallbackTitle}>Choice sucht gerade noch den passendsten neuen Vorschlag.</Text>
+            <Text style={styles.phaseThreePreviewFallbackText}>
+              Sobald ein wirklich passendes neues Match feststeht, siehst du es hier statt eines zufälligen Profils.
+            </Text>
+          </View>
+        )}
 
         <View style={styles.phaseThreeDecisionRow}>
           <Pressable
@@ -4308,7 +4753,11 @@ function OverviewScreen({
               <Text style={[styles.phaseThreeDecisionTitle, stayVisualSelected && styles.phaseThreeDecisionTitleActive]}>
                 Bleiben
               </Text>
-              <Text style={styles.phaseThreeDecisionText}>Morgen mit diesem Match weiterschreiben.</Text>
+              <Text style={styles.phaseThreeDecisionText}>
+                {decisionWindowInPause
+                  ? `Nach ${phaseFiveClockLabel} mit diesem Match weiterschreiben.`
+                  : "Morgen mit diesem Match weiterschreiben."}
+              </Text>
             </View>
           </Pressable>
 
@@ -4339,7 +4788,11 @@ function OverviewScreen({
               >
                 Neu starten
               </Text>
-              <Text style={styles.phaseThreeDecisionText}>Morgen lieber mit {phaseThreeSuggestedProfile.firstName} chatten.</Text>
+              <Text style={styles.phaseThreeDecisionText}>
+                {decisionWindowInPause
+                  ? `Nach der Pause lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten.`
+                  : `Morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} chatten.`}
+              </Text>
             </View>
           </Pressable>
         </View>
@@ -4348,7 +4801,12 @@ function OverviewScreen({
   }
 
   function renderPhaseFourEntryCard() {
-    if (!hasActiveChat || !phaseFourUnlocked || phaseFiveUnlocked) {
+    if (
+      !hasActiveChat
+      || !phaseFourWindowLocked
+      || phaseFiveUnlocked
+      || phaseThreeDecisionPending
+    ) {
       return null;
     }
 
@@ -4411,6 +4869,7 @@ function OverviewScreen({
           <Text style={styles.phaseFiveAwardBody}>
             Der Choice Award gehört nicht dem besseren Profil, sondern zwei Menschen, die sich immer wieder füreinander entschieden haben. Im besten Fall braucht ihr Choice danach nicht mehr.
           </Text>
+
         </View>
       </View>
     );
@@ -4445,8 +4904,10 @@ function OverviewScreen({
       }
 
       if (isServerJourneyMode) {
+        let stored: PersistedJourneyState | null = null;
+
         try {
-          const stored = await loadTransientState<PersistedJourneyState>();
+          stored = await loadTransientState<PersistedJourneyState>();
 
           if (!cancelled && stored && stored.ownerUserId === journeyOwnerUserId) {
             applyStoredJourneyClientState(stored);
@@ -4459,8 +4920,16 @@ function OverviewScreen({
           }
         } catch {
           if (!cancelled) {
-            setRemoteJourney(null);
-            resetJourneyState(journeyOwnerUserId);
+            const hasStoredJourneySnapshot =
+              stored !== null && stored.ownerUserId === journeyOwnerUserId;
+
+            // Keep the last known local journey snapshot if the live refresh
+            // fails temporarily. This prevents the overview from dropping back
+            // to an empty state during brief network or server hiccups.
+            if (!hasStoredJourneySnapshot) {
+              setRemoteJourney(null);
+              resetJourneyState(journeyOwnerUserId);
+            }
             setIsJourneyHydrated(true);
           }
         }
@@ -4749,7 +5218,7 @@ function OverviewScreen({
       || !journeyOwnerUserId
       || !journeyReleaseAt
       || !hasActiveChat
-      || !phaseOneBothContinue
+      || !phaseOneCanAdvanceToPhaseTwo
       || phaseTwoReady
       || currentTime < phaseThreeStartTime
       || phaseTwoPenaltyAppliedAt === currentReleaseKey
@@ -4796,7 +5265,7 @@ function OverviewScreen({
     isServerJourneyMode,
     journeyOwnerUserId,
     journeyReleaseAt,
-    phaseOneBothContinue,
+    phaseOneCanAdvanceToPhaseTwo,
     phaseThreeStartTime,
     phaseTwoCurrentResponderUserId,
     phaseTwoPenaltyAppliedAt,
@@ -4886,7 +5355,7 @@ function OverviewScreen({
         }
       }
 
-      if (phaseOneBothContinue) {
+      if (phaseOneCanAdvanceToPhaseTwo) {
         if (phaseTwoStartTime.getTime() > nowMs) {
           plans.push({
             ownerUserId: activeUserId,
@@ -4933,7 +5402,7 @@ function OverviewScreen({
             date: phaseThreeStartTime,
             kind: "phase",
             title: "Ihr seid jetzt in Phase 3",
-            body: "Jetzt entscheidet ihr, ob ihr hier bleibt oder morgen ein neues Match wollt.",
+            body: "Dieses Match bleibt erstmal bestehen. Wenn du lieber morgen neu starten willst, kannst du das jetzt noch ändern.",
             data: {
               type: "phase-three-start",
               matchId: remoteJourney?.matchId ?? currentReleaseKey,
@@ -4950,8 +5419,8 @@ function OverviewScreen({
               key: `${currentReleaseKey}:phase-three-reminder`,
               date: reminderAt,
               kind: "warning",
-              title: "Treffe jetzt deine Entscheidung",
-              body: "Sage heute noch, ob du bleiben oder morgen ein neues Match willst.",
+              title: "Neues Match noch möglich",
+              body: `Wenn du lieber morgen neu starten willst, kannst du das bis ${phaseFourClockLabel} noch ändern. Sonst bleibt dieses Match bestehen.`,
               data: {
                 type: "phase-three-reminder",
                 matchId: remoteJourney?.matchId ?? currentReleaseKey,
@@ -4961,22 +5430,22 @@ function OverviewScreen({
         }
       }
 
-      if (phaseThreeBothStay) {
-        if (phaseFourStartTime.getTime() > nowMs) {
-          plans.push({
-            ownerUserId: activeUserId,
-            key: `${currentReleaseKey}:phase-four-start`,
-            date: phaseFourStartTime,
-            kind: "phase",
-            title: "Ihr seid jetzt in Phase 4",
-            body: `Choice pausiert euren Chat jetzt bewusst bis ${phaseFiveClockLabel}.`,
-            data: {
-              type: "phase-four-start",
-              matchId: remoteJourney?.matchId ?? currentReleaseKey,
-            },
-          });
-        }
+      if (phaseThreeQualified && phaseFourStartTime.getTime() > nowMs) {
+        plans.push({
+          ownerUserId: activeUserId,
+          key: `${currentReleaseKey}:phase-four-start`,
+          date: phaseFourStartTime,
+          kind: "phase",
+          title: "Ihr seid jetzt in Phase 4",
+          body: `Der Chat pausiert jetzt bis ${phaseFiveClockLabel}. Wenn du lieber neu starten willst, kannst du das bis dahin noch ändern.`,
+          data: {
+            type: "phase-four-start",
+            matchId: remoteJourney?.matchId ?? currentReleaseKey,
+          },
+        });
+      }
 
+      if (phaseThreeBothStay) {
         if (phaseFiveStartTime.getTime() > nowMs) {
           plans.push({
             ownerUserId: activeUserId,
@@ -5015,7 +5484,7 @@ function OverviewScreen({
     notificationSyncMinute,
     phaseFiveClockLabel,
     phaseFiveStartTime,
-    phaseOneBothContinue,
+    phaseOneCanAdvanceToPhaseTwo,
     phaseOneChatStarted,
     phaseOneViewerStarts,
     phaseOneWindowOpen,
@@ -5077,32 +5546,94 @@ function OverviewScreen({
     setReportReason("");
     setReportDetails("");
     setReportFeedback(null);
+    setReportActionPending(null);
     setShowReportModal(true);
   }
 
   async function submitReport() {
-    if (!currentUserId || !activePartnerUserId || !reportReason) {
+    if (!currentUserId || !activePartnerUserId || !reportReason || reportActionPending) {
       return;
     }
 
     const latestMessagePreview = getSharedChatMessagePreview(sharedChatMessages[sharedChatMessages.length - 1]) ?? null;
+    const selectedReasonLabel = getOptionLabel(reportReasonOptions, reportReason);
+
+    setReportActionPending("report");
 
     try {
       await createRemoteReport({
         reporterUserId: currentUserId,
         reportedUserId: activePartnerUserId,
+        matchId: remoteJourney?.matchId ?? undefined,
         reporterName: displayName,
         reportedName: featuredProfile.firstName,
-        reason: reportReason,
+        reason: selectedReasonLabel,
         details: reportDetails.trim(),
         latestMessagePreview,
       });
       setShowReportModal(false);
       setReportReason("");
       setReportDetails("");
-      setReportFeedback("Meldung gespeichert. Choice prüft sie im Admin-Dashboard.");
+      setReportFeedback("Meldung gespeichert. Choice prüft sie jetzt zeitnah.");
     } catch {
       setReportFeedback("Meldung konnte gerade nicht gespeichert werden. Bitte versuch es gleich nochmal.");
+    } finally {
+      setReportActionPending(null);
+    }
+  }
+
+  async function blockCurrentPartner() {
+    if (!currentUserId || !activePartnerUserId || reportActionPending) {
+      return;
+    }
+
+    const latestMessagePreview = getSharedChatMessagePreview(sharedChatMessages[sharedChatMessages.length - 1]) ?? null;
+    const selectedReasonLabel = reportReason ? getOptionLabel(reportReasonOptions, reportReason) : null;
+    const shouldAlsoReport = Boolean(selectedReasonLabel);
+    let reportSaved = false;
+
+    setReportActionPending("block");
+
+    try {
+      if (shouldAlsoReport && selectedReasonLabel) {
+        await createRemoteReport({
+          reporterUserId: currentUserId,
+          reportedUserId: activePartnerUserId,
+          matchId: remoteJourney?.matchId ?? undefined,
+          reporterName: displayName,
+          reportedName: featuredProfile.firstName,
+          reason: selectedReasonLabel,
+          details: reportDetails.trim(),
+          latestMessagePreview,
+        });
+        reportSaved = true;
+      }
+
+      const journey = await blockRemoteJourneyPartner({
+        userId: currentUserId,
+        blockedUserId: activePartnerUserId,
+      });
+
+      applyRemoteJourneyState(journey);
+      setShowReportModal(false);
+      setShowChatDecisionModal(false);
+      setChatOpen(false);
+      onSelectTab("today");
+      setReportReason("");
+      setReportDetails("");
+      setReportFeedback(
+        reportSaved
+          ? `${featuredProfile.firstName} ist jetzt blockiert. Deine Meldung wurde gespeichert und dieses Match sofort beendet.`
+          : `${featuredProfile.firstName} ist jetzt blockiert. Dieses Match wurde sofort beendet und wird dir nicht noch einmal vorgeschlagen.`,
+      );
+    } catch {
+      setReportFeedback(
+        reportSaved
+          ? "Meldung gespeichert, aber die Blockierung konnte gerade nicht abgeschlossen werden. Bitte versuch es gleich nochmal."
+          : "Blockierung konnte gerade nicht gespeichert werden. Bitte versuch es gleich nochmal.",
+      );
+    } finally {
+      setReportActionPending(null);
     }
   }
 
@@ -5149,8 +5680,13 @@ function OverviewScreen({
       return;
     }
 
-    if (phaseOneClosed && !phaseOneBothContinue && currentTime >= phaseTwoStartTime) {
+    if (phaseOneClosed && !phaseOneCanAdvanceToPhaseTwo && currentTime >= phaseTwoStartTime) {
       resetJourneyState(journeyOwnerUserId, phaseTwoStartTime.toISOString());
+      return;
+    }
+
+    if (!phaseTwoReady && phaseOneCanAdvanceToPhaseTwo && currentTime >= phaseThreeStartTime) {
+      resetJourneyState(journeyOwnerUserId, phaseThreeStartTime.toISOString());
       return;
     }
 
@@ -5159,8 +5695,8 @@ function OverviewScreen({
       return;
     }
 
-    if (phaseThreeUnlocked && !phaseThreeBothStay && currentTime >= phaseFourStartTime) {
-      resetJourneyState(journeyOwnerUserId, phaseFourStartTime.toISOString());
+    if (phaseThreeUnlocked && !phaseThreeBothStay && currentTime >= phaseFiveStartTime) {
+      resetJourneyState(journeyOwnerUserId, phaseFiveStartTime.toISOString());
     }
   }, [
     currentTime,
@@ -5168,8 +5704,8 @@ function OverviewScreen({
     isJourneyHydrated,
     journeyOwnerUserId,
     journeyReleaseAt,
-    phaseFourStartTime,
-    phaseOneBothContinue,
+    phaseFiveStartTime,
+    phaseOneCanAdvanceToPhaseTwo,
     phaseOneClosed,
     phaseThreeBothStay,
     phaseThreeStartTime,
@@ -5248,6 +5784,16 @@ function OverviewScreen({
                   : `Choice pausiert Konten bei drei bestätigten Strafpunkten automatisch. Wenn derselbe Verstoß ${penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Punkt wieder.`}
             </Text>
           </View>
+
+          <Pressable
+            onPress={() => {
+              void openExternalUrl(LEGAL_URLS.supportModeration);
+            }}
+            style={styles.legalSupportButton}
+          >
+            <Text style={styles.legalSupportButtonText}>Entscheidung prüfen lassen</Text>
+            <Text style={styles.legalSupportButtonMeta}>Öffnet direkt den Kontakt für Moderations- und Einspruchsanliegen.</Text>
+          </Pressable>
 
           <View style={styles.accountActionsList}>
             <Pressable onPress={() => { void onSignOut(); }} style={styles.accountActionButton} disabled={accountActionPending}>
@@ -5341,9 +5887,9 @@ function OverviewScreen({
               >
                 <Text style={styles.phaseTwoStatusPillText}>
                   {phaseThreeQualified
-                    ? phaseThreeUnlocked
+                    ? phaseThreeDecisionOpen
                       ? "Über 50% erreicht • Phase 3 ist jetzt offen"
-                      : "Über 50% erreicht • morgen kann Phase 3 starten"
+                      : `Über 50% erreicht • Phase 3 startet in ${phaseThreeStartsInLabel}`
                     : "50% oder weniger • es geht nicht weiter in Phase 3"}
                 </Text>
               </View>
@@ -5495,6 +6041,7 @@ function OverviewScreen({
           composerBusy={chatSendPending}
           composerHidden={chatComposerHidden}
           composerLockedText={chatComposerLockedText}
+          composerStatusText={chatSendError}
           fullScreen
           onBack={() => setChatOpen(false)}
           onOpenProfile={hasActiveChat ? () => {
@@ -5503,23 +6050,36 @@ function OverviewScreen({
           } : undefined}
           onReportPress={hasActiveChat && !phaseOneBeforeRelease ? openReportModal : undefined}
           headerActionState={chatHeaderActionState}
-          onHeaderActionPress={hasActiveChat && (phaseOneWindowOpen || (phaseThreeUnlocked && !phaseFourUnlocked)) ? () => setShowChatDecisionModal(true) : undefined}
+          onHeaderActionPress={hasActiveChat && (phaseOneWindowOpen || phaseThreeDecisionOpen) ? () => setShowChatDecisionModal(true) : undefined}
           onComposerChangeText={setChatDraft}
           onSend={sendChatMessage}
           topInset={insets.top}
           bottomInset={insets.bottom}
           threadSupplement={renderPhaseAdvanceNotice()}
+          threadSupplementPlacement={phaseFiveUnlocked || phaseFiveRestartSelected ? "inline" : "docked"}
         />
         <Modal transparent visible={showChatDecisionModal} animationType="fade" onRequestClose={() => setShowChatDecisionModal(false)}>
           <Pressable style={styles.chatDecisionOverlay} onPress={() => setShowChatDecisionModal(false)}>
             <Pressable style={styles.chatDecisionCard} onPress={() => {}}>
-              <Text style={styles.chatDecisionEyebrow}>{phaseThreeUnlocked ? "Für morgen" : "Nach dem Match"}</Text>
+              <Text style={styles.chatDecisionEyebrow}>
+                {phaseThreeUnlocked
+                  ? phaseFourWindowLocked
+                    ? "Phase 4"
+                    : "Für morgen"
+                  : "Nach dem Match"}
+              </Text>
               <Text style={styles.chatDecisionTitle}>
-                {phaseThreeUnlocked ? "Möchtest du morgen bei diesem Match bleiben?" : "Möchtest du diesen Chat weiterführen?"}
+                {phaseThreeUnlocked
+                  ? phaseFourWindowLocked
+                    ? "Möchtest du nach der Pause bei diesem Match bleiben?"
+                    : "Möchtest du morgen bei diesem Match bleiben?"
+                  : "Möchtest du diesen Chat weiterführen?"}
               </Text>
               <Text style={styles.chatDecisionText}>
                 {phaseThreeUnlocked
-                  ? `Choice schlägt dir für morgen ${phaseThreeSuggestedProfile.firstName} vor. Nur wenn ihr beide euch dagegen entscheidet, bleibt euer Chat offen.`
+                  ? phaseFourWindowLocked
+                    ? `Der Chat pausiert gerade bis ${phaseFiveClockLabel}. Standardmäßig geht es danach mit ${featuredProfile.firstName} weiter. Wenn du lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten willst, kannst du das bis dahin noch ändern.`
+                    : `Choice schlägt dir für morgen ${phaseThreeSuggestedNewMatchLabel} als Alternative vor. Standardmäßig bleibst du bei diesem Match, kannst aber bis ${phaseFourClockLabel} noch wechseln.`
                   : "Wenn es sich gut anfühlt, kannst du Phase 2 vormerken. Sonst gehst du morgen einfach mit einem neuen Match weiter."}
               </Text>
 
@@ -5547,14 +6107,23 @@ function OverviewScreen({
                     viewerContinueVisualSelected && pressed && styles.chatDecisionOptionButtonActivePressed,
                   ]}
                 >
-                  <Text style={styles.chatDecisionOptionIcon}>♥</Text>
+                  <Text
+                    style={[
+                      styles.chatDecisionOptionIcon,
+                      viewerContinueVisualSelected && styles.chatDecisionOptionIconActive,
+                    ]}
+                  >
+                    ♥
+                  </Text>
                   <View style={styles.chatDecisionOptionCopy}>
                     <Text style={[styles.chatDecisionOptionTitle, viewerContinueVisualSelected && styles.chatDecisionOptionTitleActive]}>
                       {phaseThreeUnlocked ? "Bleiben" : "Phase 2 vormerken"}
                     </Text>
                     <Text style={styles.chatDecisionOptionText}>
                       {phaseThreeUnlocked
-                        ? "Morgen mit diesem Match weiterschreiben."
+                        ? phaseFourWindowLocked
+                          ? `Nach ${phaseFiveClockLabel} mit diesem Match weiterschreiben.`
+                          : "Morgen mit diesem Match weiterschreiben."
                         : "Diesen Chat würdest du gern weiterführen."}
                     </Text>
                   </View>
@@ -5593,7 +6162,9 @@ function OverviewScreen({
                     </Text>
                     <Text style={styles.chatDecisionOptionText}>
                       {phaseThreeUnlocked
-                        ? `Morgen lieber mit ${phaseThreeSuggestedProfile.firstName} chatten.`
+                        ? phaseFourWindowLocked
+                          ? `Nach der Pause lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten.`
+                          : `Morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} chatten.`
                         : "Du möchtest morgen ein neues Match."}
                     </Text>
                   </View>
@@ -5610,55 +6181,110 @@ function OverviewScreen({
             </Pressable>
           </Pressable>
         </Modal>
-        <Modal transparent visible={showReportModal} animationType="fade" onRequestClose={() => setShowReportModal(false)}>
-          <Pressable style={styles.chatDecisionOverlay} onPress={() => setShowReportModal(false)}>
-            <Pressable style={styles.reportModalCard} onPress={() => {}}>
-              <Text style={styles.chatDecisionEyebrow}>Meldung</Text>
-              <Text style={styles.chatDecisionTitle}>Warum möchtest du diese Person melden?</Text>
-              <Text style={styles.chatDecisionText}>
-                Die Meldung landet bei dir im Status-Tab. Dort kannst du später prüfen, ob der Grund legitim ist und ob es einen Strafpunkt geben soll.
-              </Text>
+        <Modal
+          transparent
+          visible={showReportModal}
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setShowReportModal(false)}
+        >
+          <View style={styles.reportModalOverlay}>
+            <Pressable style={styles.reportModalBackdrop} onPress={() => setShowReportModal(false)} />
+            <ScrollView
+              style={styles.reportModalScroll}
+              contentContainerStyle={[
+                styles.reportModalScrollContent,
+                {
+                  paddingTop: insets.top + 24,
+                  paddingBottom: insets.bottom + 24,
+                },
+              ]}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.reportModalCard}>
+                <Text style={styles.chatDecisionEyebrow}>Sicherheit</Text>
+                <Text style={styles.chatDecisionTitle}>Melden oder blockieren?</Text>
+                <Text style={styles.chatDecisionText}>
+                  Choice prüft Meldungen zeitnah. Wenn du blockierst, endet dieser Chat sofort und die Person wird dir nicht noch einmal vorgeschlagen.
+                </Text>
 
-              <View style={styles.reportReasonList}>
-                {reportReasonOptions.map((option) => (
+                <View style={styles.reportReasonList}>
+                  {reportReasonOptions.map((option) => (
+                    <Pressable
+                      key={option.value}
+                      onPress={() => setReportReason(option.value)}
+                      style={[
+                        styles.reportReasonOption,
+                        reportReason === option.value && styles.reportReasonOptionActive,
+                      ]}
+                    >
+                      <Text style={[styles.reportReasonOptionText, reportReason === option.value && styles.reportReasonOptionTextActive]}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <TextInput
+                  value={reportDetails}
+                  onChangeText={setReportDetails}
+                  placeholder="Optional etwas genauer beschreiben"
+                  placeholderTextColor="#8e86ad"
+                  multiline
+                  style={styles.reportDetailsInput}
+                />
+
+                <View style={styles.reportModalActionColumn}>
+                  <View style={styles.reportModalActionRow}>
+                    <Pressable
+                      onPress={() => setShowReportModal(false)}
+                      style={styles.reportModalCancelButton}
+                      disabled={reportActionPending !== null}
+                    >
+                      <Text style={styles.reportModalCancelButtonText}>Abbrechen</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={submitReport}
+                      disabled={!reportReason || reportActionPending !== null}
+                      style={[
+                        styles.reportModalSubmitButton,
+                        (!reportReason || reportActionPending !== null) && styles.reportModalSubmitButtonDisabled,
+                      ]}
+                    >
+                      <Text style={styles.reportModalSubmitButtonText}>
+                        {reportActionPending === "report" ? "Wird gesendet ..." : "Nur melden"}
+                      </Text>
+                    </Pressable>
+                  </View>
+
                   <Pressable
-                    key={option.value}
-                    onPress={() => setReportReason(option.value)}
+                    onPress={() => {
+                      void blockCurrentPartner();
+                    }}
+                    disabled={reportActionPending !== null}
                     style={[
-                      styles.reportReasonOption,
-                      reportReason === option.value && styles.reportReasonOptionActive,
+                      styles.reportModalBlockButton,
+                      reportActionPending !== null && styles.reportModalBlockButtonDisabled,
                     ]}
                   >
-                    <Text style={[styles.reportReasonOptionText, reportReason === option.value && styles.reportReasonOptionTextActive]}>
-                      {option.label}
+                    <Text style={styles.reportModalBlockButtonText}>
+                      {reportActionPending === "block"
+                        ? "Wird gesichert ..."
+                        : reportReason
+                          ? "Melden und blockieren"
+                          : "Diese Person blockieren"}
+                    </Text>
+                  <Text style={styles.reportModalBlockButtonMeta}>
+                      {reportReason
+                        ? "Die Meldung wird mitgespeichert und das Match sofort beendet."
+                        : "Ohne neue Meldung beenden und für künftige Matches ausblenden."}
                     </Text>
                   </Pressable>
-                ))}
+                </View>
               </View>
-
-              <TextInput
-                value={reportDetails}
-                onChangeText={setReportDetails}
-                placeholder="Optional etwas genauer beschreiben"
-                placeholderTextColor="#8e86ad"
-                multiline
-                style={styles.reportDetailsInput}
-              />
-
-              <View style={styles.reportModalActionRow}>
-                <Pressable onPress={() => setShowReportModal(false)} style={styles.reportModalCancelButton}>
-                  <Text style={styles.reportModalCancelButtonText}>Abbrechen</Text>
-                </Pressable>
-                <Pressable
-                  onPress={submitReport}
-                  disabled={!reportReason}
-                  style={[styles.reportModalSubmitButton, !reportReason && styles.reportModalSubmitButtonDisabled]}
-                >
-                  <Text style={styles.reportModalSubmitButtonText}>Melden</Text>
-                </Pressable>
-              </View>
-            </Pressable>
-          </Pressable>
+            </ScrollView>
+          </View>
         </Modal>
       </KeyboardAvoidingView>
     );
@@ -5748,6 +6374,16 @@ function OverviewScreen({
             <Text style={styles.penaltyFootnote}>Gerade ist kein Strafpunkt mehr aktiv.</Text>
           )}
         </View>
+
+        <Pressable
+          onPress={() => {
+            void openExternalUrl(LEGAL_URLS.supportModeration);
+          }}
+          style={styles.legalSupportButton}
+        >
+          <Text style={styles.legalSupportButtonText}>Moderationsentscheidung prüfen lassen</Text>
+          <Text style={styles.legalSupportButtonMeta}>Öffnet direkt den Kontakt für Einspruch, Rückfragen und Support.</Text>
+        </Pressable>
       </View>
     );
   }
@@ -5805,16 +6441,42 @@ function OverviewScreen({
       return null;
     }
 
+    if (phaseFiveUnlocked && !phaseFiveViewerHasWritten) {
+      return (
+        <View style={styles.phaseFiveNoticeCard}>
+        <View style={styles.phaseFiveNoticeBadge}>
+          <Text style={styles.phaseFiveNoticeBadgeText}>Choice Award</Text>
+        </View>
+          <Text style={styles.phaseFiveNoticeTitle}>Euer Choice Award ist jetzt verfügbar.</Text>
+          <Text style={styles.phaseFiveNoticeText}>
+            Ihr habt alle fünf Phasen geschafft. Jetzt zeigt Choice nur noch, was zwischen euch wirklich geblieben ist.
+          </Text>
+          <View style={styles.phaseFiveNoticeFooter}>
+            <Text style={styles.phaseFiveNoticeFooterText}>Der Chat ist wieder offen.</Text>
+          </View>
+        </View>
+      );
+    }
+
     let eyebrow = "";
     let title = "";
     let text = "";
     let buttonLabel: string | null = null;
     let onPress: (() => void) | null = null;
 
-    if (!phaseTwoReady && phaseOneBothContinue && currentTime >= phaseTwoStartTime) {
+    if (phaseOneClosed && !phaseOneChatStarted) {
+      eyebrow = "Phase 1";
+      title = "Die erste Nachricht ist ausgeblieben.";
+      text = "Dadurch endet dieses Match jetzt. Die Start-Person bekommt dafür einen Strafpunkt, danach folgt wieder ein neues Match.";
+    } else if (!phaseTwoReady && phaseOneCanAdvanceToPhaseTwo && currentTime >= phaseTwoStartTime) {
       eyebrow = "Phase 2";
 
-      if (phaseTwoViewerCanAnswer) {
+      if (phaseTwoOverdue) {
+        title = "Phase 2 wurde nicht rechtzeitig gespielt.";
+        text = phaseTwoPenaltyJustApplied
+          ? "Die laufende Runde wurde nicht rechtzeitig abgeschlossen. Dafür wurde ein Strafpunkt vergeben, und dieses Match endet jetzt."
+          : "Die Frist für Phase 2 ist abgelaufen. Dieses Match endet jetzt.";
+      } else if (phaseTwoViewerCanAnswer) {
         title = phaseTwoOverdue ? "Phase 2 wartet jetzt auf dich." : "Du beginnst jetzt Phase 2.";
         text = phaseTwoHasStarted
           ? "Dein Teil der Choice-Runde ist offen. Erst wenn du ihn abschließt, geht es hier weiter."
@@ -5825,24 +6487,32 @@ function OverviewScreen({
         title = phaseTwoHasStarted
           ? `${phaseTwoCurrentResponderName} ist gerade mit der Runde dran.`
           : `${phaseTwoCurrentResponderName} beginnt jetzt mit Phase 2.`;
-        text = phaseTwoPenaltyJustApplied
-          ? `${phaseTwoCurrentResponderName} hat dafür bereits einen Strafpunkt bekommen. Sobald die Antworten da sind, kann es hier trotzdem noch weitergehen.`
-          : `Bevor hier etwas weitergeht, muss zuerst die Choice-Runde gespielt werden.`;
+        text = `Bevor hier etwas weitergeht, muss zuerst die Choice-Runde gespielt werden.`;
       }
+    } else if (phaseFourWindowLocked && phaseThreeDecisionPending) {
+      eyebrow = "Phase 4";
+      title = "Die Pause läuft gerade.";
+      text = `Euer Match bleibt aktuell bestehen. Bis ${phaseFiveClockLabel} kannst du noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn du lieber neu starten willst.`;
+      buttonLabel = "Ändern";
+      onPress = () => setShowChatDecisionModal(true);
     } else if (phaseThreeDecisionPending) {
       eyebrow = "Phase 3";
       title = "Phase 3 ist jetzt da.";
-      text = `Choice schlägt euch für morgen ${phaseThreeSuggestedProfile.firstName} vor. Entscheidet jetzt, ob ihr bleiben oder neu starten wollt.`;
-      buttonLabel = "Weiter";
+      text = `Choice zeigt euch ${phaseThreeSuggestedNewMatchLabel} für morgen als Alternative. Aktuell bleibt ihr bei diesem Match. Wenn du lieber wechseln willst, kannst du das bis ${phaseFourClockLabel} ändern.`;
+      buttonLabel = "Optionen";
       onPress = () => setShowChatDecisionModal(true);
+    } else if (phaseFiveRestartSelected) {
+      eyebrow = "Phase 5";
+      title = phaseFiveViewerSelectedNewMatch
+        ? "Für morgen ist wieder ein neues Match vorgemerkt."
+        : `${featuredProfile.firstName} möchte morgen ein neues Match.`;
+      text = phaseFiveViewerSelectedNewMatch
+        ? "Du gibst dieses Match damit auf. Choice sucht dir für morgen wieder ein neues Match."
+        : "Mindestens eine Person gibt dieses Match hier auf. Deshalb endet es jetzt.";
     } else if (phaseFourUnlocked && !phaseFiveUnlocked) {
       eyebrow = "Phase 4";
       title = "Phase 4 läuft jetzt.";
       text = `Zwischen ${phaseFourClockLabel} und ${phaseFiveClockLabel} bleibt euer Chat bewusst geschlossen.`;
-    } else if (phaseFiveUnlocked) {
-      eyebrow = "Phase 5";
-      title = "Phase 5 ist jetzt da.";
-      text = "Choice zeigt euch jetzt, was nach allen Phasen zwischen euch geblieben ist.";
     } else {
       return null;
     }
@@ -5864,8 +6534,186 @@ function OverviewScreen({
     );
   }
 
+  function renderHomeCurrentPhaseCard() {
+    if (!hasActiveChat || phaseOneBeforeRelease) {
+      return null;
+    }
+
+    if (phaseFiveUnlocked) {
+      return (
+        <View style={styles.overviewStatusCard}>
+          <Text style={styles.overviewStatusEyebrow}>Choice Award</Text>
+          <Text style={styles.overviewStatusTitle}>Euer Choice Award ist jetzt verfügbar.</Text>
+          <Text style={styles.overviewStatusText}>
+            Choice zeigt euch jetzt, was nach allen Phasen zwischen dir und {featuredProfile.firstName} geblieben ist.
+          </Text>
+          <View style={styles.overviewStatusPills}>
+            <View style={styles.overviewPill}>
+              <Text style={styles.overviewPillText}>Chat wieder offen</Text>
+            </View>
+          </View>
+          <View style={styles.matchReleaseNoticeActions}>
+            <Pressable
+              onPress={openChatFromOverview}
+              style={({ pressed }) => [
+                styles.homePhaseFiveAwardAction,
+                pressed && styles.homePhaseFiveAwardActionPressed,
+              ]}
+            >
+              <Text style={styles.homePhaseFiveAwardActionText}>Zum Award</Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+
+    let eyebrow = "Aktuelle Phase";
+    let title = "";
+    let text = "";
+    const pills: string[] = [];
+    let actionLabel: string | null = null;
+    let onActionPress: (() => void) | null = null;
+
+    if (phaseFiveRestartSelected) {
+      eyebrow = "Phase 5";
+      title = phaseFiveViewerSelectedNewMatch
+        ? "Für morgen ist wieder ein neues Match vorgemerkt."
+        : `${featuredProfile.firstName} möchte morgen ein neues Match.`;
+      text = phaseFiveViewerSelectedNewMatch
+        ? "Du gibst dieses Match damit auf. Choice sucht dir für morgen wieder ein neues Match."
+        : "Mindestens eine Person gibt dieses Match hier auf. Deshalb endet es jetzt.";
+      pills.push("Neues Match morgen");
+    } else if (phaseThreeWindowFinished) {
+      eyebrow = "Phase 5";
+      title = phaseThreeAnyLeave
+        ? "Dieses Match endet nach Phase 4."
+        : "Die letzte Entscheidung ist abgelaufen.";
+      text = phaseThreeAnyLeave
+        ? `Mindestens eine Person wollte lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten. Deshalb öffnet sich der Award für dieses Match nicht.`
+        : `Bis ${phaseFiveClockLabel} gab es keine gemeinsame Zusage mehr für dieses Match. Deshalb wird der Award hier nicht freigeschaltet.`;
+      pills.push(phaseThreeAnyLeave ? "Neustart gewählt" : "Nicht freigeschaltet");
+    } else if (phaseFourWindowLocked) {
+      eyebrow = "Phase 4";
+      title = "Die bewusste Chat-Pause läuft gerade.";
+      text = `Euer Chat bleibt bis ${phaseFiveClockLabel} geschlossen. Danach zeigt sich, ob zwischen dir und ${featuredProfile.firstName} noch wirklich etwas trägt.`;
+      pills.push(`Noch ${formatDurationLabel(Math.max(0, phaseFiveStartTime.getTime() - currentTime.getTime()))}`);
+      pills.push(`bis ${phaseFiveClockLabel}`);
+    } else if (phaseThreeDecisionPending) {
+      eyebrow = "Phase 3";
+      title = "Phase 3 läuft gerade.";
+      text = `Choice zeigt euch ${phaseThreeSuggestedNewMatchLabel} für morgen als Alternative. Aktuell bleibt euer Match bestehen. Wenn jemand lieber wechseln will, geht das noch bis ${phaseFourClockLabel}.`;
+      pills.push(`Noch ${formatDurationLabel(Math.max(0, phaseFourStartTime.getTime() - currentTime.getTime()))}`);
+      pills.push(`bis ${phaseFourClockLabel}`);
+    } else if (phaseThreeStartsLater) {
+      eyebrow = "Phase 2";
+      title = "Phase 2 ist ausgewertet.";
+      text = `Ihr seid über 50 %. Phase 3 startet ${phaseThreeStartLabel}.`;
+      pills.push(`Noch ${phaseThreeStartsInLabel}`);
+      pills.push(`Start ${phaseThreeStartLabel}`);
+    } else if (phaseTwoReady) {
+      eyebrow = "Phase 2";
+      title = phaseThreeQualified
+        ? "Phase 3 startet als Nächstes."
+        : "Dieses Match bleibt in Phase 2 stehen.";
+      text = phaseThreeQualified
+        ? `Die Choice-Runde ist abgeschlossen. Bis ${phaseThreeStartLabel} bleibt euer normales Chatfenster noch offen.`
+        : "Choice hat eure Runde ausgewertet. Für Phase 3 reicht es dieses Mal nicht, deshalb bleibt es bei diesem Stand.";
+      if (phaseThreeQualified) {
+        pills.push(`Noch ${phaseThreeStartsInLabel}`);
+        pills.push(`Start ${phaseThreeStartLabel}`);
+      }
+    } else if (phaseOneClosed && !phaseOneChatStarted) {
+      eyebrow = "Phase 1";
+      title = "Die erste Nachricht ist ausgeblieben.";
+      text = "Dadurch endet dieses Match jetzt. Die Start-Person bekommt dafür einen Strafpunkt, danach startet wieder ein neues Match.";
+      pills.push("Strafpunkt vergeben");
+      pills.push("Neues Match danach");
+    } else if (phaseTwoHasStarted || (phaseOneCanAdvanceToPhaseTwo && phaseTwoAvailableByTime)) {
+      eyebrow = "Phase 2";
+      title = phaseTwoViewerCanAnswer
+        ? "Phase 2 ist jetzt offen."
+        : `${phaseTwoCurrentResponderName} ist gerade mit der Runde dran.`;
+      text = phaseTwoViewerCanAnswer
+        ? "Dein Teil der Choice-Runde wartet auf dich. Erst wenn die Antworten drin sind, geht es in die nächste Phase."
+        : `Bevor es weitergeht, muss zuerst ${phaseTwoCurrentResponderName} die laufende Runde abschließen.`;
+      pills.push(`Noch ${formatDurationLabel(Math.max(0, phaseThreeStartTime.getTime() - currentTime.getTime()))}`);
+      pills.push(`bis ${phaseThreeClockLabel}`);
+    } else if (phaseOneCanAdvanceToPhaseTwo) {
+      eyebrow = "Phase 1";
+      title = "Dieses Match läuft weiter.";
+      text = `Solange niemand Neues Match wählt, endet Phase 1 heute um ${decisionClockLabel}. Danach startet eure Choice-Runde ${phaseTwoStartLabel}.`;
+      pills.push(`Noch ${phaseTwoStartsInLabel}`);
+      pills.push(`Start ${phaseTwoStartLabel}`);
+    } else {
+      eyebrow = "Phase 1";
+      title = "Phase 1 läuft gerade.";
+      text = `Bis ${decisionClockLabel} könnt ihr dieses Match noch bewusst loslassen. Solange niemand Neues Match wählt, geht es danach automatisch in die Choice-Runde weiter. In dieser ersten Phase geht es bewusst noch nicht um alles, sondern nur darum, ob ihr diesem Kontakt heute weiter Raum geben möchtet.`;
+      pills.push(remainingDecisionMs > 0 ? decisionCountdownLabel : "Phase 1 vorbei");
+      pills.push(`bis ${decisionClockLabel}`);
+    }
+
+    return (
+      <View style={styles.matchReleaseNoticeCard}>
+        <Text style={styles.matchReleaseNoticeEyebrow}>{eyebrow}</Text>
+        <Text style={styles.matchReleaseNoticeTitle}>{title}</Text>
+        <Text style={styles.matchReleaseNoticeText}>{text}</Text>
+        {pills.length ? (
+          <View style={styles.overviewStatusPills}>
+            {pills.map((pill) => (
+              <View key={pill} style={styles.overviewPill}>
+                <Text style={styles.overviewPillText}>{pill}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {actionLabel && onActionPress ? (
+          <View style={styles.matchReleaseNoticeActions}>
+            <Pressable
+              onPress={onActionPress}
+              style={styles.matchReleaseNoticeGhostButton}
+            >
+              <Text style={styles.matchReleaseNoticeGhostText}>
+                {actionLabel}
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+    );
+  }
+
+  function renderHomePhaseFiveRestartCard() {
+    if (!hasActiveChat || !phaseFiveUnlocked || phaseFiveRestartSelected) {
+      return null;
+    }
+
+    return (
+      <View style={styles.matchReleaseNoticeCard}>
+        <Text style={styles.matchReleaseNoticeEyebrow}>Für morgen</Text>
+        <Text style={styles.matchReleaseNoticeTitle}>Wenn du dieses Match aufgeben möchtest</Text>
+        <Text style={styles.matchReleaseNoticeText}>
+          Dann endet dieses Match hier. Choice sucht dir stattdessen für morgen wieder ein neues Match.
+        </Text>
+        <View style={styles.matchReleaseNoticeActions}>
+          <Pressable
+            onPress={() => setViewerPhaseThreeDecision("new-match")}
+            style={({ pressed }) => [
+              styles.homePhaseFiveRestartAction,
+              pressed && styles.homePhaseFiveRestartActionPressed,
+            ]}
+          >
+            <Text style={styles.homePhaseFiveRestartActionText}>Für morgen neues Match</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
   function renderOverviewContent() {
     if (currentTab === "today") {
+      const homeCurrentPhaseCard = renderHomeCurrentPhaseCard();
+      const homePhaseFiveRestartCard = renderHomePhaseFiveRestartCard();
+
       return (
         <>
           {renderFreshMatchNotice()}
@@ -5874,7 +6722,7 @@ function OverviewScreen({
               <Text style={styles.matchReleaseNoticeEyebrow}>Nächstes Match</Text>
               <Text style={styles.matchReleaseNoticeTitle}>Noch {nextScheduledMatchCountdownLabel} bis zu deinem nächsten Match.</Text>
               <Text style={styles.matchReleaseNoticeText}>
-                Choice gibt neue Matches gesammelt um {nextScheduledMatchReleaseClockLabel} frei. Deine nächste Freigabe ist {nextScheduledMatchReleaseLabel}.
+                Choice gibt neue Matches gesammelt um {nextScheduledMatchReleaseClockLabel} frei. Deine nächste Freigabe ist {nextScheduledMatchReleaseLabel}. Bis dahin zeigt dir Home nur das, was gerade wirklich wichtig ist.
               </Text>
               <View style={styles.overviewStatusPills}>
                 <View style={styles.overviewPill}>
@@ -5887,24 +6735,27 @@ function OverviewScreen({
             </View>
           ) : null}
 
-          <View style={styles.overviewStatusCard}>
-            <Text style={styles.overviewStatusEyebrow}>Home</Text>
-            <Text style={styles.overviewStatusTitle}>Choice sucht bewusst nach echter Passung.</Text>
-            <Text style={styles.overviewStatusText}>
-              Choice übernimmt die guten Züge von jemandem, der dich ehrlich und aufmerksam verkuppeln würde: selektiv, klar und mit echtem Blick darauf, wer wirklich zu dir passen könnte.
-            </Text>
-            <View style={styles.overviewStatusPills}>
-              <View style={styles.overviewPill}>
-                <Text style={styles.overviewPillText}>aufmerksam</Text>
-              </View>
-              <View style={styles.overviewPill}>
-                <Text style={styles.overviewPillText}>selektiv</Text>
-              </View>
-              <View style={styles.overviewPill}>
-                <Text style={styles.overviewPillText}>klar</Text>
+          {homeCurrentPhaseCard ?? (
+            <View style={styles.overviewStatusCard}>
+              <Text style={styles.overviewStatusEyebrow}>Home</Text>
+              <Text style={styles.overviewStatusTitle}>Choice sucht bewusst nach echter Passung.</Text>
+              <Text style={styles.overviewStatusText}>
+                Choice übernimmt die guten Züge von jemandem, der dich ehrlich und aufmerksam verkuppeln würde: selektiv, klar und mit echtem Blick darauf, wer wirklich zu dir passen könnte. Statt dir ständig neue Reize zu geben, versucht Choice lieber, den einen Kontakt sichtbar zu machen, bei dem es sich heute wirklich lohnt genauer hinzusehen.
+              </Text>
+              <View style={styles.overviewStatusPills}>
+                <View style={styles.overviewPill}>
+                  <Text style={styles.overviewPillText}>aufmerksam</Text>
+                </View>
+                <View style={styles.overviewPill}>
+                  <Text style={styles.overviewPillText}>selektiv</Text>
+                </View>
+                <View style={styles.overviewPill}>
+                  <Text style={styles.overviewPillText}>klar</Text>
+                </View>
               </View>
             </View>
-          </View>
+          )}
+          {homePhaseFiveRestartCard}
 
           <View style={styles.overviewRuleCard}>
             <Text style={styles.overviewRuleTitle}>Wofür Choice da ist</Text>
@@ -5917,12 +6768,35 @@ function OverviewScreen({
             <Text style={styles.overviewListTitle}>Die 5 Phasen</Text>
             {homePhases.map((phase) => (
               <View key={phase.phase} style={styles.timelineItem}>
-                <View style={[styles.timelineBadge, phase.muted && styles.timelineBadgeMuted]}>
+                <View
+                  style={[
+                    styles.timelineBadge,
+                    phase.status.state === "active" && styles.timelineBadgeActive,
+                    phase.status.state === "done" && styles.timelineBadgeMuted,
+                  ]}
+                >
                   <Text style={styles.timelineBadgeIcon}>{phase.icon}</Text>
                 </View>
                 <View style={styles.timelineCopy}>
-                  <Text style={[styles.timelineStepLabel, phase.muted && styles.timelineStepLabelMuted]}>{phase.phase}</Text>
+                  <Text
+                    style={[
+                      styles.timelineStepLabel,
+                      phase.status.state === "active" && styles.timelineStepLabelActive,
+                      phase.status.state === "done" && styles.timelineStepLabelMuted,
+                    ]}
+                  >
+                    {phase.phase}
+                  </Text>
                   <Text style={styles.timelineTitle}>{phase.title}</Text>
+                  <View
+                    style={[
+                      styles.timelineStatusPill,
+                      phase.status.state === "active" && styles.timelineStatusPillActive,
+                      phase.status.state === "done" && styles.timelineStatusPillDone,
+                    ]}
+                  >
+                    <Text style={styles.timelineStatusText}>{phase.status.label}</Text>
+                  </View>
                   <Text style={styles.timelineText}>{phase.text}</Text>
                 </View>
               </View>
@@ -6105,8 +6979,8 @@ function OverviewScreen({
             </Pressable>
           ) : null}
           {renderChatDecisionCard()}
-          {phaseTwoEntryCard}
           {phaseThreeEntryCard}
+          {phaseTwoEntryCard}
           {phaseFourEntryCard}
           {phaseFiveAwardCard}
           {reportFeedback ? (
@@ -6131,28 +7005,29 @@ function OverviewScreen({
               </View>
               <View style={styles.unlockBadge}>
                 <Text style={styles.unlockBadgeText}>
-                  {hasPaidMatchAccess ? `+${paidMatchCredits}` : `${completedMatchCount}/${includedMatchLimit}`}
+                  {hasPaidMatchAccess ? `+${paidMatchCredits} übrig` : `${consumedIncludedMatchCount} genutzt`}
                 </Text>
               </View>
             </View>
 
             <Text style={styles.unlockText}>
-              Nach deinen ersten 8 Matches kannst du dir jeweils 8 weitere Matches für 3,99 € freischalten.
+              Nach deinen ersten 8 Matches kannst du dir einmalig 8 weitere Matches für 3,99 € freischalten. Kein Abo, keine automatische Verlängerung.
             </Text>
 
             <View style={styles.unlockProgressRow}>
               <ProgressRing
-                current={completedMatchCount}
+                current={consumedIncludedMatchCount}
                 total={includedMatchLimit}
                 activeColor="#ffb65f"
-                label="Matches"
+                label="genutzt"
+                displayValue={`${consumedIncludedMatchCount}`}
                 unlocked={hasPaidMatchAccess}
               />
               <View style={styles.unlockProgressCopy}>
                 <Text style={styles.unlockProgressTitle}>
                   {hasPaidMatchAccess
-                    ? `${paidMatchCredits} gekaufte Matches offen`
-                    : `${remainingIncludedMatches} von ${includedMatchLimit} offen`}
+                    ? `${paidMatchCredits} gekaufte Matches übrig`
+                    : `${remainingIncludedMatches} von ${includedMatchLimit} übrig`}
                 </Text>
                 <Text style={styles.unlockFootnote}>
                   {accountBanned
@@ -6163,7 +7038,11 @@ function OverviewScreen({
                       ? `${frozenPaidMatchCredits} gekaufte Matches sind aktuell eingefroren.`
                       : hasPaidMatchAccess
                         ? "Wenn dein Konto pausiert wird, friert Choice das restliche Paket ein."
-                        : "Sobald die 8 voll sind, kannst du dir für 3,99 € 8 weitere Matches kaufen."}
+                        : remainingIncludedMatches <= 0
+                          ? `Die 8 inklusiven Matches für diese Telefonnummer sind genutzt. Bisher wurden insgesamt ${totalMatchCountLabel} freigeschaltet.`
+                          : totalMatchCount > 0
+                            ? `Mit dieser Telefonnummer wurden bisher ${totalMatchCountLabel} freigeschaltet. Danach kannst du dir für 3,99 € 8 weitere Matches kaufen.`
+                            : "Nach den 8 inklusiven Matches kannst du dir für 3,99 € 8 weitere Matches kaufen."}
                 </Text>
               </View>
             </View>
@@ -6173,20 +7052,16 @@ function OverviewScreen({
                 void handleBuyMatchPack();
               }}
               disabled={!canBuyMatchPack || purchasePending}
-              style={[
+              style={({ pressed }) => [
                 styles.unlockPurchaseButton,
                 (!canBuyMatchPack || purchasePending) && styles.unlockPurchaseButtonDisabled,
+                pressed && canBuyMatchPack && !purchasePending && styles.unlockPurchaseButtonPressed,
               ]}
             >
               <View style={styles.unlockPurchaseButtonContent}>
-                <View style={styles.unlockPurchaseButtonCopy}>
-                  <Text style={styles.unlockPurchaseButtonTitle}>8 weitere Matches</Text>
-                  <Text style={styles.unlockPurchaseButtonSubtitle}>
-                    {purchasePending
-                      ? "Wird vorbereitet ..."
-                      : canBuyMatchPack
-                        ? "sofort freischalten"
-                        : "Kauf bald verfügbar"}
+                <View style={styles.unlockPurchaseButtonLabelRow}>
+                  <Text style={styles.unlockPurchaseButtonTitle}>
+                    {purchasePending ? "Wird vorbereitet ..." : "8 Matches kaufen"}
                   </Text>
                 </View>
                 <View style={styles.unlockPurchasePricePill}>
@@ -6197,7 +7072,7 @@ function OverviewScreen({
 
             <Text style={styles.unlockPurchaseHint}>
               {canBuyMatchPack
-                ? "Der Kauf läuft über den App Store oder Google Play. Die 8 Matches werden danach serverseitig gutgeschrieben."
+                ? "Die Abrechnung und eventuelle Rückerstattungen laufen über den jeweiligen Store. Das Paket bleibt an dein Choice-Konto gebunden und wird danach serverseitig gutgeschrieben."
                 : "Sobald RevenueCat und die Store-Keys gesetzt sind, kannst du den Kauf hier direkt testen."}
             </Text>
 
@@ -6458,6 +7333,7 @@ export function ChoiceOnboarding() {
   const [showBirthdayPicker, setShowBirthdayPicker] = useState(false);
   const [verifiedPhone, setVerifiedPhone] = useState<string | null>(null);
   const [verifiedUserId, setVerifiedUserId] = useState<string | null>(null);
+  const [verifiedAccessToken, setVerifiedAccessToken] = useState<string | null>(null);
   const [signedInReturningUser, setSignedInReturningUser] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ profileId: string; summary: string } | null>(null);
@@ -6645,12 +7521,17 @@ export function ChoiceOnboarding() {
     return "hint" in currentScreen ? currentScreen.hint : undefined;
   }, [currentScreen, entryMode, signedInReturningUser]);
 
+  useEffect(() => {
+    setApiAccessToken(verifiedAccessToken);
+  }, [verifiedAccessToken]);
+
   function setSessionState(session: Omit<PersistedSession, "savedAt">, preferredTab: OverviewTabId = "today") {
     setProfile(session.profile);
     setPhotoUris(session.photoUris);
     setIntroVideoUri(session.introVideoUri);
     setIntroVideoDurationMs(session.introVideoDurationMs);
     setVerifiedUserId(session.userId);
+    setVerifiedAccessToken(session.accessToken);
     setVerifiedPhone(session.phoneNumber);
     setCurrentSurface("overview");
     setOverviewTab(preferredTab);
@@ -6666,13 +7547,140 @@ export function ChoiceOnboarding() {
     return savedSession;
   }
 
-  async function loadIsAccountPaused(userId: string) {
+  async function loadIsAccountPaused(userId: string, accessTokenOverride?: string | null) {
     try {
-      const remoteAccount = await fetchRemoteAccountState(userId);
+      const remoteAccount = await fetchRemoteAccountState(userId, accessTokenOverride);
       return remoteAccount.accountPaused;
-    } catch {
+    } catch (error) {
+      if (isAuthRequestError(error)) {
+        throw error;
+      }
+
       return false;
     }
+  }
+
+  async function ensureSessionAccessToken(
+    session: Omit<PersistedSession, "savedAt"> | PersistedSession,
+    options?: { forceRefresh?: boolean },
+  ) {
+    if (!options?.forceRefresh && session.accessToken) {
+      return session;
+    }
+
+    if (!session.phoneNumber?.trim()) {
+      throw new Error("SESSION_REAUTH_REQUIRED");
+    }
+
+    const result = await bootstrapDevSession(session.userId, session.phoneNumber);
+
+    return {
+      ...session,
+      accessToken: result.accessToken.trim() || null,
+      phoneNumber: result.target,
+    };
+  }
+
+  async function restoreLiveSession(
+    session: Omit<PersistedSession, "savedAt"> | PersistedSession,
+    options?: { forceTokenRefresh?: boolean },
+  ): Promise<
+    | { ok: true; session: PersistedSession }
+    | { ok: false; reason: "account-paused" | "profile-not-found" | "reauth-required" | "request-failed" }
+  > {
+    try {
+      const authenticatedSession = await ensureSessionAccessToken(session, {
+        forceRefresh: options?.forceTokenRefresh,
+      });
+
+      if (await loadIsAccountPaused(authenticatedSession.userId, authenticatedSession.accessToken)) {
+        return {
+          ok: false,
+          reason: "account-paused",
+        };
+      }
+
+      const restoredProfile = await fetchRemoteProfile(
+        authenticatedSession.userId,
+        authenticatedSession.accessToken,
+      );
+      const hydratedSession = await persistLocalSession({
+        userId: authenticatedSession.userId,
+        accessToken: authenticatedSession.accessToken,
+        phoneNumber: authenticatedSession.phoneNumber,
+        profile: restoredProfile.profile,
+        photoUris: restoredProfile.photoUrls,
+        introVideoUri: restoredProfile.videoUrl,
+        introVideoDurationMs: null,
+      });
+
+      return {
+        ok: true,
+        session: hydratedSession,
+      };
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : "REQUEST_FAILED";
+
+      if (isAuthRequestError(requestError) && !options?.forceTokenRefresh) {
+        return restoreLiveSession({
+          ...session,
+          accessToken: null,
+        }, {
+          forceTokenRefresh: true,
+        });
+      }
+
+      if (message === "PROFILE_NOT_FOUND") {
+        return {
+          ok: false,
+          reason: "profile-not-found",
+        };
+      }
+
+      if (
+        isAuthRequestError(requestError)
+        || message === "DEV_AUTH_DISABLED"
+        || message === "DEV_SESSION_NOT_FOUND"
+        || message === "SESSION_REAUTH_REQUIRED"
+      ) {
+        return {
+          ok: false,
+          reason: "reauth-required",
+        };
+      }
+
+      return {
+        ok: false,
+        reason: "request-failed",
+      };
+    }
+  }
+
+  function startSignInForSession(
+    session: Pick<PersistedSession, "phoneNumber">,
+    message = "Bitte melde dich mit diesem Konto kurz neu an.",
+  ) {
+    setShowAccountSwitcher(false);
+    setEditingProfile(false);
+    setEditingProfileScreenId(null);
+    setSignedInReturningUser(false);
+    setSuccess(null);
+    setAccountActionMessage(null);
+    setProfile(initialRegistrationProfile);
+    setPhoneNumber(session.phoneNumber?.trim() || phonePrefix);
+    setOtpCode("");
+    setPhotoUris([]);
+    setIntroVideoUri(null);
+    setIntroVideoDurationMs(null);
+    setShowBirthdayPicker(false);
+    setVerifiedPhone(null);
+    setVerifiedUserId(null);
+    setVerifiedAccessToken(null);
+    setEntryMode("signin");
+    setScreenIndex(1);
+    setCurrentSurface("onboarding");
+    setOverviewTab("today");
+    setError(message);
   }
 
   function resetToPausedSignIn(message = "Dieses Konto ist pausiert.") {
@@ -6691,6 +7699,7 @@ export function ChoiceOnboarding() {
     setShowBirthdayPicker(false);
     setVerifiedPhone(null);
     setVerifiedUserId(null);
+    setVerifiedAccessToken(null);
     setEntryMode("signin");
     setScreenIndex(1);
     setCurrentSurface("onboarding");
@@ -6718,7 +7727,16 @@ export function ChoiceOnboarding() {
           return;
         }
 
-        if (await loadIsAccountPaused(persistedSession.userId)) {
+        const restoredSessionResult = await restoreLiveSession(persistedSession);
+
+        if (restoredSessionResult.ok) {
+          if (!cancelled) {
+            setSessionState(restoredSessionResult.session);
+          }
+          return;
+        }
+
+        if (restoredSessionResult.reason === "account-paused") {
           await clearTransientState();
           await clearPersistedSession();
           await removeRememberedSession(persistedSession.userId);
@@ -6730,56 +7748,44 @@ export function ChoiceOnboarding() {
           return;
         }
 
-        if (!cancelled) {
-          setSessionState(persistedSession);
-        }
-
-        try {
-          const restoredProfile = await fetchRemoteProfile(persistedSession.userId);
+        if (restoredSessionResult.reason === "profile-not-found") {
+          await clearTransientState();
+          await clearPersistedSession();
+          await removeRememberedSession(persistedSession.userId);
 
           if (cancelled) {
             return;
           }
 
-          setProfile(restoredProfile.profile);
-          setPhotoUris(restoredProfile.photoUrls);
-          setIntroVideoUri(restoredProfile.videoUrl);
+          setRememberedSessions((current) => current.filter((entry) => entry.userId !== persistedSession.userId));
+          setProfile(initialRegistrationProfile);
+          setPhotoUris([]);
+          setIntroVideoUri(null);
           setIntroVideoDurationMs(null);
-          await persistLocalSession({
-            userId: persistedSession.userId,
-            phoneNumber: persistedSession.phoneNumber,
-            profile: restoredProfile.profile,
-            photoUris: restoredProfile.photoUrls,
-            introVideoUri: restoredProfile.videoUrl,
-            introVideoDurationMs: null,
-          });
-        } catch (requestError) {
-          const message = requestError instanceof Error ? requestError.message : "REQUEST_FAILED";
-
-          if (message === "PROFILE_NOT_FOUND") {
-            await clearTransientState();
-            await clearPersistedSession();
-            await removeRememberedSession(persistedSession.userId);
-
-            if (cancelled) {
-              return;
-            }
-
-            setRememberedSessions((current) => current.filter((entry) => entry.userId !== persistedSession.userId));
-            setProfile(initialRegistrationProfile);
-            setPhotoUris([]);
-            setIntroVideoUri(null);
-            setIntroVideoDurationMs(null);
-            setVerifiedUserId(null);
-            setVerifiedPhone(null);
-            setCurrentSurface("onboarding");
-            setOverviewTab("today");
-            setScreenIndex(0);
-            return;
-          }
-
-          // Keep the cached local session if the live refresh fails for temporary reasons.
+          setVerifiedUserId(null);
+          setVerifiedAccessToken(null);
+          setVerifiedPhone(null);
+          setCurrentSurface("onboarding");
+          setOverviewTab("today");
+          setScreenIndex(0);
+          return;
         }
+
+        if (restoredSessionResult.reason === "request-failed") {
+          if (!cancelled) {
+            setSessionState(persistedSession);
+          }
+          return;
+        }
+
+        await clearTransientState();
+        await clearPersistedSession();
+
+        if (cancelled) {
+          return;
+        }
+
+        startSignInForSession(persistedSession);
       } finally {
         if (!cancelled) {
           setIsSessionHydrated(true);
@@ -6807,7 +7813,7 @@ export function ChoiceOnboarding() {
       const nextEntries = await Promise.all(
         sessionsToInspect.map(async (session) => {
           try {
-            const journey = await fetchRemoteJourney(session.userId);
+            const journey = await fetchRemoteJourney(session.userId, session.accessToken);
             return [session.userId, summarizeRememberedSessionMatch(journey)] as const;
           } catch {
             return [session.userId, {
@@ -6842,13 +7848,14 @@ export function ChoiceOnboarding() {
 
     void persistLocalSession({
       userId: verifiedUserId,
+      accessToken: verifiedAccessToken,
       phoneNumber: verifiedPhone,
       profile,
       photoUris,
       introVideoUri,
       introVideoDurationMs,
     });
-  }, [currentSurface, introVideoDurationMs, introVideoUri, isSessionHydrated, photoUris, profile, verifiedPhone, verifiedUserId]);
+  }, [currentSurface, introVideoDurationMs, introVideoUri, isSessionHydrated, photoUris, profile, verifiedAccessToken, verifiedPhone, verifiedUserId]);
 
   function updateProfile<Key extends keyof RegistrationProfile>(field: Key, value: RegistrationProfile[Key]) {
     setProfile((current) => ({
@@ -7116,6 +8123,7 @@ export function ChoiceOnboarding() {
     setShowBirthdayPicker(false);
     setVerifiedPhone(null);
     setVerifiedUserId(null);
+    setVerifiedAccessToken(null);
     setScreenIndex(1);
   }
 
@@ -7166,6 +8174,7 @@ export function ChoiceOnboarding() {
     setShowBirthdayPicker(false);
     setVerifiedPhone(null);
     setVerifiedUserId(null);
+    setVerifiedAccessToken(null);
     setScreenIndex(0);
     setCurrentSurface("onboarding");
     setOverviewTab("today");
@@ -7181,43 +8190,40 @@ export function ChoiceOnboarding() {
     setIsSubmitting(true);
 
     try {
-      let nextSession = session;
+      const restoredSessionResult = await restoreLiveSession(session);
 
-      if (await loadIsAccountPaused(session.userId)) {
+      if (restoredSessionResult.ok) {
+        setSessionState(restoredSessionResult.session, options?.preferredTab ?? "today");
+        return;
+      }
+
+      if (restoredSessionResult.reason === "account-paused") {
         await removeRememberedSession(session.userId);
         setRememberedSessions((current) => current.filter((entry) => entry.userId !== session.userId));
         setAccountActionMessage("Dieses Konto ist pausiert.");
         return;
       }
 
-      try {
-        const restoredProfile = await fetchRemoteProfile(session.userId);
-        nextSession = await persistLocalSession({
-          userId: session.userId,
-          phoneNumber: session.phoneNumber,
-          profile: restoredProfile.profile,
-          photoUris: restoredProfile.photoUrls,
-          introVideoUri: restoredProfile.videoUrl,
-          introVideoDurationMs: null,
-        });
-      } catch (requestError) {
-        const message = requestError instanceof Error ? requestError.message : "REQUEST_FAILED";
+      if (restoredSessionResult.reason === "profile-not-found") {
+        await removeRememberedSession(session.userId);
+        setRememberedSessions((current) => current.filter((entry) => entry.userId !== session.userId));
 
-        if (message === "PROFILE_NOT_FOUND") {
-          await removeRememberedSession(session.userId);
-          setRememberedSessions((current) => current.filter((entry) => entry.userId !== session.userId));
-
-          if (verifiedUserId === session.userId) {
-            await clearPersistedSession();
-            resetToIntroSurface();
-          }
-
-          setAccountActionMessage("Dieses Konto gibt es nicht mehr.");
+        if (verifiedUserId === session.userId) {
+          await clearPersistedSession();
+          resetToIntroSurface();
           return;
         }
+
+        setAccountActionMessage("Dieses Konto gibt es nicht mehr.");
+        return;
       }
 
-      setSessionState(nextSession, options?.preferredTab ?? "today");
+      if (restoredSessionResult.reason === "request-failed") {
+        setAccountActionMessage("Dieses Konto konnte gerade nicht geladen werden.");
+        return;
+      }
+
+      startSignInForSession(session);
     } finally {
       setIsSubmitting(false);
     }
@@ -7237,24 +8243,43 @@ export function ChoiceOnboarding() {
     setIsSubmitting(true);
 
     try {
-      if (await loadIsAccountPaused(partner.userId)) {
+      if (!partner.phoneNumber) {
+        setAccountActionMessage(
+          `Zu ${partner.firstName} kannst du wechseln, sobald du dich einmal mit dieser Nummer angemeldet hast.`,
+        );
+        return;
+      }
+
+      const restoredPartnerSession = await restoreLiveSession({
+        userId: partner.userId,
+        accessToken: null,
+        phoneNumber: partner.phoneNumber,
+        profile: initialRegistrationProfile,
+        photoUris: [],
+        introVideoUri: null,
+        introVideoDurationMs: null,
+      });
+
+      if (restoredPartnerSession.ok) {
+        setSessionState(restoredPartnerSession.session, "match");
+        return;
+      }
+
+      if (restoredPartnerSession.reason === "account-paused") {
         setAccountActionMessage("Dieses Konto ist pausiert.");
         return;
       }
 
-      const restoredProfile = await fetchRemoteProfile(partner.userId);
-      const nextSession = await persistLocalSession({
-        userId: partner.userId,
-        phoneNumber: partner.phoneNumber,
-        profile: restoredProfile.profile,
-        photoUris: restoredProfile.photoUrls,
-        introVideoUri: restoredProfile.videoUrl,
-        introVideoDurationMs: null,
-      });
+      if (restoredPartnerSession.reason === "request-failed") {
+        setAccountActionMessage(`Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`);
+        return;
+      }
 
-      setSessionState(nextSession, "match");
-    } catch {
-      setAccountActionMessage(`Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`);
+      setAccountActionMessage(
+        restoredPartnerSession.reason === "profile-not-found"
+          ? `Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`
+          : `Zu ${partner.firstName} kannst du wechseln, sobald du dich einmal mit dieser Nummer angemeldet hast.`,
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -7329,6 +8354,12 @@ export function ChoiceOnboarding() {
       setScreenIndex((current) => Math.min(current + 1, screens.length - 1));
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "SMS konnte nicht gesendet werden.";
+
+      if (message === "CHALLENGE_COOLDOWN_ACTIVE") {
+        setError("Bitte kurz warten, bevor du einen neuen Code anforderst.");
+        return;
+      }
+
       setError(message === "API_URL_MISSING" ? "API fehlt." : "SMS konnte nicht gesendet werden.");
     } finally {
       setIsSubmitting(false);
@@ -7341,19 +8372,23 @@ export function ChoiceOnboarding() {
 
     try {
       const result = await verifyPhoneVerification(phoneNumber, otpCode);
+      const nextAccessToken = typeof result.accessToken === "string" ? result.accessToken.trim() || null : null;
       Keyboard.dismiss();
       setVerifiedUserId(result.userId);
+      setVerifiedAccessToken(nextAccessToken);
       setVerifiedPhone(phoneNumber.trim());
 
       if (result.profileCompleted) {
-        if (await loadIsAccountPaused(result.userId)) {
+        if (await loadIsAccountPaused(result.userId, nextAccessToken)) {
+          setVerifiedAccessToken(null);
           setError("Dieses Konto ist pausiert.");
           return;
         }
 
-        const restoredProfile = await fetchRemoteProfile(result.userId);
+        const restoredProfile = await fetchRemoteProfile(result.userId, nextAccessToken);
         setSessionState({
           userId: result.userId,
+          accessToken: nextAccessToken,
           phoneNumber: phoneNumber.trim(),
           profile: restoredProfile.profile,
           photoUris: restoredProfile.photoUrls,
@@ -7362,6 +8397,7 @@ export function ChoiceOnboarding() {
         });
         await persistLocalSession({
           userId: result.userId,
+          accessToken: nextAccessToken,
           phoneNumber: phoneNumber.trim(),
           profile: restoredProfile.profile,
           photoUris: restoredProfile.photoUrls,
@@ -7380,8 +8416,18 @@ export function ChoiceOnboarding() {
         return;
       }
 
+      if (message === "TOO_MANY_ATTEMPTS") {
+        setError("Zu viele falsche Versuche. Bitte fordere einen neuen Code an.");
+        return;
+      }
+
       if (message === "PROFILE_NOT_FOUND") {
         setError("Profil konnte nicht geladen werden.");
+        return;
+      }
+
+      if (message === "AUTH_REQUIRED" || message === "AUTH_INVALID" || message === "AUTH_FORBIDDEN") {
+        setError("Bitte fordere den Code noch einmal neu an.");
         return;
       }
 
@@ -7399,15 +8445,22 @@ export function ChoiceOnboarding() {
     const nextProfile = {
       ...profile,
     };
-    const uploadedPhotoUrls = await uploadProfilePhotos(photoUris);
-    const uploadedVideoUrl = await uploadProfileVideo(introVideoUri);
-    const result = await createRemoteProfile(verifiedUserId, nextProfile, uploadedPhotoUrls, uploadedVideoUrl);
+    const uploadedPhotoUrls = await uploadProfilePhotos(photoUris, verifiedAccessToken);
+    const uploadedVideoUrl = await uploadProfileVideo(introVideoUri, verifiedAccessToken);
+    const result = await createRemoteProfile(
+      verifiedUserId,
+      nextProfile,
+      uploadedPhotoUrls,
+      uploadedVideoUrl,
+      verifiedAccessToken,
+    );
 
     setProfile(nextProfile);
     setPhotoUris(uploadedPhotoUrls);
     setIntroVideoUri(uploadedVideoUrl);
     await persistLocalSession({
       userId: verifiedUserId,
+      accessToken: verifiedAccessToken,
       phoneNumber: verifiedPhone,
       profile: nextProfile,
       photoUris: uploadedPhotoUrls,
@@ -7501,7 +8554,7 @@ export function ChoiceOnboarding() {
 
   async function openLegalDocument(url: string) {
     try {
-      await Linking.openURL(url);
+      await openExternalUrl(url);
     } catch {
       setError("Rechtliche Seite konnte gerade nicht geöffnet werden.");
     }
@@ -7711,7 +8764,7 @@ export function ChoiceOnboarding() {
           <View style={styles.legalConsentCard}>
             <Text style={styles.legalConsentTitle}>Rechtliches</Text>
             <Text style={styles.legalConsentText}>
-              Bevor du dein Konto bestätigst, musst du Impressum, Datenschutz, Rechtliches und AGB gelesen haben und ihnen zustimmen.
+              Bevor du dein Konto bestätigst, musst du Impressum, Datenschutz, Rechtliches und AGB gelesen haben. Mit deiner Zustimmung willigst du außerdem ausdrücklich in die Verarbeitung deiner Profilangaben für Matching, Moderation und Kontosicherheit ein.
             </Text>
 
             <View style={styles.legalLinksRow}>
@@ -7737,7 +8790,7 @@ export function ChoiceOnboarding() {
                 {profile.consent ? <Text style={styles.legalConsentCheckmark}>✓</Text> : null}
               </View>
               <Text style={styles.legalConsentLabel}>
-                Ich habe Impressum, Datenschutz, Rechtliches und AGB gelesen und stimme allen vier Punkten zu.
+                Ich habe Impressum, Datenschutz, Rechtliches und AGB gelesen, stimme ihnen zu und willige ausdrücklich ein, dass Choice meine Profilangaben verarbeitet, auch wenn daraus Rückschlüsse auf Dating-Präferenzen oder sexuelle Orientierung möglich sind.
               </Text>
             </Pressable>
           </View>
@@ -8715,6 +9768,47 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  homePhaseFiveAwardAction: {
+    flex: 1,
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 18,
+    backgroundColor: "rgba(152, 223, 255, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(152, 223, 255, 0.18)",
+  },
+  homePhaseFiveAwardActionPressed: {
+    opacity: 0.92,
+  },
+  homePhaseFiveAwardActionText: {
+    color: "#def5ff",
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+  },
+  homePhaseFiveRestartAction: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 18,
+    backgroundColor: "#c2386d",
+    shadowColor: "#120b16",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 16,
+    elevation: 5,
+  },
+  homePhaseFiveRestartActionPressed: {
+    opacity: 0.94,
+  },
+  homePhaseFiveRestartActionText: {
+    color: "#fff8fb",
+    fontSize: 14,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
   matchReleaseProfilePreview: {
     flexDirection: "row",
     alignItems: "center",
@@ -8790,6 +9884,22 @@ const styles = StyleSheet.create({
     color: "#fff8fb",
     fontSize: 14,
     fontWeight: "700",
+  },
+  matchReleaseNoticeSubtleButton: {
+    flex: 1,
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 18,
+    backgroundColor: "rgba(17, 12, 24, 0.52)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  matchReleaseNoticeSubtleText: {
+    color: "#f8edf4",
+    fontSize: 14,
+    fontWeight: "700",
+    letterSpacing: 0.2,
   },
   overviewPill: {
     paddingHorizontal: 11,
@@ -8926,6 +10036,27 @@ const styles = StyleSheet.create({
   penaltyHistoryBlock: {
     gap: 10,
     marginTop: 4,
+  },
+  legalSupportButton: {
+    gap: 4,
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(152, 223, 255, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(152, 223, 255, 0.18)",
+  },
+  legalSupportButtonText: {
+    color: "#def5ff",
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  legalSupportButtonMeta: {
+    color: "#9fc8d8",
+    fontSize: 12,
+    lineHeight: 17,
   },
   penaltyHistoryList: {
     gap: 10,
@@ -9216,50 +10347,61 @@ const styles = StyleSheet.create({
   },
   unlockPurchaseButton: {
     minHeight: 50,
-    borderRadius: 18,
-    paddingHorizontal: 18,
-    backgroundColor: "#ffb65f",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    backgroundColor: "#1b1521",
+    borderWidth: 1,
+    borderColor: "rgba(255, 223, 145, 0.52)",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    elevation: 4,
+  },
+  unlockPurchaseButtonPressed: {
+    opacity: 0.92,
   },
   unlockPurchaseButtonDisabled: {
-    opacity: 0.55,
+    opacity: 0.52,
   },
   unlockPurchaseButtonContent: {
     minHeight: 50,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
   },
-  unlockPurchaseButtonCopy: {
+  unlockPurchaseButtonLabelRow: {
     flex: 1,
-    gap: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   unlockPurchaseButtonTitle: {
-    color: "#2a150a",
-    fontSize: 15,
-    fontWeight: "800",
-    letterSpacing: -0.2,
-  },
-  unlockPurchaseButtonSubtitle: {
-    color: "rgba(42, 21, 10, 0.72)",
-    fontSize: 12,
+    flex: 1,
+    color: "#f3edf9",
+    fontSize: 13,
     lineHeight: 17,
     fontWeight: "700",
+    letterSpacing: 0,
   },
   unlockPurchasePricePill: {
-    minWidth: 74,
+    minWidth: 72,
     paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 999,
+    paddingVertical: 7,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(42, 21, 10, 0.12)",
+    backgroundColor: "rgba(154, 223, 255, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(154, 223, 255, 0.18)",
   },
   unlockPurchasePriceText: {
-    color: "#2a150a",
-    fontSize: 15,
-    fontWeight: "900",
-    letterSpacing: -0.2,
+    color: "#dff6ff",
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: "700",
+    letterSpacing: 0,
   },
   unlockPurchaseHint: {
     color: "#ceb9ac",
@@ -9729,6 +10871,27 @@ const styles = StyleSheet.create({
     color: "#d6cfee",
     fontSize: 14,
     lineHeight: 20,
+  },
+  phaseThreePreviewFallback: {
+    marginTop: 2,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    borderRadius: 28,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.06)",
+    gap: 8,
+  },
+  phaseThreePreviewFallbackTitle: {
+    color: "#fff7ff",
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: "700",
+  },
+  phaseThreePreviewFallbackText: {
+    color: "#b8add4",
+    fontSize: 14,
+    lineHeight: 21,
   },
   phaseThreeDecisionRow: {
     flexDirection: "row",
@@ -10324,12 +11487,79 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
   },
+  phaseFiveNoticeCard: {
+    padding: 16,
+    borderRadius: 24,
+    backgroundColor: "rgba(19, 42, 49, 0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(146, 227, 255, 0.18)",
+    gap: 12,
+    shadowColor: "#6fd7ff",
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  phaseFiveNoticeBadge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(146, 227, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(146, 227, 255, 0.14)",
+  },
+  phaseFiveNoticeBadgeText: {
+    color: "#bfefff",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.9,
+    textTransform: "uppercase",
+  },
+  phaseFiveNoticeTitle: {
+    color: "#f5fdff",
+    fontSize: 19,
+    lineHeight: 24,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+  },
+  phaseFiveNoticeText: {
+    color: "#c6dde4",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  phaseFiveNoticeFooter: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  phaseFiveNoticeFooterText: {
+    color: "#e5f5fa",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   chatDecisionOverlay: {
     flex: 1,
     backgroundColor: "rgba(6, 5, 10, 0.62)",
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 24,
+  },
+  reportModalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(6, 5, 10, 0.62)",
+  },
+  reportModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  reportModalScroll: {
+    flex: 1,
+  },
+  reportModalScrollContent: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    justifyContent: "center",
   },
   chatDecisionCard: {
     width: "100%",
@@ -10344,6 +11574,7 @@ const styles = StyleSheet.create({
   reportModalCard: {
     width: "100%",
     maxWidth: 360,
+    alignSelf: "center",
     borderRadius: 28,
     padding: 22,
     backgroundColor: "#17121d",
@@ -10390,16 +11621,16 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.12)",
   },
   chatDecisionOptionButtonActive: {
-    backgroundColor: "rgba(255, 115, 167, 0.24)",
-    borderColor: "rgba(255, 115, 167, 0.46)",
-    shadowColor: "#ff73a7",
-    shadowOpacity: 0.22,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 4,
+    backgroundColor: "rgba(255, 94, 152, 0.26)",
+    borderColor: "rgba(255, 127, 176, 0.52)",
+    shadowColor: "#ff5e98",
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
   },
   chatDecisionOptionButtonActivePressed: {
-    backgroundColor: "rgba(255, 115, 167, 0.32)",
+    backgroundColor: "rgba(255, 94, 152, 0.34)",
   },
   chatDecisionOptionButtonActiveMuted: {
     backgroundColor: "rgba(154, 223, 255, 0.18)",
@@ -10419,6 +11650,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 18,
     textAlign: "center",
+  },
+  chatDecisionOptionIconActive: {
+    color: "#ff7aad",
+    textShadowColor: "rgba(255, 122, 173, 0.5)",
+    textShadowRadius: 12,
   },
   chatDecisionOptionCopy: {
     flex: 1,
@@ -10510,6 +11746,10 @@ const styles = StyleSheet.create({
     gap: 10,
     marginTop: 2,
   },
+  reportModalActionColumn: {
+    gap: 10,
+    marginTop: 2,
+  },
   reportModalCancelButton: {
     flex: 1,
     minHeight: 48,
@@ -10540,6 +11780,30 @@ const styles = StyleSheet.create({
     color: "#fff7fb",
     fontSize: 14,
     fontWeight: "700",
+  },
+  reportModalBlockButton: {
+    gap: 3,
+    minHeight: 54,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderRadius: 18,
+    backgroundColor: "rgba(255, 115, 167, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 115, 167, 0.22)",
+  },
+  reportModalBlockButtonDisabled: {
+    opacity: 0.55,
+  },
+  reportModalBlockButtonText: {
+    color: "#ffd9e8",
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  reportModalBlockButtonMeta: {
+    color: "#cba6b9",
+    fontSize: 12,
+    lineHeight: 17,
   },
   chatBubbleRow: {
     width: "100%",
@@ -10693,6 +11957,22 @@ const styles = StyleSheet.create({
     color: "#bfb3d5",
     fontSize: 13,
     lineHeight: 19,
+    textAlign: "center",
+  },
+  chatComposerStatusCard: {
+    marginHorizontal: 10,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 16,
+    backgroundColor: "rgba(255, 116, 165, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 116, 165, 0.22)",
+  },
+  chatComposerStatusText: {
+    color: "#ffd9e8",
+    fontSize: 13,
+    lineHeight: 18,
     textAlign: "center",
   },
   chatComposerAccessoryButton: {
@@ -11088,6 +12368,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(229, 93, 135, 0.28)",
   },
+  timelineBadgeActive: {
+    backgroundColor: "rgba(152, 223, 255, 0.18)",
+    borderColor: "rgba(152, 223, 255, 0.28)",
+  },
   timelineBadgeMuted: {
     backgroundColor: "rgba(255,255,255,0.06)",
     borderColor: "rgba(255,255,255,0.08)",
@@ -11116,12 +12400,38 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
     textTransform: "uppercase",
   },
+  timelineStepLabelActive: {
+    color: "#9adfff",
+  },
   timelineStepLabelMuted: {
     color: "#b8add4",
   },
   timelineTitle: {
     color: "#f7f4ff",
     fontSize: 15,
+    fontWeight: "700",
+  },
+  timelineStatusPill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  timelineStatusPillActive: {
+    backgroundColor: "rgba(152, 223, 255, 0.14)",
+    borderColor: "rgba(152, 223, 255, 0.24)",
+  },
+  timelineStatusPillDone: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderColor: "rgba(255,255,255,0.06)",
+  },
+  timelineStatusText: {
+    color: "#f7f4ff",
+    fontSize: 12,
+    lineHeight: 16,
     fontWeight: "700",
   },
   timelineText: {
@@ -11456,11 +12766,11 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.08)",
   },
   photoViewerCloseButtonText: {
-    marginTop: -3,
     color: "#f3f7ff",
-    fontSize: 28,
-    lineHeight: 28,
-    fontWeight: "400",
+    fontSize: 24,
+    lineHeight: 24,
+    fontWeight: "500",
+    textAlign: "center",
   },
   photoViewerFrame: {
     flex: 1,

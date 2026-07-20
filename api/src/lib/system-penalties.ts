@@ -1,4 +1,4 @@
-import { mapAccountState } from "./account-state.js";
+import { buildAccountStatePayload } from "./account-state.js";
 import { reconcileUserPenaltyState } from "./penalty-state.js";
 import { sendPushNotificationToUser } from "./push-notifications.js";
 import { prisma } from "./prisma.js";
@@ -15,6 +15,7 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
     where: { id: input.userId },
     select: {
       id: true,
+      phoneNumber: true,
       isPremium: true,
       premiumActivatedAt: true,
       penaltyPoints: true,
@@ -44,7 +45,7 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
     return {
       ok: true as const,
       applied: false,
-      account: mapAccountState(user),
+      account: await buildAccountStatePayload(user),
     };
   }
 

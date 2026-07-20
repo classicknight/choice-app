@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { mapAccountState } from "../lib/account-state.js";
+import { buildAccountStatePayload } from "../lib/account-state.js";
+import { requireMatchingAuthenticatedUser } from "../lib/auth.js";
 import { PENALTY_RECOVERY_WINDOW_DAYS, reconcileUserPenaltyState } from "../lib/penalty-state.js";
 import { prisma } from "../lib/prisma.js";
 
@@ -37,6 +38,10 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    if (!requireMatchingAuthenticatedUser(request, reply, params.data.userId)) {
+      return;
+    }
+
     await reconcileUserPenaltyState(params.data.userId);
 
     const user = await prisma.user.findUnique({
@@ -63,7 +68,7 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       ok: true,
       account: {
-        ...mapAccountState(user),
+        ...(await buildAccountStatePayload(user)),
         penaltyRecoveryWindowDays: PENALTY_RECOVERY_WINDOW_DAYS,
         recentPenalties: [
           ...user.systemPenaltyEvents.map((event) => ({
@@ -107,6 +112,10 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    if (!requireMatchingAuthenticatedUser(request, reply, params.data.userId)) {
+      return;
+    }
+
     const profile = await prisma.profile.findUnique({
       where: { userId: params.data.userId },
     });
@@ -134,6 +143,10 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const data = parsed.data;
+
+    if (!requireMatchingAuthenticatedUser(request, reply, data.userId)) {
+      return;
+    }
 
     const profile = await prisma.profile.upsert({
       where: { userId: data.userId },
@@ -167,6 +180,10 @@ export const profileRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({
         error: "INVALID_USER_ID",
       });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, params.data.userId)) {
+      return;
     }
 
     const user = await prisma.user.findUnique({

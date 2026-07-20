@@ -197,6 +197,51 @@
   gap: 14px;
 }
 
+.reportTools {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(220px, 0.7fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.reportToolField,
+.reportNoteField {
+  display: grid;
+  gap: 8px;
+  color: rgba(244, 238, 251, 0.92);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.reportToolField input,
+.reportToolField select,
+.reportNoteField textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  color: #fff6ff;
+  background: rgba(255, 255, 255, 0.03);
+  font: inherit;
+}
+
+.reportNoteField {
+  margin-top: 16px;
+}
+
+.reportToolField input:focus,
+.reportToolField select:focus,
+.reportNoteField textarea:focus {
+  outline: none;
+  border-color: rgba(255, 121, 171, 0.62);
+  box-shadow: 0 0 0 4px rgba(255, 121, 171, 0.12);
+}
+
+.reportNoteField textarea {
+  resize: vertical;
+  min-height: 108px;
+}
+
 .reportCard {
   padding: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -213,7 +258,6 @@
 
 .reportBadge {
   display: inline-flex;
-  margin-bottom: 12px;
   padding: 6px 10px;
   border-radius: 999px;
   background: rgba(154, 215, 255, 0.12);
@@ -224,15 +268,59 @@
   text-transform: uppercase;
 }
 
+.reportBadgeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.reportBadgeOpen {
+  background: rgba(154, 215, 255, 0.12);
+  color: #b5e0ff;
+}
+
+.reportBadgeInReview {
+  background: rgba(255, 184, 92, 0.14);
+  color: #ffd595;
+}
+
+.reportBadgeResolved {
+  background: rgba(144, 234, 190, 0.12);
+  color: #c9f6db;
+}
+
+.reportBadgeOverdue {
+  background: rgba(255, 92, 133, 0.14);
+  color: #ffc4d5;
+}
+
+.reportBadgeAlert {
+  background: rgba(174, 160, 255, 0.14);
+  color: #d8d2ff;
+}
+
 .reportTitle {
   color: #fff7ff;
   font-size: 1.05rem;
   line-height: 1.45;
 }
 
+.reportMetaColumn {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+}
+
 .reportMeta {
   color: rgba(225, 214, 239, 0.58);
   font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.reportMetaSecondary {
+  color: rgba(255, 208, 219, 0.74);
+  font-size: 0.8rem;
   white-space: nowrap;
 }
 
@@ -243,6 +331,78 @@
   color: rgba(235, 226, 245, 0.84);
   font-size: 0.93rem;
   line-height: 1.65;
+}
+
+.reportTranscriptCard {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(8, 10, 18, 0.32);
+}
+
+.reportTranscriptHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: rgba(229, 221, 239, 0.78);
+  font-size: 0.82rem;
+  margin-bottom: 12px;
+}
+
+.reportTranscriptList {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.reportTranscriptMessage {
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.reportTranscriptMessageReporter {
+  background: rgba(154, 215, 255, 0.08);
+  border-color: rgba(154, 215, 255, 0.16);
+}
+
+.reportTranscriptMessageReported {
+  background: rgba(255, 92, 133, 0.08);
+  border-color: rgba(255, 92, 133, 0.16);
+}
+
+.reportTranscriptMessageSystem {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.reportTranscriptMeta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  color: rgba(229, 221, 239, 0.7);
+  font-size: 0.78rem;
+  margin-bottom: 6px;
+}
+
+.reportTranscriptText {
+  color: rgba(247, 240, 255, 0.92);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reportTranscriptEmpty {
+  color: rgba(229, 221, 239, 0.64);
+  font-size: 0.9rem;
+  line-height: 1.6;
 }
 
 .inlineActions {
@@ -335,6 +495,10 @@
   .authGrid {
     grid-template-columns: 1fr;
   }
+
+  .reportTools {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -346,6 +510,10 @@
   .authActions,
   .reportTop {
     flex-direction: column;
+  }
+
+  .reportMetaColumn {
+    justify-items: start;
   }
 
   .summaryGrid {

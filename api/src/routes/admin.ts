@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { buildBanAccountData, buildPauseAccountData, buildRestorePausedAccountData, isAccountPaused, mapAccountState } from "../lib/account-state.js";
-import { requireAdminAccess } from "../lib/admin-auth.js";
+import { getAuthenticatedAdminPhone, requireAdminAccess } from "../lib/admin-auth.js";
 import { reconcileAllPenaltyStates, reconcileUserPenaltyState } from "../lib/penalty-state.js";
 import { sendPushNotificationToUser } from "../lib/push-notifications.js";
 import { prisma } from "../lib/prisma.js";
@@ -19,6 +19,10 @@ const manageMatchAccessSchema = z.object({
 
 const resolveReportSchema = z.object({
   decision: z.enum(["confirmed", "dismissed"]),
+  reviewerNote: z.string().max(1_000).optional(),
+});
+
+const startReviewSchema = z.object({
   reviewerNote: z.string().max(1_000).optional(),
 });
 
@@ -96,6 +100,13 @@ function getMatchParticipantLabel(match: {
   return "Unbekannt";
 }
 
+function getAdminUserLabel(
+  user: { profile?: { firstName: string } | null; phoneNumber: string | null },
+  explicitName?: string | null,
+) {
+  return explicitName?.trim() || user.profile?.firstName || user.phoneNumber || "Unbekannt";
+}
+
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get("/admin/overview", async (request, reply) => {
     if (!requireAdminAccess(request, reply)) {
@@ -145,13 +156,32 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
               profile: true,
             },
           },
-          match: true,
+          match: {
+            include: {
+              chat: {
+                include: {
+                  messages: {
+                    orderBy: { createdAt: "asc" },
+                    include: {
+                      sender: {
+                        include: {
+                          profile: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       }),
     ]);
 
     const userSummaries = users.map(mapUserSummary);
     const now = new Date();
+    const unresolvedReports = reports.filter((report) => report.status === "OPEN" || report.status === "IN_REVIEW");
+    const reportSlaMs = 24 * 60 * 60 * 1000;
     const upcomingMatches = matches.filter((match) => match.status === "PENDING" && match.scheduledFor >= now);
     const nextPlannedReleaseAt = upcomingMatches
       .map((match) => match.scheduledFor.getTime())
@@ -200,7 +230,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         premiumUsers: users.filter((user) => user.isPremium).length,
         payingUsers: users.filter((user) => user.paidMatchCredits > 0 || user.frozenPaidMatchCredits > 0 || user.forfeitedPaidMatchCredits > 0 || user.isPremium).length,
         pausedUsers: users.filter((user) => isAccountPaused(user)).length,
-        openReports: reports.filter((report) => report.status === "OPEN").length,
+        openReports: unresolvedReports.length,
+        reportsInReview: reports.filter((report) => report.status === "IN_REVIEW").length,
+        overdueReports: unresolvedReports.filter((report) => now.getTime() - report.createdAt.getTime() > reportSlaMs).length,
         activeMatches: matches.filter((match) => match.status === "ACTIVE").length,
         upcomingMatches: upcomingMatches.length,
         nextPlannedMatches: nextPlannedMatches.length,
@@ -211,6 +243,36 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       nextPlannedReleaseAt: nextPlannedReleaseAt ? new Date(nextPlannedReleaseAt) : null,
       nextPlannedMatches: nextPlannedMatches.map(mapMatch),
       reports: reports.map((report) => ({
+        chatTranscript: (report.match?.chat?.messages ?? []).map((message) => {
+          const reporterLabel = getAdminUserLabel(report.reporter, report.reporterName);
+          const reportedLabel = getAdminUserLabel(report.reportedUser, report.reportedName);
+          const senderLabel =
+            message.kind === "SYSTEM"
+              ? "Choice"
+              : message.senderId === report.reporter.id
+                ? reporterLabel
+                : message.senderId === report.reportedUser.id
+                  ? reportedLabel
+                  : getAdminUserLabel(message.sender);
+          const senderRole =
+            message.kind === "SYSTEM"
+              ? "system"
+              : message.senderId === report.reporter.id
+                ? "reporter"
+                : message.senderId === report.reportedUser.id
+                  ? "reported"
+                  : "other";
+
+          return {
+            id: message.id,
+            createdAt: message.createdAt,
+            kind: message.kind,
+            body: message.body,
+            senderUserId: message.senderId,
+            senderLabel,
+            senderRole,
+          };
+        }),
         id: report.id,
         createdAt: report.createdAt,
         updatedAt: report.updatedAt,
@@ -218,8 +280,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         reason: report.reason,
         details: report.details,
         latestMessagePreview: report.latestMessagePreview,
+        reviewStartedAt: report.reviewStartedAt,
+        reviewStartedByAdminPhone: report.reviewStartedByAdminPhone,
         reviewerNote: report.reviewerNote,
         reviewedAt: report.reviewedAt,
+        reviewedByAdminPhone: report.reviewedByAdminPhone,
+        moderationAlertSentAt: report.moderationAlertSentAt,
         reporter: {
           id: report.reporter.id,
           firstName: report.reporterName ?? report.reporter.profile?.firstName ?? null,
@@ -424,6 +490,58 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  app.post("/admin/reports/:reportId/start-review", async (request, reply) => {
+    if (!requireAdminAccess(request, reply)) {
+      return;
+    }
+
+    const params = z.object({ reportId: z.string().min(1) }).safeParse(request.params);
+    const parsed = startReviewSchema.safeParse(request.body);
+
+    if (!params.success || !parsed.success) {
+      return reply.status(400).send({
+        error: "INVALID_REPORT_REVIEW_START",
+        details: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: parsed.success ? undefined : parsed.error.flatten(),
+        },
+      });
+    }
+
+    const report = await prisma.report.findUnique({
+      where: { id: params.data.reportId },
+    });
+
+    if (!report) {
+      return reply.status(404).send({
+        error: "REPORT_NOT_FOUND",
+      });
+    }
+
+    if (report.status === "CONFIRMED" || report.status === "DISMISSED") {
+      return reply.status(400).send({
+        error: "REPORT_ALREADY_RESOLVED",
+      });
+    }
+
+    const adminPhone = getAuthenticatedAdminPhone(request);
+    const reviewerNote = parsed.data.reviewerNote?.trim() || report.reviewerNote || null;
+    const updatedReport = await prisma.report.update({
+      where: { id: report.id },
+      data: {
+        status: "IN_REVIEW",
+        reviewStartedAt: report.reviewStartedAt ?? new Date(),
+        reviewStartedByAdminPhone: report.reviewStartedByAdminPhone ?? adminPhone,
+        reviewerNote,
+      },
+    });
+
+    return reply.send({
+      ok: true,
+      report: updatedReport,
+    });
+  });
+
   app.post("/admin/reports/:reportId/resolve", async (request, reply) => {
     if (!requireAdminAccess(request, reply)) {
       return;
@@ -459,19 +577,23 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    if (report.status !== "OPEN") {
+    if (report.status === "CONFIRMED" || report.status === "DISMISSED") {
       return reply.status(400).send({
         error: "REPORT_ALREADY_RESOLVED",
       });
     }
 
     const shouldConfirm = parsed.data.decision === "confirmed";
+    const adminPhone = getAuthenticatedAdminPhone(request);
     const updatedReport = await prisma.report.update({
       where: { id: report.id },
       data: {
         status: shouldConfirm ? "CONFIRMED" : "DISMISSED",
+        reviewStartedAt: report.reviewStartedAt ?? new Date(),
+        reviewStartedByAdminPhone: report.reviewStartedByAdminPhone ?? adminPhone,
         reviewerNote: parsed.data.reviewerNote?.trim() || null,
         reviewedAt: new Date(),
+        reviewedByAdminPhone: adminPhone,
       },
     });
 

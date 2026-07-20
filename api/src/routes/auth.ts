@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { issueAccessToken } from "../lib/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { generateOtpCode, hashOtpCode, normalizeEmail, normalizePhone } from "../services/verification.service.js";
 import {
@@ -27,6 +28,15 @@ const phoneVerifySchema = z.object({
   code: z.string().length(6),
 });
 
+const devSessionSchema = z.object({
+  userId: z.string().min(1),
+  phoneNumber: z.string().min(8),
+});
+
+const VERIFICATION_TTL_MS = 10 * 60 * 1000;
+const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
+const MAX_VERIFICATION_ATTEMPTS = 5;
+
 async function verifyLatestChallenge(target: string, channel: "EMAIL" | "PHONE", code: string) {
   const challenge = await prisma.verificationChallenge.findFirst({
     where: {
@@ -46,6 +56,18 @@ async function verifyLatestChallenge(target: string, channel: "EMAIL" | "PHONE",
     };
   }
 
+  if (challenge.attempts >= MAX_VERIFICATION_ATTEMPTS) {
+    await prisma.verificationChallenge.update({
+      where: { id: challenge.id },
+      data: { status: "EXPIRED" },
+    });
+
+    return {
+      ok: false as const,
+      reason: "TOO_MANY_ATTEMPTS",
+    };
+  }
+
   if (challenge.expiresAt.getTime() < Date.now()) {
     await prisma.verificationChallenge.update({
       where: { id: challenge.id },
@@ -59,6 +81,23 @@ async function verifyLatestChallenge(target: string, channel: "EMAIL" | "PHONE",
   }
 
   if (challenge.codeHash !== hashOtpCode(code)) {
+    if (challenge.attempts + 1 >= MAX_VERIFICATION_ATTEMPTS) {
+      await prisma.verificationChallenge.update({
+        where: { id: challenge.id },
+        data: {
+          attempts: {
+            increment: 1,
+          },
+          status: "EXPIRED",
+        },
+      });
+
+      return {
+        ok: false as const,
+        reason: "TOO_MANY_ATTEMPTS",
+      };
+    }
+
     await prisma.verificationChallenge.update({
       where: { id: challenge.id },
       data: {
@@ -110,6 +149,54 @@ async function getLatestPendingChallenge(target: string, channel: "EMAIL" | "PHO
   });
 }
 
+async function ensureChallengeCanBeStarted(target: string, channel: "EMAIL" | "PHONE") {
+  const latestChallenge = await getLatestPendingChallenge(target, channel);
+
+  if (!latestChallenge) {
+    return {
+      ok: true as const,
+    };
+  }
+
+  if (latestChallenge.expiresAt.getTime() < Date.now()) {
+    await prisma.verificationChallenge.update({
+      where: { id: latestChallenge.id },
+      data: { status: "EXPIRED" },
+    });
+
+    return {
+      ok: true as const,
+    };
+  }
+
+  const retryAfterMs = (latestChallenge.lastSentAt?.getTime() ?? latestChallenge.createdAt.getTime()) + VERIFICATION_RESEND_COOLDOWN_MS - Date.now();
+
+  if (retryAfterMs > 0) {
+    return {
+      ok: false as const,
+      reason: "CHALLENGE_COOLDOWN_ACTIVE",
+      retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
+    };
+  }
+
+  return {
+    ok: true as const,
+  };
+}
+
+async function invalidatePendingChallenges(target: string, channel: "EMAIL" | "PHONE") {
+  await prisma.verificationChallenge.updateMany({
+    where: {
+      target,
+      channel,
+      status: "PENDING",
+    },
+    data: {
+      status: "EXPIRED",
+    },
+  });
+}
+
 async function markChallengeInvalidAttempt(challengeId: string) {
   await prisma.verificationChallenge.update({
     where: { id: challengeId },
@@ -148,6 +235,23 @@ async function verifyTwilioChallenge(target: string, code: string, app: Paramete
     });
 
     if (!result.valid || result.status !== "approved") {
+      if (challenge.attempts + 1 >= MAX_VERIFICATION_ATTEMPTS) {
+        await prisma.verificationChallenge.update({
+          where: { id: challenge.id },
+          data: {
+            attempts: {
+              increment: 1,
+            },
+            status: "EXPIRED",
+          },
+        });
+
+        return {
+          ok: false as const,
+          reason: "TOO_MANY_ATTEMPTS",
+        };
+      }
+
       await markChallengeInvalidAttempt(challenge.id);
 
       return {
@@ -179,6 +283,23 @@ async function verifyTwilioChallenge(target: string, code: string, app: Paramete
       }
 
       if (error.code === 60202 || error.code === 60203 || error.code === 60212 || error.status === 400) {
+        if (challenge.attempts + 1 >= MAX_VERIFICATION_ATTEMPTS) {
+          await prisma.verificationChallenge.update({
+            where: { id: challenge.id },
+            data: {
+              attempts: {
+                increment: 1,
+              },
+              status: "EXPIRED",
+            },
+          });
+
+          return {
+            ok: false as const,
+            reason: "TOO_MANY_ATTEMPTS",
+          };
+        }
+
         await markChallengeInvalidAttempt(challenge.id);
 
         return {
@@ -204,8 +325,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const email = normalizeEmail(parsed.data.email);
+    const allowed = await ensureChallengeCanBeStarted(email, "EMAIL");
+
+    if (!allowed.ok) {
+      return reply.status(429).send({
+        error: allowed.reason,
+        retryAfterSeconds: allowed.retryAfterSeconds,
+      });
+    }
+
     const code = generateOtpCode();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + VERIFICATION_TTL_MS);
 
     const user = await prisma.user.upsert({
       where: { email },
@@ -213,6 +343,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       create: { email },
       select: { id: true, email: true },
     });
+
+    await invalidatePendingChallenges(email, "EMAIL");
 
     await prisma.verificationChallenge.create({
       data: {
@@ -247,7 +379,16 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const phoneNumber = normalizePhone(parsed.data.phoneNumber);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const allowed = await ensureChallengeCanBeStarted(phoneNumber, "PHONE");
+
+    if (!allowed.ok) {
+      return reply.status(429).send({
+        error: allowed.reason,
+        retryAfterSeconds: allowed.retryAfterSeconds,
+      });
+    }
+
+    const expiresAt = new Date(Date.now() + VERIFICATION_TTL_MS);
 
     const user = await prisma.user.upsert({
       where: { phoneNumber },
@@ -276,6 +417,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       verificationProvider = "dev-local-fallback";
       devCodePreview = app.config.NODE_ENV === "development" ? code : undefined;
     }
+
+    await invalidatePendingChallenges(phoneNumber, "PHONE");
 
     await prisma.verificationChallenge.create({
       data: {
@@ -313,8 +456,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const result = await verifyLatestChallenge(normalizeEmail(parsed.data.email), "EMAIL", parsed.data.code);
 
     if (!result.ok) {
-      return reply.status(400).send({
+      return reply.status(result.reason === "TOO_MANY_ATTEMPTS" ? 429 : 400).send({
         error: result.reason,
+      });
+    }
+
+    if (!result.userId) {
+      return reply.status(500).send({
+        error: "USER_NOT_FOUND",
       });
     }
 
@@ -322,6 +471,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       ok: true,
       verified: true,
       userId: result.userId,
+      accessToken: issueAccessToken(result.userId, app.config.JWT_ACCESS_SECRET),
     });
   });
 
@@ -345,7 +495,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       : await verifyLatestChallenge(normalizedPhone, "PHONE", parsed.data.code);
 
     if (!result.ok) {
-      return reply.status(400).send({
+      return reply.status(result.reason === "TOO_MANY_ATTEMPTS" ? 429 : 400).send({
         error: result.reason,
       });
     }
@@ -366,6 +516,48 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       verified: true,
       userId: result.userId,
       profileCompleted: user?.profileCompleted ?? false,
+      accessToken: issueAccessToken(result.userId, app.config.JWT_ACCESS_SECRET),
+    });
+  });
+
+  app.post("/auth/dev/session", async (request, reply) => {
+    if (app.config.NODE_ENV !== "development") {
+      return reply.status(403).send({
+        error: "DEV_AUTH_DISABLED",
+      });
+    }
+
+    const parsed = devSessionSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "INVALID_DEV_SESSION",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    const normalizedPhone = normalizePhone(parsed.data.phoneNumber);
+    const user = await prisma.user.findUnique({
+      where: { id: parsed.data.userId },
+      select: {
+        id: true,
+        phoneNumber: true,
+        profileCompleted: true,
+      },
+    });
+
+    if (!user || user.phoneNumber !== normalizedPhone) {
+      return reply.status(404).send({
+        error: "DEV_SESSION_NOT_FOUND",
+      });
+    }
+
+    return reply.send({
+      ok: true,
+      userId: user.id,
+      target: normalizedPhone,
+      profileCompleted: user.profileCompleted,
+      accessToken: issueAccessToken(user.id, app.config.JWT_ACCESS_SECRET),
     });
   });
 };

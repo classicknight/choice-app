@@ -152,6 +152,27 @@ const faqs = [
   },
 ];
 
+const safetyHighlights = [
+  {
+    label: "Melden",
+    title: "Meldungen landen nicht im Nichts.",
+    body:
+      "Choice speichert den relevanten Match- und Chatkontext mit, damit problematisches Verhalten nachvollziehbar geprüft werden kann.",
+  },
+  {
+    label: "Blockieren",
+    title: "Blockieren beendet das Match sofort.",
+    body:
+      "Wenn du eine Person blockierst, wird dieses Match direkt geschlossen und dieselbe Kombination nicht erneut vorgeschlagen.",
+  },
+  {
+    label: "Prüfung",
+    title: "Moderationsentscheidungen können neu geprüft werden.",
+    body:
+      "Für Rückfragen, Einspruch oder Support gibt es einen direkten Kontaktweg über kontakt@autovisa.de.",
+  },
+];
+
 export default function Home() {
   return (
     <main className={styles.page}>
@@ -289,11 +310,17 @@ export default function Home() {
         </div>
 
         <div className={styles.peopleGrid}>
-          {featuredPeople.map((person) => (
-            <article key={person.name} className={styles.personCard}>
-              <div className={styles.personImageWrap}>
-                <img src={person.image} alt={`${person.name} aus ${person.city}`} className={styles.personImage} />
-              </div>
+              {featuredPeople.map((person) => (
+                <article key={person.name} className={styles.personCard}>
+                  <div className={styles.personImageWrap}>
+                    <Image
+                      src={person.image}
+                      alt={`${person.name} aus ${person.city}`}
+                      fill
+                      sizes="(max-width: 768px) 100vw, 33vw"
+                      className={styles.personImage}
+                    />
+                  </div>
               <div className={styles.personMeta}>
                 <div className={styles.personTopRow}>
                   <h3 className={styles.personName}>
@@ -396,6 +423,23 @@ export default function Home() {
               <summary className={styles.faqQuestion}>{item.question}</summary>
               <p className={styles.faqAnswer}>{item.answer}</p>
             </details>
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.section} id="sicherheit">
+        <div className={styles.sectionIntro}>
+          <p className={styles.sectionEyebrow}>Sicherheit</p>
+          <h2 className={styles.sectionTitle}>Choice soll klar wirken, aber nicht schutzlos sein.</h2>
+        </div>
+
+        <div className={styles.principlesGrid}>
+          {safetyHighlights.map((item) => (
+            <article key={item.title} className={styles.principleCard}>
+              <span className={styles.cardLabel}>{item.label}</span>
+              <h3 className={styles.cardTitle}>{item.title}</h3>
+              <p className={styles.cardBody}>{item.body}</p>
+            </article>
           ))}
         </div>
       </section>

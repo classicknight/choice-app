@@ -61,6 +61,7 @@ enum PhaseTwoStage {
 
 enum ReportStatus {
   OPEN
+  IN_REVIEW
   CONFIRMED
   DISMISSED
 }
@@ -108,6 +109,8 @@ model User {
   chatMembers       ChatMember[]
   reportsFiled      Report[]                @relation("ReportsFiled")
   reportsReceived   Report[]                @relation("ReportsReceived")
+  blocksCreated     UserBlock[]             @relation("UserBlocksCreated")
+  blocksReceived    UserBlock[]             @relation("UserBlocksReceived")
   systemPenaltyEvents SystemPenaltyEvent[]
   pushDevices       PushDevice[]
   notificationDispatches NotificationDispatch[]
@@ -242,8 +245,12 @@ model Report {
   details             String?
   latestMessagePreview String?
   status              ReportStatus @default(OPEN)
+  reviewStartedAt     DateTime?
+  reviewStartedByAdminPhone String?
   reviewerNote        String?
   reviewedAt          DateTime?
+  reviewedByAdminPhone String?
+  moderationAlertSentAt DateTime?
   reporter            User         @relation("ReportsFiled", fields: [reporterUserId], references: [id], onDelete: Cascade)
   reportedUser        User         @relation("ReportsReceived", fields: [reportedUserId], references: [id], onDelete: Cascade)
   match               Match?       @relation(fields: [matchId], references: [id], onDelete: SetNull)
@@ -251,6 +258,19 @@ model Report {
   @@index([status, createdAt])
   @@index([reportedUserId, status])
   @@index([reporterUserId, createdAt])
+  @@index([reviewStartedAt])
+}
+
+model UserBlock {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  blockerUserId String
+  blockedUserId String
+  blocker       User     @relation("UserBlocksCreated", fields: [blockerUserId], references: [id], onDelete: Cascade)
+  blockedUser   User     @relation("UserBlocksReceived", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerUserId, blockedUserId])
+  @@index([blockedUserId])
 }
 
 model SystemPenaltyEvent {
@@ -320,4 +340,11 @@ model Purchase {
   @@index([userId, createdAt])
   @@index([status, createdAt])
   @@index([productId, createdAt])
+}
+
+model PhoneMatchStats {
+  phoneNumber     String   @id
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  totalMatchCount Int      @default(0)
 }

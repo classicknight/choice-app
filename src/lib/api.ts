@@ -1,6 +1,8 @@
 import { buildSummary, calculateAgeFromProfile, type RegistrationProfile } from "./registration";
 
 const apiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+let apiAccessToken: string | null = null;
+const API_REQUEST_TIMEOUT_MS = 12_000;
 
 type StartPhoneVerificationResult = {
   ok: true;
@@ -13,6 +15,15 @@ type VerifyPhoneVerificationResult = {
   ok: true;
   userId: string;
   profileCompleted: boolean;
+  accessToken: string;
+};
+
+type BootstrapDevSessionResult = {
+  ok: true;
+  userId: string;
+  target: string;
+  profileCompleted: boolean;
+  accessToken: string;
 };
 
 type CreateProfileResult = {
@@ -78,6 +89,9 @@ type RemoteAccountStateResult = {
     forfeitedPaidMatchCredits: number;
     lastPaidMatchPackageAt: string | null;
     hasPaidMatchAccess: boolean;
+    totalMatchCount: number;
+    includedMatchLimit: number;
+    remainingIncludedMatches: number;
     penaltyRecoveryWindowDays: number;
     recentPenalties: Array<{
       id: string;
@@ -175,6 +189,7 @@ export type RemoteJourneyState = {
   phaseFiveStartAt: string | null;
   status: "PENDING" | "ACTIVE" | "DISCARDED" | "EXPIRED" | "KEPT" | null;
   partner: RemoteJourneyPartnerProfile | null;
+  phaseThreeSuggestion: RemoteJourneyPartnerProfile | null;
   sharedChatMessages: RemoteJourneyMessage[];
   phaseOneStarterUserId: string | null;
   phaseOneStarterPenaltyAppliedAt: string | null;
@@ -202,58 +217,131 @@ type HydratedProfileResult = {
   videoUrl: string | null;
 };
 
-async function postJson<TResponse>(path: string, body: unknown): Promise<TResponse> {
+function normalizeAccessToken(value: string | null | undefined) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function headersToObject(headers?: HeadersInit): Record<string, string> {
+  if (!headers) {
+    return {};
+  }
+
+  if (headers instanceof Headers) {
+    return Object.fromEntries(headers.entries());
+  }
+
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+
+  return Object.fromEntries(
+    Object.entries(headers).flatMap(([key, value]) => {
+      if (value == null) {
+        return [];
+      }
+
+      return [[key, String(value)]];
+    }),
+  );
+}
+
+export function setApiAccessToken(value: string | null | undefined) {
+  apiAccessToken = normalizeAccessToken(value);
+}
+
+async function requestJson<TResponse>(
+  path: string,
+  init: RequestInit,
+  options?: { auth?: boolean; accessToken?: string | null },
+): Promise<TResponse> {
   if (!apiBaseUrl) {
     throw new Error("API_URL_MISSING");
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const requiresAuth = options?.auth ?? false;
+  const requestAccessToken = normalizeAccessToken(options?.accessToken ?? apiAccessToken);
+
+  const headers = headersToObject(init.headers);
+
+  if (requiresAuth && requestAccessToken) {
+    headers.Authorization = `Bearer ${requestAccessToken}`;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, API_REQUEST_TIMEOUT_MS);
+  const forwardAbort = () => {
+    controller.abort();
+  };
+
+  if (init.signal) {
+    if (init.signal.aborted) {
+      controller.abort();
+    } else {
+      init.signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("REQUEST_TIMEOUT");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    init.signal?.removeEventListener("abort", forwardAbort);
+  }
+
+  const data = (await response.json().catch(() => ({}))) as TResponse & { error?: string };
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "REQUEST_FAILED");
+  }
+
+  return data;
+}
+
+async function postJson<TResponse>(
+  path: string,
+  body: unknown,
+  options?: { auth?: boolean; accessToken?: string | null },
+): Promise<TResponse> {
+  return requestJson<TResponse>(path, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-  });
-
-  const data = (await response.json()) as TResponse & { error?: string };
-
-  if (!response.ok) {
-    throw new Error(data.error ?? "REQUEST_FAILED");
-  }
-
-  return data;
+  }, options);
 }
 
-async function fetchJson<TResponse>(path: string): Promise<TResponse> {
-  if (!apiBaseUrl) {
-    throw new Error("API_URL_MISSING");
-  }
-
-  const response = await fetch(`${apiBaseUrl}${path}`);
-  const data = (await response.json()) as TResponse & { error?: string };
-
-  if (!response.ok) {
-    throw new Error(data.error ?? "REQUEST_FAILED");
-  }
-
-  return data;
+async function fetchJson<TResponse>(
+  path: string,
+  options?: { auth?: boolean; accessToken?: string | null },
+): Promise<TResponse> {
+  return requestJson<TResponse>(path, {
+    method: "GET",
+  }, options);
 }
 
-async function deleteJson<TResponse>(path: string): Promise<TResponse> {
-  if (!apiBaseUrl) {
-    throw new Error("API_URL_MISSING");
-  }
-
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+async function deleteJson<TResponse>(
+  path: string,
+  options?: { auth?: boolean; accessToken?: string | null },
+): Promise<TResponse> {
+  return requestJson<TResponse>(path, {
     method: "DELETE",
-  });
-  const data = (await response.json()) as TResponse & { error?: string };
-
-  if (!response.ok) {
-    throw new Error(data.error ?? "REQUEST_FAILED");
-  }
-
-  return data;
+  }, options);
 }
 
 function createApproximateBirthdayFromAge(age: number) {
@@ -361,7 +449,17 @@ export async function verifyPhoneVerification(
   });
 }
 
-export async function uploadProfilePhotos(photoUris: string[]): Promise<string[]> {
+export async function bootstrapDevSession(
+  userId: string,
+  phoneNumber: string,
+): Promise<BootstrapDevSessionResult> {
+  return postJson<BootstrapDevSessionResult>("/auth/dev/session", {
+    userId: userId.trim(),
+    phoneNumber: phoneNumber.trim(),
+  });
+}
+
+export async function uploadProfilePhotos(photoUris: string[], accessToken?: string | null): Promise<string[]> {
   const normalizedPhotoUris = photoUris.map((entry) => entry.trim()).filter(Boolean);
 
   if (!normalizedPhotoUris.length) {
@@ -372,8 +470,9 @@ export async function uploadProfilePhotos(photoUris: string[]): Promise<string[]
     throw new Error("API_URL_MISSING");
   }
 
-  const signedUpload = await postJson<CloudinarySignatureResult>("/uploads/cloudinary/sign", {
-    folder: "choice/profiles",
+  const signedUpload = await postJson<CloudinarySignatureResult>("/uploads/cloudinary/sign", {}, {
+    auth: true,
+    accessToken,
   });
 
   const uploadedUrls: string[] = [];
@@ -417,7 +516,7 @@ export async function uploadProfilePhotos(photoUris: string[]): Promise<string[]
   return uploadedUrls;
 }
 
-export async function uploadProfileVideo(videoUri: string | null): Promise<string | null> {
+export async function uploadProfileVideo(videoUri: string | null, accessToken?: string | null): Promise<string | null> {
   const normalizedVideoUri = videoUri?.trim();
 
   if (!normalizedVideoUri) {
@@ -428,8 +527,9 @@ export async function uploadProfileVideo(videoUri: string | null): Promise<strin
     throw new Error("API_URL_MISSING");
   }
 
-  const signedUpload = await postJson<CloudinarySignatureResult>("/uploads/cloudinary/sign", {
-    folder: "choice/profiles",
+  const signedUpload = await postJson<CloudinarySignatureResult>("/uploads/cloudinary/sign", {}, {
+    auth: true,
+    accessToken,
   });
 
   if (/^https?:\/\//i.test(normalizedVideoUri)) {
@@ -471,6 +571,7 @@ export async function createRemoteProfile(
   profile: RegistrationProfile,
   photoUrls: string[],
   introVideoUrl?: string | null,
+  accessToken?: string | null,
 ): Promise<CreateProfileResult> {
   const preferenceNotes = [
     profile.greenFlags.length ? `Pro: ${profile.greenFlags.join(", ")}` : "",
@@ -503,7 +604,7 @@ export async function createRemoteProfile(
     introVideoUrl: introVideoUrl || undefined,
     matchTime: profile.matchTime,
     conversationStyle: profile.conversationStyle,
-  });
+  }, { auth: true, accessToken });
 
   return {
     ok: true,
@@ -512,8 +613,11 @@ export async function createRemoteProfile(
   };
 }
 
-export async function fetchRemoteProfile(userId: string): Promise<HydratedProfileResult> {
-  const response = await fetchJson<FetchRemoteProfileResult>(`/profiles/${encodeURIComponent(userId)}`);
+export async function fetchRemoteProfile(userId: string, accessToken?: string | null): Promise<HydratedProfileResult> {
+  const response = await fetchJson<FetchRemoteProfileResult>(`/profiles/${encodeURIComponent(userId)}`, {
+    auth: true,
+    accessToken,
+  });
   const remoteProfile = response.profile;
   const birthday = createApproximateBirthdayFromAge(remoteProfile.age);
   const preferences = parsePreferenceNotes(remoteProfile.dealbreaker);
@@ -543,11 +647,17 @@ export async function fetchRemoteProfile(userId: string): Promise<HydratedProfil
 }
 
 export async function deleteRemoteAccount(userId: string): Promise<DeleteAccountResult> {
-  return deleteJson<DeleteAccountResult>(`/profiles/${encodeURIComponent(userId)}`);
+  return deleteJson<DeleteAccountResult>(`/profiles/${encodeURIComponent(userId)}`, { auth: true });
 }
 
-export async function fetchRemoteAccountState(userId: string): Promise<RemoteAccountStateResult["account"]> {
-  const response = await fetchJson<RemoteAccountStateResult>(`/profiles/${encodeURIComponent(userId)}/account`);
+export async function fetchRemoteAccountState(
+  userId: string,
+  accessToken?: string | null,
+): Promise<RemoteAccountStateResult["account"]> {
+  const response = await fetchJson<RemoteAccountStateResult>(`/profiles/${encodeURIComponent(userId)}/account`, {
+    auth: true,
+    accessToken,
+  });
   return response.account;
 }
 
@@ -562,7 +672,7 @@ export async function applyRemoteSystemPenalty(input: {
     reason: input.reason,
     contextKey: input.contextKey,
     note: input.note?.trim() || undefined,
-  });
+  }, { auth: true });
 
   return response.account;
 }
@@ -570,6 +680,7 @@ export async function applyRemoteSystemPenalty(input: {
 export async function createRemoteReport(input: {
   reporterUserId: string;
   reportedUserId: string;
+  matchId?: string;
   reporterName: string;
   reportedName: string;
   reason: string;
@@ -579,12 +690,13 @@ export async function createRemoteReport(input: {
   return postJson<CreateReportResult>("/reports", {
     reporterUserId: input.reporterUserId,
     reportedUserId: input.reportedUserId,
+    matchId: input.matchId?.trim() || undefined,
     reporterName: input.reporterName,
     reportedName: input.reportedName,
     reason: input.reason,
     details: input.details?.trim() || undefined,
     latestMessagePreview: input.latestMessagePreview?.trim() || undefined,
-  });
+  }, { auth: true });
 }
 
 export async function registerRemotePushToken(input: {
@@ -600,15 +712,18 @@ export async function registerRemotePushToken(input: {
     userId: input.userId,
     token: input.token.trim(),
     platform: input.platform,
-  });
+  }, { auth: true });
 }
 
-export async function fetchRemoteJourney(userId: string): Promise<RemoteJourneyState> {
+export async function fetchRemoteJourney(userId: string, accessToken?: string | null): Promise<RemoteJourneyState> {
   if (!apiBaseUrl) {
     throw new Error("API_URL_MISSING");
   }
 
-  const response = await fetchJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}`);
+  const response = await fetchJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}`, {
+    auth: true,
+    accessToken,
+  });
   return response.journey;
 }
 
@@ -626,7 +741,7 @@ export async function sendRemoteJourneyMessage(input: {
     kind: input.kind,
     text: input.text?.trim() || undefined,
     imageUri: input.imageUri?.trim() || undefined,
-  });
+  }, { auth: true });
 
   return response.journey;
 }
@@ -641,7 +756,7 @@ export async function setRemotePhaseOneDecision(input: {
 
   const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/phase-one-decision`, {
     decision: input.decision,
-  });
+  }, { auth: true });
 
   return response.journey;
 }
@@ -651,7 +766,7 @@ export async function startRemotePhaseTwo(userId: string): Promise<RemoteJourney
     throw new Error("API_URL_MISSING");
   }
 
-  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}/phase-two/start`, {});
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}/phase-two/start`, {}, { auth: true });
   return response.journey;
 }
 
@@ -669,7 +784,7 @@ export async function submitRemotePhaseTwoAnswer(input: {
     stage: input.stage,
     roundIndex: input.roundIndex,
     optionIndex: input.optionIndex,
-  });
+  }, { auth: true });
 
   return response.journey;
 }
@@ -684,7 +799,22 @@ export async function setRemotePhaseThreeDecision(input: {
 
   const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/phase-three-decision`, {
     decision: input.decision,
-  });
+  }, { auth: true });
+
+  return response.journey;
+}
+
+export async function blockRemoteJourneyPartner(input: {
+  userId: string;
+  blockedUserId: string;
+}): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(input.userId)}/block`, {
+    blockedUserId: input.blockedUserId,
+  }, { auth: true });
 
   return response.journey;
 }

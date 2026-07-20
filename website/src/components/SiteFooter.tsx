@@ -15,6 +15,7 @@ export function SiteFooter() {
           <Link href="/datenschutz">Datenschutz</Link>
           <Link href="/agb">AGB</Link>
           <Link href="/rechtliches">Rechtliches</Link>
+          <a href="mailto:kontakt@autovisa.de?subject=Choice%20Support">Support</a>
         </nav>
       </div>
     </footer>

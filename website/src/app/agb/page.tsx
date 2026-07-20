@@ -16,9 +16,8 @@ export default function AgbPage() {
         <p className={styles.eyebrow}>Nutzungsbedingungen</p>
         <h1 className={styles.title}>AGB</h1>
         <p className={styles.intro}>
-          Diese Allgemeinen Geschäftsbedingungen regeln die Nutzung von Choice auf der Website und in der App. Sie sind
-          als erste belastbare Grundlage für Account, Matching, Meldungen, Premium-Funktionen und Moderation gedacht und
-          können später mit dem Live-Produkt weiter präzisiert werden.
+          Diese Allgemeinen Geschäftsbedingungen regeln die Nutzung von Choice auf der Website und in der App. Sie gelten für
+          Account, Matching, Chat, Moderation und kostenpflichtige Match-Pakete.
         </p>
 
         <section className={styles.section}>
@@ -30,21 +29,21 @@ export default function AgbPage() {
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>2. Leistungsbeschreibung</h2>
+          <h2 className={styles.sectionTitle}>2. Volljährigkeit und Konto</h2>
           <p className={styles.text}>
-            Choice ist ein kuratiertes Dating-Angebot. Nutzer erhalten Matches, durchlaufen phasenbasierte Interaktionen
-            und können je nach Produktstand weitere Funktionen wie Chat, Meldungen, Premium-Features oder finale
-            Auszeichnungen nutzen. Ein Anspruch auf eine bestimmte Anzahl von Matches oder einen konkreten Erfolg besteht
-            nicht.
+            Choice richtet sich ausschließlich an volljährige Nutzerinnen und Nutzer. Für die Nutzung kann ein persönliches
+            Konto erforderlich sein. Nutzer sind verpflichtet, wahrheitsgemäße Angaben zu machen, ihre Zugangsdaten
+            vertraulich zu behandeln und kein Konto für Dritte zu verwenden oder zu teilen.
           </p>
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>3. Nutzerkonto</h2>
+          <h2 className={styles.sectionTitle}>3. Leistungsbeschreibung</h2>
           <p className={styles.text}>
-            Für die Nutzung kann ein persönliches Konto erforderlich sein. Nutzer sind verpflichtet, wahrheitsgemäße
-            Angaben zu machen, ihre Zugangsdaten vertraulich zu behandeln und kein Konto für Dritte zu verwenden oder zu
-            teilen.
+            Choice ist ein kuratiertes Dating-Angebot. Nutzer erhalten Matches, durchlaufen phasenbasierte Interaktionen und
+            können je nach Produktstand weitere Funktionen wie Chat, Meldungen, Blockierungen, Moderation, Match-Pakete oder
+            finale Auszeichnungen nutzen. Ein Anspruch auf eine bestimmte Anzahl von Matches, auf einen bestimmten Verlauf oder
+            auf Dating-Erfolg besteht nicht.
           </p>
         </section>
 
@@ -53,34 +52,37 @@ export default function AgbPage() {
           <p className={styles.text}>
             Choice lebt von respektvoller Kommunikation. Untersagt sind insbesondere beleidigende, diskriminierende,
             sexualisierte, bedrohende oder sonst rechtswidrige Inhalte. Ebenso unzulässig sind irreführende Angaben,
-            Identitätstäuschung, Spam oder die Nutzung des Dienstes zu gewerblichen Zwecken ohne ausdrückliche Freigabe.
+            Identitätstäuschung, Spam, das Umgehen von Sicherheitsmechanismen, das Teilen externer Kontaktkanäle zur
+            Missbrauchsumgehung oder die Nutzung des Dienstes zu gewerblichen Zwecken ohne ausdrückliche Freigabe. Choice
+            verfolgt bei objektiv anstößigen, bedrohend wirkenden oder ausbeuterischen Inhalten eine Null-Toleranz-Linie.
           </p>
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>5. Meldungen, Strafpunkte und Pausierung</h2>
+          <h2 className={styles.sectionTitle}>5. Meldungen, Blockierungen und Moderation</h2>
           <p className={styles.text}>
-            Nutzer können Verhalten melden. Choice kann gemeldete Inhalte und Verhaltensweisen prüfen, Verwarnungen oder
-            Strafpunkte vergeben, Konten zeitweise pausieren oder dauerhaft sperren. Dasselbe gilt, wenn systemseitige
-            Regeln des Produkts verletzt werden, etwa wenn notwendige Phasen nicht gespielt oder festgelegte Startpflichten
-            wiederholt ignoriert werden.
+            Nutzer können Verhalten melden und andere Nutzer blockieren. Blockierungen beenden das betroffene Match sofort und
+            verhindern künftige Vorschläge zwischen denselben Konten. Choice kann gemeldete Inhalte und Verhaltensweisen
+            prüfen, Verwarnungen oder Strafpunkte vergeben, Inhalte zurückweisen, Konten zeitweise pausieren oder dauerhaft
+            sperren. Dasselbe gilt, wenn systemseitige Regeln des Produkts verletzt werden, etwa wenn notwendige Phasen nicht
+            gespielt oder festgelegte Startpflichten wiederholt ignoriert werden.
           </p>
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>6. Premium und kostenpflichtige Funktionen</h2>
+          <h2 className={styles.sectionTitle}>6. Kostenpflichtige Match-Pakete</h2>
           <p className={styles.text}>
-            Choice kann kostenlose und kostenpflichtige Funktionen anbieten. Umfang, Preis, Laufzeit und mögliche
-            Verlängerungen ergeben sich aus der jeweils konkreten Angebotsdarstellung innerhalb des Produkts oder des
-            Stores. Bereits freigeschaltete Leistungen können an Konten gebunden sein und sind nur im jeweils beschriebenen
-            Umfang nutzbar. Nach den ersten 8 enthaltenen Matches kann Choice zusätzliche Match-Pakete, etwa 8 weitere
-            Matches für 3,99 €, anbieten.
+            Choice kann kostenlose und kostenpflichtige Funktionen anbieten. Derzeit betrifft dies insbesondere Match-Pakete.
+            Umfang, Preis und Produktbeschreibung ergeben sich aus der konkreten Darstellung im Produkt und im jeweiligen
+            Store. Soweit nicht ausdrücklich anders gekennzeichnet, handelt es sich bei Match-Paketen um Einmalkäufe und nicht
+            um automatisch verlängernde Abonnements.
           </p>
           <p className={styles.text}>
-            Wird ein Konto vorübergehend pausiert, können noch nicht genutzte gekaufte Match-Pakete eingefroren und nach
-            einer Entsperrung wieder freigegeben werden. Bei schweren oder
+            Käufe werden dem jeweiligen Choice-Konto zugeordnet. Wird ein Konto vorübergehend pausiert, können noch nicht
+            genutzte gekaufte Match-Pakete eingefroren und nach einer Entsperrung wieder freigegeben werden. Bei schweren oder
             wiederholten Verstößen kann Choice ein Konto dauerhaft sperren; in solchen Fällen können verbleibende gekaufte
-            Match-Pakete verfallen, sofern dies im Einzelfall verhältnismäßig ist.
+            Match-Pakete verfallen, sofern dies im Einzelfall verhältnismäßig ist. Store-seitige Erstattungen und
+            Abrechnungsfragen richten sich nach den Bedingungen des jeweiligen Stores.
           </p>
         </section>
 
@@ -97,7 +99,13 @@ export default function AgbPage() {
           <h2 className={styles.sectionTitle}>8. Beendigung und Löschung</h2>
           <p className={styles.text}>
             Nutzer können ihr Konto im Rahmen der verfügbaren Funktionen löschen oder die Nutzung beenden. Choice kann
-            Konten bei schwerwiegenden oder wiederholten Verstößen gegen diese AGB einschränken, pausieren oder löschen.
+            Konten bei schwerwiegenden oder wiederholten Verstößen gegen diese AGB einschränken, pausieren, sperren oder
+            löschen.
+          </p>
+          <p className={styles.text}>
+            Bereits verbrauchte Match-Kontingente und freigeschaltete Match-Zähler können dabei aus Gründen der
+            Missbrauchsvermeidung, Abrechnung und Durchsetzung von Nutzungsgrenzen weiter an die verifizierte Telefonnummer
+            gebunden bleiben.
           </p>
         </section>
 
@@ -118,11 +126,6 @@ export default function AgbPage() {
             Seite Rechtliches.
           </p>
         </section>
-
-        <p className={styles.note}>
-          Diese AGB sind jetzt als belastbare Choice-Grundlage angelegt. Wenn du später noch genauere Regeln für Premium,
-          Kündigung, Community-Standards oder App-Store-Käufe brauchst, kann ich sie dir gezielt erweitern.
-        </p>
       </section>
 
       <div className={styles.footerSpace}>

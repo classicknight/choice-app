@@ -8,6 +8,11 @@ function getAllowedAdminPhones(rawValue: string) {
     .filter(Boolean);
 }
 
+export function getAuthenticatedAdminPhone(request: FastifyRequest) {
+  const phoneHeader = request.headers["x-admin-phone"];
+  return typeof phoneHeader === "string" ? normalizePhone(phoneHeader) : "";
+}
+
 export function requireAdminAccess(request: FastifyRequest, reply: FastifyReply) {
   const configuredAccessKey = request.server.config.ADMIN_ACCESS_KEY?.trim();
   const allowedPhones = getAllowedAdminPhones(request.server.config.ADMIN_PHONE_NUMBERS);
@@ -19,10 +24,8 @@ export function requireAdminAccess(request: FastifyRequest, reply: FastifyReply)
     return false;
   }
 
-  const phoneHeader = request.headers["x-admin-phone"];
   const accessKeyHeader = request.headers["x-admin-key"];
-
-  const adminPhone = typeof phoneHeader === "string" ? normalizePhone(phoneHeader) : "";
+  const adminPhone = getAuthenticatedAdminPhone(request);
   const adminKey = typeof accessKeyHeader === "string" ? accessKeyHeader.trim() : "";
 
   if (!adminPhone || !adminKey) {

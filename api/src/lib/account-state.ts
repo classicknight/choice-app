@@ -1,3 +1,5 @@
+import { getOrCreatePhoneMatchCountForUser, getRemainingIncludedMatches, INCLUDED_MATCH_LIMIT } from "./match-access.js";
+
 export type AccountStateShape = {
   id: string;
   isPremium: boolean;
@@ -32,6 +34,22 @@ export function mapAccountState(user: AccountStateShape) {
     forfeitedPaidMatchCredits: user.forfeitedPaidMatchCredits,
     lastPaidMatchPackageAt: user.lastPaidMatchPackageAt,
     hasPaidMatchAccess: user.paidMatchCredits > 0,
+  };
+}
+
+export async function buildAccountStatePayload(
+  user: AccountStateShape & { id: string; phoneNumber?: string | null },
+) {
+  const totalMatchCount = await getOrCreatePhoneMatchCountForUser({
+    id: user.id,
+    phoneNumber: user.phoneNumber ?? null,
+  });
+
+  return {
+    ...mapAccountState(user),
+    totalMatchCount,
+    includedMatchLimit: INCLUDED_MATCH_LIMIT,
+    remainingIncludedMatches: getRemainingIncludedMatches(totalMatchCount),
   };
 }
 

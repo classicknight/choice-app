@@ -19,6 +19,13 @@ const envSchema = z.object({
   REVENUECAT_WEBHOOK_AUTH: z.string().optional(),
   ADMIN_PHONE_NUMBERS: z.string().default(""),
   ADMIN_ACCESS_KEY: z.string().optional(),
+  MODERATION_ALERT_EMAILS: z.string().default(""),
+  ADMIN_DASHBOARD_URL: z.string().url().default("https://choice-dating.app/admin"),
+  JOURNEY_AUTOMATION_ENABLED: z.stringbool().default(false),
+  JOURNEY_TEST_RELEASE_AT: z.string().optional(),
+  JOURNEY_TEST_DATE: z.string().optional(),
+  JOURNEY_TEST_PHASE_TWO_AT: z.string().optional(),
+  JOURNEY_TEST_PHASE_STEP_MINUTES: z.coerce.number().int().positive().default(15),
 });
 
 export const env = envSchema.parse(process.env);

@@ -9,6 +9,7 @@ const maxRememberedSessions = 6;
 
 export type PersistedSession = {
   userId: string;
+  accessToken: string | null;
   phoneNumber: string | null;
   profile: RegistrationProfile;
   photoUris: string[];
@@ -48,6 +49,7 @@ function cloneProfile(profile: RegistrationProfile): RegistrationProfile {
 function cloneSession(session: PersistedSession): PersistedSession {
   return {
     ...session,
+    accessToken: typeof session.accessToken === "string" ? session.accessToken.trim() || null : null,
     phoneNumber: session.phoneNumber ?? null,
     photoUris: Array.isArray(session.photoUris) ? session.photoUris.filter(Boolean) : [],
     introVideoUri: typeof session.introVideoUri === "string" ? session.introVideoUri : null,
@@ -117,6 +119,7 @@ export async function savePersistedSession(
 ): Promise<PersistedSession> {
   const payload: PersistedSession = {
     ...session,
+    accessToken: typeof session.accessToken === "string" ? session.accessToken.trim() || null : null,
     phoneNumber: session.phoneNumber ?? null,
     photoUris: session.photoUris.filter(Boolean),
     introVideoUri: session.introVideoUri ?? null,

@@ -16,8 +16,8 @@ export default function ImpressumPage() {
         <p className={styles.eyebrow}>Angaben gemäß § 5 DDG</p>
         <h1 className={styles.title}>Impressum</h1>
         <p className={styles.intro}>
-          Choice ist ein Angebot von Alexandr Gotfrid. Die hier verwendeten Kontakt- und Unternehmensdaten basieren auf den
-          bereits veröffentlichten Angaben von autovisa.de.
+          Choice ist ein digitales Dating-Angebot von Alexandr Gotfrid. Dieses Impressum gilt für die Website und die App
+          von Choice.
         </p>
 
         <section className={styles.section}>
@@ -33,7 +33,7 @@ export default function ImpressumPage() {
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>Kontakt</h2>
           <div className={styles.info}>
-            <div>Telefon: 0152 02405308</div>
+            <div>Telefon: 01759659954</div>
             <div>E-Mail: kontakt@autovisa.de</div>
           </div>
         </section>
@@ -54,11 +54,6 @@ export default function ImpressumPage() {
             <div>45731 Waltrop</div>
           </div>
         </section>
-
-        <p className={styles.note}>
-          Wenn du die Kontakt- oder Unternehmensdaten für Choice später anders führen willst als bei AutoVisa, kann ich dir
-          diese Seite sofort entsprechend umstellen.
-        </p>
       </section>
 
       <div className={styles.footerSpace}>

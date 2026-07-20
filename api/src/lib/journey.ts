@@ -5,6 +5,18 @@ import {
   PhaseTwoStage,
   Prisma,
 } from "@prisma/client";
+import { env } from "../config/env.js";
+import {
+  canUserReceiveAnotherMatch,
+  createMatchAccessReservation,
+  getOrCreatePhoneMatchCountForUser,
+} from "./match-access.js";
+import {
+  addBerlinCalendarDaysAtTime,
+  getBerlinDateAtTime,
+  getBerlinDateKey,
+  getNextBerlinDateAtTime,
+} from "./berlin-time.js";
 import { reconcileAllPenaltyStates } from "./penalty-state.js";
 import { sendPushNotificationOnce, sendPushNotificationToUser } from "./push-notifications.js";
 import { applySystemPenalty } from "./system-penalties.js";
@@ -15,6 +27,9 @@ const PHASE_TWO_ROUNDS_PER_SESSION = 3;
 const MATCH_RELEASE_HOUR = 9;
 const MATCH_DECISION_HOUR = 21;
 const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
+const BLOCKED_LINK_PATTERN = /(https?:\/\/|www\.|t\.me|telegram|wa\.me|onlyfans|snap(chat)?|discord(?:app)?|instagram\.com)/i;
+const BLOCKED_PHONE_PATTERN = /(?:\+\d[\d\s\-()]{6,}|\b\d{7,}\b)/;
+const BLOCKED_EXPLICIT_PATTERN = /\b(nudes?|nacktbilder?|fick(?:en|st)?|sexchat|escort|porn(?:o)?|blasen)\b/i;
 
 export type JourneyPhaseTwoResponseOption = {
   label: string;
@@ -89,6 +104,7 @@ export type JourneyState = {
   phaseFiveStartAt: string | null;
   status: MatchStatus | null;
   partner: JourneyPartnerProfile | null;
+  phaseThreeSuggestion: JourneyPartnerProfile | null;
   sharedChatMessages: JourneyMessage[];
   phaseOneStarterUserId: string | null;
   phaseOneStarterPenaltyAppliedAt: string | null;
@@ -126,6 +142,23 @@ type CandidateProfile = {
   interests: string[];
 };
 
+type JourneyCandidateUser = Prisma.UserGetPayload<{
+  include: { profile: true };
+}>;
+
+type JourneyCandidateHistory = {
+  timesMatched: number;
+  lastMatchedAt: number | null;
+};
+
+type RankedJourneyCandidate = {
+  user: JourneyCandidateUser;
+  score: number;
+  sharedInterests: string[];
+  timesMatched: number;
+  lastMatchedAt: number | null;
+};
+
 function chooseStableStarterUserId(userA: string, userB: string) {
   const [left, right] = [userA, userB].sort();
   const key = `${left}:${right}`;
@@ -137,35 +170,109 @@ function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
 }
 
-function addDays(date: Date, days: number) {
-  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+function addMinutes(date: Date, minutes: number) {
+  return new Date(date.getTime() + minutes * 60 * 1000);
 }
 
 function setTimeOfDay(date: Date, hour: number, minute: number) {
-  const next = new Date(date);
-  next.setHours(hour, minute, 0, 0);
-  return next;
+  return getBerlinDateAtTime(date, hour, minute);
+}
+
+function parseTimeOfDay(value?: string) {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+
+  if (!match) {
+    return null;
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return { hour, minute };
+}
+
+function getJourneyTestScheduleConfig(date: Date) {
+  const configuredDate = env.JOURNEY_TEST_DATE?.trim();
+  const releaseTime = parseTimeOfDay(env.JOURNEY_TEST_RELEASE_AT);
+  const phaseTwoTime = parseTimeOfDay(env.JOURNEY_TEST_PHASE_TWO_AT);
+
+  if (!configuredDate || (!releaseTime && !phaseTwoTime)) {
+    return null;
+  }
+
+  if (getBerlinDateKey(date) !== configuredDate) {
+    return null;
+  }
+
+  return {
+    releaseHour: releaseTime?.hour ?? MATCH_RELEASE_HOUR,
+    releaseMinute: releaseTime?.minute ?? 0,
+    phaseTwoHour: phaseTwoTime?.hour ?? null,
+    phaseTwoMinute: phaseTwoTime?.minute ?? null,
+    stepMinutes: env.JOURNEY_TEST_PHASE_STEP_MINUTES,
+  };
+}
+
+function getCurrentCycleReleaseAt(now: Date) {
+  const testSchedule = getJourneyTestScheduleConfig(now);
+
+  if (testSchedule) {
+    return setTimeOfDay(now, testSchedule.releaseHour, testSchedule.releaseMinute);
+  }
+
+  return setTimeOfDay(now, MATCH_RELEASE_HOUR, 0);
 }
 
 function getNextMatchReleaseAt(now: Date) {
-  const release = new Date(now);
-  release.setHours(MATCH_RELEASE_HOUR, 0, 0, 0);
+  const currentCycleRelease = getCurrentCycleReleaseAt(now);
+  const testSchedule = getJourneyTestScheduleConfig(now) ? buildPhaseSchedule(currentCycleRelease) : null;
 
-  if (now >= release) {
-    release.setDate(release.getDate() + 1);
+  if (testSchedule && now < testSchedule.decisionDeadline) {
+    return testSchedule.release;
   }
 
-  return release;
+  return getNextBerlinDateAtTime(now, MATCH_RELEASE_HOUR, 0);
 }
 
 function buildPhaseSchedule(releaseAt: Date) {
+  const testSchedule = getJourneyTestScheduleConfig(releaseAt);
+
+  if (testSchedule) {
+    const release = setTimeOfDay(releaseAt, testSchedule.releaseHour, testSchedule.releaseMinute);
+    const phaseTwoStart = testSchedule.phaseTwoHour !== null && testSchedule.phaseTwoMinute !== null
+      ? setTimeOfDay(releaseAt, testSchedule.phaseTwoHour, testSchedule.phaseTwoMinute)
+      : addMinutes(release, testSchedule.stepMinutes);
+    const phaseThreeStart = addMinutes(phaseTwoStart, testSchedule.stepMinutes);
+    const phaseFourStart = addMinutes(phaseTwoStart, testSchedule.stepMinutes * 2);
+    const phaseFiveStart = addMinutes(phaseTwoStart, testSchedule.stepMinutes * 3);
+
+    return {
+      release,
+      decisionDeadline: phaseTwoStart,
+      phaseTwoStart,
+      phaseThreeStart,
+      phaseFourStart,
+      phaseFiveStart,
+    };
+  }
+
   return {
     release: releaseAt,
-    decisionDeadline: addHours(releaseAt, MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR),
-    phaseTwoStart: addDays(releaseAt, 1),
-    phaseThreeStart: addDays(releaseAt, 2),
-    phaseFourStart: addDays(releaseAt, 3),
-    phaseFiveStart: addHours(addDays(releaseAt, 3), MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR),
+    decisionDeadline: getBerlinDateAtTime(releaseAt, MATCH_DECISION_HOUR, 0),
+    phaseTwoStart: addBerlinCalendarDaysAtTime(releaseAt, 1, MATCH_RELEASE_HOUR, 0),
+    phaseThreeStart: addBerlinCalendarDaysAtTime(releaseAt, 2, MATCH_RELEASE_HOUR, 0),
+    phaseFourStart: addBerlinCalendarDaysAtTime(releaseAt, 3, MATCH_RELEASE_HOUR, 0),
+    phaseFiveStart: addBerlinCalendarDaysAtTime(releaseAt, 3, MATCH_DECISION_HOUR, 0),
   };
 }
 
@@ -206,6 +313,215 @@ function getPhaseTwoPartnerUserId(match: MatchWithRelations) {
   return match.phaseTwoPartnerUserId ?? (getPhaseTwoStarterUserId(match) === match.userAId ? match.userBId : match.userAId);
 }
 
+function mapUserToCandidateProfile(user: JourneyCandidateUser): CandidateProfile | null {
+  if (!user.profile) {
+    return null;
+  }
+
+  return {
+    userId: user.id,
+    age: user.profile.age,
+    city: user.profile.city,
+    identity: user.profile.identity,
+    pronouns: user.profile.pronouns,
+    lookingFor: user.profile.lookingFor,
+    datingIntent: user.profile.datingIntent,
+    ageRangeMin: user.profile.ageRangeMin,
+    ageRangeMax: user.profile.ageRangeMax,
+    interests: user.profile.interests,
+  };
+}
+
+function compareRankedJourneyCandidates(candidateA: RankedJourneyCandidate, candidateB: RankedJourneyCandidate) {
+  if (candidateA.timesMatched !== candidateB.timesMatched) {
+    return candidateA.timesMatched - candidateB.timesMatched;
+  }
+
+  const candidateALastMatchedAt = candidateA.lastMatchedAt ?? Number.NEGATIVE_INFINITY;
+  const candidateBLastMatchedAt = candidateB.lastMatchedAt ?? Number.NEGATIVE_INFINITY;
+
+  if (candidateALastMatchedAt !== candidateBLastMatchedAt) {
+    return candidateALastMatchedAt - candidateBLastMatchedAt;
+  }
+
+  if (candidateA.score !== candidateB.score) {
+    return candidateB.score - candidateA.score;
+  }
+
+  return candidateA.user.id.localeCompare(candidateB.user.id, "en");
+}
+
+async function getAvailableJourneyCandidateUsers(excludedUserIds: string[]) {
+  const blockedUserIds = await getBlockedUserIdsForUsers(excludedUserIds);
+  const idsToExclude = Array.from(new Set([...excludedUserIds, ...blockedUserIds]));
+
+  return prisma.user.findMany({
+    where: {
+      id: { notIn: idsToExclude },
+      profileCompleted: true,
+      suspendedAt: null,
+      penaltySuspendedAt: null,
+      bannedAt: null,
+      profile: { isNot: null },
+      matchesAsA: {
+        none: {
+          status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
+          closedAt: null,
+        },
+      },
+      matchesAsB: {
+        none: {
+          status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
+          closedAt: null,
+        },
+      },
+    },
+    include: {
+      profile: true,
+    },
+  });
+}
+
+async function getBlockedUserIdsForUsers(userIds: string[]) {
+  const uniqueUserIds = Array.from(new Set(userIds.filter(Boolean)));
+
+  if (!uniqueUserIds.length) {
+    return new Set<string>();
+  }
+
+  const userIdSet = new Set(uniqueUserIds);
+  const entries = await prisma.userBlock.findMany({
+    where: {
+      OR: [
+        { blockerUserId: { in: uniqueUserIds } },
+        { blockedUserId: { in: uniqueUserIds } },
+      ],
+    },
+    select: {
+      blockerUserId: true,
+      blockedUserId: true,
+    },
+  });
+
+  const blockedUserIds = new Set<string>();
+
+  for (const entry of entries) {
+    if (userIdSet.has(entry.blockerUserId)) {
+      blockedUserIds.add(entry.blockedUserId);
+    }
+
+    if (userIdSet.has(entry.blockedUserId)) {
+      blockedUserIds.add(entry.blockerUserId);
+    }
+  }
+
+  return blockedUserIds;
+}
+
+async function hasUserBlockBetween(userAId: string, userBId: string) {
+  const existingBlock = await prisma.userBlock.findFirst({
+    where: {
+      OR: [
+        {
+          blockerUserId: userAId,
+          blockedUserId: userBId,
+        },
+        {
+          blockerUserId: userBId,
+          blockedUserId: userAId,
+        },
+      ],
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  return Boolean(existingBlock);
+}
+
+function getChatModerationReason(body: string) {
+  if (BLOCKED_LINK_PATTERN.test(body) || BLOCKED_PHONE_PATTERN.test(body)) {
+    return "CONTACT_SHARING_NOT_ALLOWED" as const;
+  }
+
+  if (BLOCKED_EXPLICIT_PATTERN.test(body)) {
+    return "OBJECTIONABLE_CONTENT" as const;
+  }
+
+  return null;
+}
+
+async function getJourneyCandidateHistoryMap(userId: string) {
+  const existingPairs = await prisma.match.findMany({
+    where: {
+      OR: [{ userAId: userId }, { userBId: userId }],
+    },
+    select: {
+      userAId: true,
+      userBId: true,
+      scheduledFor: true,
+    },
+  });
+
+  const candidateHistory = new Map<string, JourneyCandidateHistory>();
+
+  for (const entry of existingPairs) {
+    const partnerUserId = entry.userAId === userId ? entry.userBId : entry.userAId;
+    const previous = candidateHistory.get(partnerUserId);
+    const scheduledAt = entry.scheduledFor.getTime();
+
+    if (!previous) {
+      candidateHistory.set(partnerUserId, {
+        timesMatched: 1,
+        lastMatchedAt: scheduledAt,
+      });
+      continue;
+    }
+
+    candidateHistory.set(partnerUserId, {
+      timesMatched: previous.timesMatched + 1,
+      lastMatchedAt:
+        previous.lastMatchedAt === null ? scheduledAt : Math.max(previous.lastMatchedAt, scheduledAt),
+    });
+  }
+
+  return candidateHistory;
+}
+
+function rankJourneyCandidatesForViewer(
+  viewerUser: JourneyCandidateUser,
+  candidateUsers: JourneyCandidateUser[],
+  candidateHistory: Map<string, JourneyCandidateHistory>,
+) {
+  const viewerProfile = mapUserToCandidateProfile(viewerUser);
+
+  if (!viewerProfile) {
+    return [] as RankedJourneyCandidate[];
+  }
+
+  return candidateUsers
+    .flatMap((candidateUser) => {
+      const candidateProfile = mapUserToCandidateProfile(candidateUser);
+
+      if (!candidateProfile || !isMutuallyCompatible(viewerProfile, candidateProfile)) {
+        return [];
+      }
+
+      const score = calculateCandidateScore(viewerProfile, candidateProfile);
+      const history = candidateHistory.get(candidateUser.id);
+
+      return [{
+        user: candidateUser,
+        score: score.score,
+        sharedInterests: score.sharedInterests,
+        timesMatched: history?.timesMatched ?? 0,
+        lastMatchedAt: history?.lastMatchedAt ?? null,
+      }];
+    })
+    .sort(compareRankedJourneyCandidates);
+}
+
 async function sendJourneyNotificationToUser(input: {
   userId: string;
   matchId: string;
@@ -243,8 +559,7 @@ async function syncJourneyPhaseNotifications(
   const phaseOneStarterUserId = match.phaseOneStarterUserId ?? chooseStableStarterUserId(match.userAId, match.userBId);
   const phaseOneWarningAt = new Date(schedule.decisionDeadline.getTime() - PHASE_WARNING_LEAD_MS);
   const phaseOneChatStarted = userMessages.length > 0;
-  const phaseOneBothContinue =
-    match.userADecision === ParticipantDecision.KEEP && match.userBDecision === ParticipantDecision.KEEP;
+  const phaseOneBothContinue = phaseOneCanAdvanceToPhaseTwo(match, phaseOneChatStarted);
 
   const phaseTwoResults = parseJsonList<JourneyPhaseTwoRoundResult>(match.phaseTwoResults);
   const phaseTwoReady = match.phaseTwoStage === PhaseTwoStage.RESULT && phaseTwoResults.length > 0;
@@ -254,12 +569,8 @@ async function syncJourneyPhaseNotifications(
       )
     : 0;
   const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
-  const phaseThreeAnyLeave =
-    match.phaseThreeUserADecision === ParticipantDecision.DISCARD
-    || match.phaseThreeUserBDecision === ParticipantDecision.DISCARD;
-  const phaseThreeBothStay =
-    match.phaseThreeUserADecision === ParticipantDecision.KEEP
-    && match.phaseThreeUserBDecision === ParticipantDecision.KEEP;
+  const phaseThreeAnyLeave = phaseThreeHasLeave(match);
+  const phaseThreeBothStay = phaseThreeStaysOpen(match);
 
   if (
     phaseOneStarterUserId
@@ -349,7 +660,7 @@ async function syncJourneyPhaseNotifications(
         kind: "phase-three-start",
         contextKey: `phase-three-start:${match.id}:${match.userAId}`,
         title: "Ihr seid jetzt in Phase 3",
-        body: "Jetzt entscheidet ihr, ob ihr hier bleibt oder ein neues Match wollt.",
+        body: "Dieses Match bleibt erstmal bestehen. Wenn du lieber neu starten willst, kannst du das jetzt noch ändern.",
         channelId: "phase-updates",
         data: {
           type: "phase-three-start",
@@ -362,7 +673,7 @@ async function syncJourneyPhaseNotifications(
         kind: "phase-three-start",
         contextKey: `phase-three-start:${match.id}:${match.userBId}`,
         title: "Ihr seid jetzt in Phase 3",
-        body: "Jetzt entscheidet ihr, ob ihr hier bleibt oder ein neues Match wollt.",
+        body: "Dieses Match bleibt erstmal bestehen. Wenn du lieber neu starten willst, kannst du das jetzt noch ändern.",
         channelId: "phase-updates",
         data: {
           type: "phase-three-start",
@@ -379,8 +690,8 @@ async function syncJourneyPhaseNotifications(
           matchId: match.id,
           kind: "phase-three-reminder",
           contextKey: `phase-three-reminder:${match.id}:${match.userAId}`,
-          title: "Treffe jetzt deine Entscheidung",
-          body: "Sage heute noch, ob du bleiben oder ein neues Match willst.",
+          title: "Neues Match noch möglich",
+          body: "Wenn du lieber neu starten willst, kannst du das heute noch ändern. Sonst bleibt dieses Match bestehen.",
           channelId: "fair-play",
           data: {
             type: "phase-three-reminder",
@@ -395,8 +706,8 @@ async function syncJourneyPhaseNotifications(
           matchId: match.id,
           kind: "phase-three-reminder",
           contextKey: `phase-three-reminder:${match.id}:${match.userBId}`,
-          title: "Treffe jetzt deine Entscheidung",
-          body: "Sage heute noch, ob du bleiben oder ein neues Match willst.",
+          title: "Neues Match noch möglich",
+          body: "Wenn du lieber neu starten willst, kannst du das heute noch ändern. Sonst bleibt dieses Match bestehen.",
           channelId: "fair-play",
           data: {
             type: "phase-three-reminder",
@@ -407,7 +718,7 @@ async function syncJourneyPhaseNotifications(
     }
   }
 
-  if (phaseThreeQualified && phaseThreeBothStay && now >= schedule.phaseFourStart && now < schedule.phaseFiveStart) {
+  if (phaseThreeQualified && now >= schedule.phaseFourStart && now < schedule.phaseFiveStart) {
     await Promise.allSettled([
       sendJourneyNotificationToUser({
         userId: match.userAId,
@@ -415,7 +726,7 @@ async function syncJourneyPhaseNotifications(
         kind: "phase-four-start",
         contextKey: `phase-four-start:${match.id}:${match.userAId}`,
         title: "Ihr seid jetzt in Phase 4",
-        body: "Choice pausiert euren Chat jetzt bewusst.",
+        body: `Choice pausiert euren Chat jetzt bewusst. Die Entscheidung bleibt aber noch bis ${schedule.phaseFiveStart.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })} offen.`,
         channelId: "phase-updates",
         data: {
           type: "phase-four-start",
@@ -428,7 +739,7 @@ async function syncJourneyPhaseNotifications(
         kind: "phase-four-start",
         contextKey: `phase-four-start:${match.id}:${match.userBId}`,
         title: "Ihr seid jetzt in Phase 4",
-        body: "Choice pausiert euren Chat jetzt bewusst.",
+        body: `Choice pausiert euren Chat jetzt bewusst. Die Entscheidung bleibt aber noch bis ${schedule.phaseFiveStart.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Berlin" })} offen.`,
         channelId: "phase-updates",
         data: {
           type: "phase-four-start",
@@ -1225,161 +1536,28 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     return existingUpcoming.id;
   }
 
-  const candidateUsers = await prisma.user.findMany({
-    where: {
-      id: { not: userId },
-      profileCompleted: true,
-      suspendedAt: null,
-      penaltySuspendedAt: null,
-      bannedAt: null,
-      profile: { isNot: null },
-      matchesAsA: {
-        none: {
-          status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
-          closedAt: null,
-        },
-      },
-      matchesAsB: {
-        none: {
-          status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
-          closedAt: null,
-        },
-      },
-    },
-    include: {
-      profile: true,
-    },
+  const viewerTotalMatchCount = await getOrCreatePhoneMatchCountForUser({
+    id: user.id,
+    phoneNumber: user.phoneNumber,
   });
 
-  const viewerProfile: CandidateProfile = {
-    userId: user.id,
-    age: user.profile.age,
-    city: user.profile.city,
-    identity: user.profile.identity,
-    pronouns: user.profile.pronouns,
-    lookingFor: user.profile.lookingFor,
-    datingIntent: user.profile.datingIntent,
-    ageRangeMin: user.profile.ageRangeMin,
-    ageRangeMax: user.profile.ageRangeMax,
-    interests: user.profile.interests,
-  };
-
-  const existingPairs = await prisma.match.findMany({
-    where: {
-      OR: [{ userAId: userId }, { userBId: userId }],
-    },
-    select: {
-      userAId: true,
-      userBId: true,
-      scheduledFor: true,
-    },
-  });
-
-  const candidateHistory = new Map<
-    string,
-    {
-      timesMatched: number;
-      lastMatchedAt: number | null;
-    }
-  >();
-
-  for (const entry of existingPairs) {
-    const partnerUserId = entry.userAId === userId ? entry.userBId : entry.userAId;
-    const previous = candidateHistory.get(partnerUserId);
-    const scheduledAt = entry.scheduledFor.getTime();
-
-    if (!previous) {
-      candidateHistory.set(partnerUserId, {
-        timesMatched: 1,
-        lastMatchedAt: scheduledAt,
-      });
-      continue;
-    }
-
-    candidateHistory.set(partnerUserId, {
-      timesMatched: previous.timesMatched + 1,
-      lastMatchedAt:
-        previous.lastMatchedAt === null ? scheduledAt : Math.max(previous.lastMatchedAt, scheduledAt),
-    });
+  if (!canUserReceiveAnotherMatch(user, viewerTotalMatchCount)) {
+    return null;
   }
 
-  const isBetterCandidate = (
-    candidate: {
-      score: number;
-      timesMatched: number;
-      lastMatchedAt: number | null;
-    },
-    current: {
-      score: number;
-      timesMatched: number;
-      lastMatchedAt: number | null;
-    } | null,
-  ) => {
-    if (!current) {
-      return true;
-    }
-
-    if (candidate.timesMatched !== current.timesMatched) {
-      return candidate.timesMatched < current.timesMatched;
-    }
-
-    const candidateLastMatchedAt = candidate.lastMatchedAt ?? Number.NEGATIVE_INFINITY;
-    const currentLastMatchedAt = current.lastMatchedAt ?? Number.NEGATIVE_INFINITY;
-
-    if (candidateLastMatchedAt !== currentLastMatchedAt) {
-      return candidateLastMatchedAt < currentLastMatchedAt;
-    }
-
-    return candidate.score > current.score;
-  };
-
-  let bestCandidate:
-    | {
-        userId: string;
-        score: number;
-        sharedInterests: string[];
-        timesMatched: number;
-        lastMatchedAt: number | null;
-      }
-    | null = null;
-
-  for (const candidateUser of candidateUsers) {
-    if (!candidateUser.profile) {
-      continue;
-    }
-
-    const candidateProfile: CandidateProfile = {
-      userId: candidateUser.id,
-      age: candidateUser.profile.age,
-      city: candidateUser.profile.city,
-      identity: candidateUser.profile.identity,
-      pronouns: candidateUser.profile.pronouns,
-      lookingFor: candidateUser.profile.lookingFor,
-      datingIntent: candidateUser.profile.datingIntent,
-      ageRangeMin: candidateUser.profile.ageRangeMin,
-      ageRangeMax: candidateUser.profile.ageRangeMax,
-      interests: candidateUser.profile.interests,
-    };
-
-    if (!isMutuallyCompatible(viewerProfile, candidateProfile)) {
-      continue;
-    }
-
-    const score = calculateCandidateScore(viewerProfile, candidateProfile);
-    const history = candidateHistory.get(candidateUser.id);
-    const timesMatched = history?.timesMatched ?? 0;
-    const lastMatchedAt = history?.lastMatchedAt ?? null;
-
-    if (isBetterCandidate({ score: score.score, timesMatched, lastMatchedAt }, bestCandidate)) {
-      bestCandidate = {
-        userId: candidateUser.id,
-        score: score.score,
-        sharedInterests: score.sharedInterests,
-        timesMatched,
-        lastMatchedAt,
-      };
-    }
-  }
+  const candidateUsers = await getAvailableJourneyCandidateUsers([userId]);
+  const candidateUsageEntries = await Promise.all(candidateUsers.map(async (candidate) => ({
+    candidate,
+    totalMatchCount: await getOrCreatePhoneMatchCountForUser({
+      id: candidate.id,
+      phoneNumber: candidate.phoneNumber,
+    }),
+  })));
+  const eligibleCandidateUsers = candidateUsageEntries
+    .filter(({ candidate, totalMatchCount }) => canUserReceiveAnotherMatch(candidate, totalMatchCount))
+    .map(({ candidate }) => candidate);
+  const candidateHistory = await getJourneyCandidateHistoryMap(userId);
+  const bestCandidate = rankJourneyCandidatesForViewer(user, eligibleCandidateUsers, candidateHistory)[0] ?? null;
 
   if (!bestCandidate) {
     return null;
@@ -1387,22 +1565,57 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
 
   const scheduledFor = getNextMatchReleaseAt(now);
   const compatibility = Math.max(0.55, Math.min(0.99, 0.55 + bestCandidate.score / 100));
-  const [userAId, userBId] = [userId, bestCandidate.userId].sort();
+  const [userAId, userBId] = [userId, bestCandidate.user.id].sort();
 
-  const match = await prisma.match.create({
-    data: {
-      scheduledFor,
-      status: MatchStatus.PENDING,
-      userAId,
-      userBId,
-      phaseOneStarterUserId: chooseStableStarterUserId(userAId, userBId),
-      compatibility,
-      rationale: {
-        sharedInterests: bestCandidate.sharedInterests,
-        generatedBy: "backend-basic-matchmaking",
+  const match = await prisma.$transaction(async (transaction) => {
+    const [currentUser, partnerUser] = await Promise.all([
+      transaction.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          phoneNumber: true,
+          paidMatchCredits: true,
+        },
+      }),
+      transaction.user.findUnique({
+        where: { id: bestCandidate.user.id },
+        select: {
+          id: true,
+          phoneNumber: true,
+          paidMatchCredits: true,
+        },
+      }),
+    ]);
+
+    if (!currentUser || !partnerUser) {
+      return null;
+    }
+
+    const reservation = await createMatchAccessReservation(transaction, [currentUser, partnerUser]);
+
+    if (!reservation.ok) {
+      return null;
+    }
+
+    return transaction.match.create({
+      data: {
+        scheduledFor,
+        status: MatchStatus.PENDING,
+        userAId,
+        userBId,
+        phaseOneStarterUserId: chooseStableStarterUserId(userAId, userBId),
+        compatibility,
+        rationale: {
+          sharedInterests: bestCandidate.sharedInterests,
+          generatedBy: "backend-basic-matchmaking",
+        },
       },
-    },
+    });
   });
+
+  if (!match) {
+    return null;
+  }
 
   return match.id;
 }
@@ -1441,27 +1654,6 @@ async function findJourneyMatchForUser(userId: string, now: Date): Promise<Match
   });
 
   if (pending) {
-    const currentCycleRelease = setTimeOfDay(now, MATCH_RELEASE_HOUR, 0);
-    const currentCycleDecisionDeadline = addHours(currentCycleRelease, MATCH_DECISION_HOUR - MATCH_RELEASE_HOUR);
-
-    if (
-      pending.scheduledFor.getTime() > now.getTime()
-      && now >= currentCycleRelease
-      && now < currentCycleDecisionDeadline
-    ) {
-      await prisma.match.update({
-        where: { id: pending.id },
-        data: {
-          scheduledFor: currentCycleRelease,
-        },
-      });
-
-      const shiftedPending = await getMatchById(pending.id);
-      if (shiftedPending) {
-        return activatePendingMatch(shiftedPending, now);
-      }
-    }
-
     if (pending.scheduledFor.getTime() <= now.getTime()) {
       return activatePendingMatch(pending, now);
     }
@@ -1482,6 +1674,26 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
   const schedule = buildPhaseSchedule(match.scheduledFor);
   const chat = match.chat ?? await ensureChatForMatch(match);
   const userMessages = chat.messages.filter((message) => message.kind !== MessageKind.SYSTEM);
+
+  if (await hasUserBlockBetween(match.userAId, match.userBId)) {
+    await prisma.$transaction([
+      prisma.match.update({
+        where: { id: match.id },
+        data: {
+          status: MatchStatus.DISCARDED,
+          closedAt: now,
+        },
+      }),
+      prisma.chat.updateMany({
+        where: { matchId: match.id },
+        data: {
+          archivedAt: now,
+        },
+      }),
+    ]);
+
+    return getMatchById(match.id);
+  }
 
   await syncJourneyPhaseNotifications(match, now, userMessages, schedule);
 
@@ -1507,6 +1719,30 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
     });
   }
 
+  if (
+    match.status === MatchStatus.ACTIVE
+    && now >= schedule.decisionDeadline
+    && !userMessages.length
+  ) {
+    await prisma.$transaction([
+      prisma.match.update({
+        where: { id: match.id },
+        data: {
+          status: MatchStatus.DISCARDED,
+          closedAt: now,
+        },
+      }),
+      prisma.chat.updateMany({
+        where: { matchId: match.id },
+        data: {
+          archivedAt: now,
+        },
+      }),
+    ]);
+
+    return getMatchById(match.id);
+  }
+
   const phaseTwoResults = parseJsonList<JourneyPhaseTwoRoundResult>(match.phaseTwoResults);
   const phaseTwoReady = match.phaseTwoStage === PhaseTwoStage.RESULT && phaseTwoResults.length > 0;
   const phaseTwoCompatibility = phaseTwoReady
@@ -1515,17 +1751,12 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
       )
     : 0;
   const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
-  const phaseThreeAnyLeave =
-    match.phaseThreeUserADecision === ParticipantDecision.DISCARD
-    || match.phaseThreeUserBDecision === ParticipantDecision.DISCARD;
-  const phaseThreeBothStay =
-    match.phaseThreeUserADecision === ParticipantDecision.KEEP
-    && match.phaseThreeUserBDecision === ParticipantDecision.KEEP;
+  const phaseThreeAnyLeave = phaseThreeHasLeave(match);
+  const phaseThreeBothStay = phaseThreeStaysOpen(match);
 
   if (
     match.status === MatchStatus.ACTIVE
-    && match.userADecision === ParticipantDecision.KEEP
-    && match.userBDecision === ParticipantDecision.KEEP
+    && phaseOneCanAdvanceToPhaseTwo(match, userMessages.length > 0)
     && !phaseTwoReady
     && now >= schedule.phaseThreeStart
     && !match.phaseTwoPenaltyAppliedAt
@@ -1543,27 +1774,36 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
         note: "Phase 2 wurde nicht rechtzeitig gespielt.",
       });
 
-      await prisma.match.update({
-        where: { id: match.id },
-        data: {
-          phaseTwoPenaltyAppliedAt: now,
-        },
-      });
+      await prisma.$transaction([
+        prisma.match.update({
+          where: { id: match.id },
+          data: {
+            phaseTwoPenaltyAppliedAt: now,
+            status: MatchStatus.DISCARDED,
+            closedAt: now,
+          },
+        }),
+        prisma.chat.updateMany({
+          where: { matchId: match.id },
+          data: {
+            archivedAt: now,
+          },
+        }),
+      ]);
+
+      return getMatchById(match.id);
     }
   }
 
   if (
     match.status === MatchStatus.ACTIVE
     && now >= schedule.decisionDeadline
-    && !(match.userADecision === ParticipantDecision.KEEP && match.userBDecision === ParticipantDecision.KEEP)
+    && phaseOneHasDiscard(match)
   ) {
     await prisma.match.update({
       where: { id: match.id },
       data: {
-        status:
-          match.userADecision === ParticipantDecision.DISCARD || match.userBDecision === ParticipantDecision.DISCARD
-            ? MatchStatus.DISCARDED
-            : MatchStatus.EXPIRED,
+        status: MatchStatus.DISCARDED,
         closedAt: now,
       },
     });
@@ -1587,8 +1827,23 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
   if (
     match.status === MatchStatus.ACTIVE
     && phaseThreeQualified
+    && now >= schedule.phaseFiveStart
+    && !phaseThreeBothStay
+  ) {
+    await prisma.match.update({
+      where: { id: match.id },
+      data: {
+        status: phaseThreeAnyLeave ? MatchStatus.DISCARDED : MatchStatus.EXPIRED,
+        closedAt: now,
+      },
+    });
+  }
+
+  if (
+    match.status === MatchStatus.KEPT
+    && phaseThreeQualified
     && phaseThreeAnyLeave
-    && now >= schedule.phaseFourStart
+    && now >= schedule.phaseFiveStart
   ) {
     await prisma.match.update({
       where: { id: match.id },
@@ -1706,37 +1961,40 @@ function mapProfileDealbreakers(dealbreaker: string | null) {
   return parsed;
 }
 
-function mapPartnerProfile(match: MatchWithRelations, viewerUserId: string): JourneyPartnerProfile | null {
-  const partner = match.userAId === viewerUserId ? match.userB : match.userA;
-
-  if (!partner.profile) {
+function mapJourneyPartnerProfile(user: JourneyCandidateUser): JourneyPartnerProfile | null {
+  if (!user.profile) {
     return null;
   }
 
-  const preferences = mapProfileDealbreakers(partner.profile.dealbreaker);
+  const preferences = mapProfileDealbreakers(user.profile.dealbreaker);
 
   return {
-    userId: partner.id,
-    phoneNumber: partner.phoneNumber,
-    firstName: partner.profile.firstName,
-    age: partner.profile.age,
-    city: partner.profile.city,
-    selfDescription: partner.profile.selfDescription,
-    pronouns: partner.profile.pronouns,
-    identity: partner.profile.identity,
-    lookingFor: partner.profile.lookingFor,
-    datingIntent: partner.profile.datingIntent,
-    ageRangeMin: partner.profile.ageRangeMin,
-    ageRangeMax: partner.profile.ageRangeMax,
-    interests: partner.profile.interests,
+    userId: user.id,
+    phoneNumber: user.phoneNumber,
+    firstName: user.profile.firstName,
+    age: user.profile.age,
+    city: user.profile.city,
+    selfDescription: user.profile.selfDescription,
+    pronouns: user.profile.pronouns,
+    identity: user.profile.identity,
+    lookingFor: user.profile.lookingFor,
+    datingIntent: user.profile.datingIntent,
+    ageRangeMin: user.profile.ageRangeMin,
+    ageRangeMax: user.profile.ageRangeMax,
+    interests: user.profile.interests,
     greenFlags: preferences.greenFlags,
     dealbreakers: preferences.dealbreakers,
-    avatarUrl: partner.profile.avatarUrl ?? null,
-    photoUrls: partner.profile.photoUrls,
-    introVideoUrl: partner.profile.introVideoUrl ?? null,
-    matchTime: partner.profile.matchTime,
-    conversationStyle: partner.profile.conversationStyle,
+    avatarUrl: user.profile.avatarUrl ?? null,
+    photoUrls: user.profile.photoUrls,
+    introVideoUrl: user.profile.introVideoUrl ?? null,
+    matchTime: user.profile.matchTime,
+    conversationStyle: user.profile.conversationStyle,
   };
+}
+
+function mapPartnerProfile(match: MatchWithRelations, viewerUserId: string): JourneyPartnerProfile | null {
+  const partner = match.userAId === viewerUserId ? match.userB : match.userA;
+  return mapJourneyPartnerProfile(partner);
 }
 
 function mapPhaseOneDecision(value: ParticipantDecision): "continue" | "new-match" | undefined {
@@ -1749,6 +2007,58 @@ function mapPhaseOneDecision(value: ParticipantDecision): "continue" | "new-matc
   }
 
   return undefined;
+}
+
+function phaseOneDecisionKeepsMatch(value: ParticipantDecision) {
+  return value !== ParticipantDecision.DISCARD;
+}
+
+function phaseOneContinues(match: {
+  userADecision: ParticipantDecision;
+  userBDecision: ParticipantDecision;
+}) {
+  return phaseOneDecisionKeepsMatch(match.userADecision) && phaseOneDecisionKeepsMatch(match.userBDecision);
+}
+
+function phaseOneHasDiscard(match: {
+  userADecision: ParticipantDecision;
+  userBDecision: ParticipantDecision;
+}) {
+  return match.userADecision === ParticipantDecision.DISCARD || match.userBDecision === ParticipantDecision.DISCARD;
+}
+
+function phaseOneCanAdvanceToPhaseTwo(
+  match: {
+    userADecision: ParticipantDecision;
+    userBDecision: ParticipantDecision;
+  },
+  phaseOneChatStarted: boolean,
+) {
+  return phaseOneChatStarted && phaseOneContinues(match);
+}
+
+function phaseThreeDecisionKeepsMatch(value: ParticipantDecision) {
+  return value !== ParticipantDecision.DISCARD;
+}
+
+function phaseThreeStaysOpen(match: {
+  phaseThreeUserADecision: ParticipantDecision;
+  phaseThreeUserBDecision: ParticipantDecision;
+}) {
+  return (
+    phaseThreeDecisionKeepsMatch(match.phaseThreeUserADecision)
+    && phaseThreeDecisionKeepsMatch(match.phaseThreeUserBDecision)
+  );
+}
+
+function phaseThreeHasLeave(match: {
+  phaseThreeUserADecision: ParticipantDecision;
+  phaseThreeUserBDecision: ParticipantDecision;
+}) {
+  return (
+    match.phaseThreeUserADecision === ParticipantDecision.DISCARD
+    || match.phaseThreeUserBDecision === ParticipantDecision.DISCARD
+  );
 }
 
 function mapPhaseThreeDecision(value: ParticipantDecision): "stay" | "new-match" | undefined {
@@ -1795,6 +2105,106 @@ function mapMessage(
   };
 }
 
+function pickDistinctPhaseThreeSuggestionPair(
+  rankedForUserA: RankedJourneyCandidate[],
+  rankedForUserB: RankedJourneyCandidate[],
+) {
+  const topUserA = rankedForUserA[0] ?? null;
+  const topUserB = rankedForUserB[0] ?? null;
+
+  if (!topUserA || !topUserB) {
+    return null;
+  }
+
+  if (topUserA.user.id !== topUserB.user.id) {
+    return {
+      userA: topUserA,
+      userB: topUserB,
+    };
+  }
+
+  const alternativeUserB = rankedForUserB.find((candidate) => candidate.user.id !== topUserA.user.id) ?? null;
+  const alternativeUserA = rankedForUserA.find((candidate) => candidate.user.id !== topUserB.user.id) ?? null;
+
+  const optionKeepUserATop = alternativeUserB
+    ? {
+        userA: topUserA,
+        userB: alternativeUserB,
+        combinedRank: rankedForUserB.indexOf(alternativeUserB),
+        combinedScore: topUserA.score + alternativeUserB.score,
+      }
+    : null;
+  const optionKeepUserBTop = alternativeUserA
+    ? {
+        userA: alternativeUserA,
+        userB: topUserB,
+        combinedRank: rankedForUserA.indexOf(alternativeUserA),
+        combinedScore: alternativeUserA.score + topUserB.score,
+      }
+    : null;
+
+  if (!optionKeepUserATop && !optionKeepUserBTop) {
+    return null;
+  }
+
+  if (!optionKeepUserATop) {
+    return optionKeepUserBTop;
+  }
+
+  if (!optionKeepUserBTop) {
+    return optionKeepUserATop;
+  }
+
+  if (optionKeepUserATop.combinedRank !== optionKeepUserBTop.combinedRank) {
+    return optionKeepUserATop.combinedRank < optionKeepUserBTop.combinedRank
+      ? optionKeepUserATop
+      : optionKeepUserBTop;
+  }
+
+  return optionKeepUserATop.combinedScore >= optionKeepUserBTop.combinedScore
+    ? optionKeepUserATop
+    : optionKeepUserBTop;
+}
+
+async function getPhaseThreeSuggestionPair(match: MatchWithRelations) {
+  if (!match.userA.profile || !match.userB.profile) {
+    return {
+      userASuggestion: null,
+      userBSuggestion: null,
+    };
+  }
+
+  const candidateUsers = await getAvailableJourneyCandidateUsers([match.userAId, match.userBId]);
+
+  if (!candidateUsers.length) {
+    return {
+      userASuggestion: null,
+      userBSuggestion: null,
+    };
+  }
+
+  const [candidateHistoryForUserA, candidateHistoryForUserB] = await Promise.all([
+    getJourneyCandidateHistoryMap(match.userAId),
+    getJourneyCandidateHistoryMap(match.userBId),
+  ]);
+
+  const rankedForUserA = rankJourneyCandidatesForViewer(match.userA, candidateUsers, candidateHistoryForUserA);
+  const rankedForUserB = rankJourneyCandidatesForViewer(match.userB, candidateUsers, candidateHistoryForUserB);
+  const suggestionPair = pickDistinctPhaseThreeSuggestionPair(rankedForUserA, rankedForUserB);
+
+  if (!suggestionPair) {
+    return {
+      userASuggestion: null,
+      userBSuggestion: null,
+    };
+  }
+
+  return {
+    userASuggestion: mapJourneyPartnerProfile(suggestionPair.userA.user),
+    userBSuggestion: mapJourneyPartnerProfile(suggestionPair.userB.user),
+  };
+}
+
 export async function getCurrentJourneyForUser(userId: string): Promise<JourneyState> {
   const now = new Date();
   const match = await resolveJourneyMatchForUser(userId, now);
@@ -1811,6 +2221,7 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
       phaseFiveStartAt: null,
       status: null,
       partner: null,
+      phaseThreeSuggestion: null,
       sharedChatMessages: [],
       phaseOneStarterUserId: null,
       phaseOneStarterPenaltyAppliedAt: null,
@@ -1857,6 +2268,19 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
 
   const phaseTwoRounds = parseJsonList<JourneyPhaseTwoRoundConfig>(match.phaseTwoRounds);
   const phaseTwoResults = parseJsonList<JourneyPhaseTwoRoundResult>(match.phaseTwoResults);
+  const phaseTwoReady = match.phaseTwoStage === PhaseTwoStage.RESULT && phaseTwoResults.length > 0;
+  const phaseTwoCompatibility = phaseTwoReady
+    ? Math.round(
+        phaseTwoResults.reduce((sum, entry) => sum + entry.compatibility, 0) / phaseTwoResults.length,
+      )
+    : 0;
+  const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
+  const phaseThreeSuggestions = isReleased && phaseThreeQualified
+    ? await getPhaseThreeSuggestionPair(match)
+    : {
+        userASuggestion: null,
+        userBSuggestion: null,
+      };
   const messages = (match.chat?.messages ?? [])
     .map(mapMessage)
     .filter((entry): entry is JourneyMessage => Boolean(entry));
@@ -1872,6 +2296,9 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
     phaseFiveStartAt: schedule.phaseFiveStart.toISOString(),
     status: match.status,
     partner,
+    phaseThreeSuggestion: userId === match.userAId
+      ? phaseThreeSuggestions.userASuggestion
+      : phaseThreeSuggestions.userBSuggestion,
     sharedChatMessages: partner ? messages.filter((entry) => entry.kind !== "system") : [],
     phaseOneStarterUserId: match.phaseOneStarterUserId,
     phaseOneStarterPenaltyAppliedAt: match.phaseOneStarterPenaltyAppliedAt?.toISOString() ?? null,
@@ -1952,6 +2379,11 @@ export async function createJourneyMessage(input: {
     input.userId === match.userAId ? match.phaseThreeUserBDecision : match.phaseThreeUserADecision;
   const viewerSelectedNewMatch = viewerPhaseThreeDecision === ParticipantDecision.DISCARD;
   const phaseThreeViewerKeepsChat = phaseThreeQualified && viewerPhaseThreeDecision !== ParticipantDecision.DISCARD;
+  const phaseFiveChatUnlocked =
+    phaseThreeQualified
+    && viewerPhaseThreeDecision !== ParticipantDecision.DISCARD
+    && partnerPhaseThreeDecision !== ParticipantDecision.DISCARD
+    && now >= schedule.phaseFiveStart;
   const phaseTwoChatUnlocked =
     (
       phaseTwoReady
@@ -1963,7 +2395,8 @@ export async function createJourneyMessage(input: {
   const canWrite =
     !viewerSelectedNewMatch
     && (
-      phaseTwoChatUnlocked
+      phaseFiveChatUnlocked
+      || phaseTwoChatUnlocked
       || (now >= match.scheduledFor && now < schedule.decisionDeadline && (phaseOneChatStarted || viewerStarts))
     );
 
@@ -1976,6 +2409,17 @@ export async function createJourneyMessage(input: {
 
   if (!body) {
     return { ok: false as const, reason: "INVALID_MESSAGE" as const };
+  }
+
+  if (input.kind === "text") {
+    const moderationReason = getChatModerationReason(body);
+
+    if (moderationReason) {
+      return {
+        ok: false as const,
+        reason: moderationReason,
+      };
+    }
   }
 
   await prisma.message.create({
@@ -2056,8 +2500,9 @@ export async function startPhaseTwoForUser(userId: string) {
 
   const { match, now } = resolved;
   const schedule = buildPhaseSchedule(match.scheduledFor);
+  const userMessages = (match.chat?.messages ?? []).filter((message) => message.kind !== MessageKind.SYSTEM);
 
-  if (match.userADecision !== ParticipantDecision.KEEP || match.userBDecision !== ParticipantDecision.KEEP) {
+  if (!phaseOneCanAdvanceToPhaseTwo(match, userMessages.length > 0)) {
     return { ok: false as const, reason: "PHASE_TWO_NOT_AVAILABLE" as const };
   }
 
@@ -2267,7 +2712,12 @@ export async function setPhaseThreeDecision(input: {
     ? Math.round(phaseTwoResults.reduce((sum, entry) => sum + entry.compatibility, 0) / phaseTwoResults.length)
     : 0;
 
-  if (!phaseTwoReady || phaseTwoCompatibility <= PHASE_THREE_THRESHOLD || now < schedule.phaseThreeStart) {
+  if (
+    !phaseTwoReady
+    || phaseTwoCompatibility <= PHASE_THREE_THRESHOLD
+    || now < schedule.phaseThreeStart
+    || (now >= schedule.phaseFiveStart && match.status !== MatchStatus.KEPT)
+  ) {
     return { ok: false as const, reason: "PHASE_THREE_NOT_AVAILABLE" as const };
   }
 
@@ -2279,6 +2729,72 @@ export async function setPhaseThreeDecision(input: {
       [field]: input.decision === "stay" ? ParticipantDecision.KEEP : ParticipantDecision.DISCARD,
     },
   });
+
+  return {
+    ok: true as const,
+    journey: await getCurrentJourneyForUser(input.userId),
+  };
+}
+
+export async function blockJourneyPartner(input: {
+  userId: string;
+  blockedUserId: string;
+}) {
+  const resolved = await requireCurrentReleasedMatch(input.userId);
+
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const { match, now } = resolved;
+  const partnerUserId = input.userId === match.userAId ? match.userBId : match.userAId;
+
+  if (partnerUserId !== input.blockedUserId) {
+    return { ok: false as const, reason: "INVALID_BLOCK_TARGET" as const };
+  }
+
+  await prisma.$transaction([
+    prisma.userBlock.upsert({
+      where: {
+        blockerUserId_blockedUserId: {
+          blockerUserId: input.userId,
+          blockedUserId: partnerUserId,
+        },
+      },
+      update: {},
+      create: {
+        blockerUserId: input.userId,
+        blockedUserId: partnerUserId,
+      },
+    }),
+    prisma.match.updateMany({
+      where: {
+        closedAt: null,
+        OR: [
+          {
+            userAId: match.userAId,
+            userBId: match.userBId,
+          },
+          {
+            userAId: match.userBId,
+            userBId: match.userAId,
+          },
+        ],
+      },
+      data: {
+        status: MatchStatus.DISCARDED,
+        closedAt: now,
+      },
+    }),
+    prisma.chat.updateMany({
+      where: {
+        matchId: match.id,
+      },
+      data: {
+        archivedAt: now,
+      },
+    }),
+  ]);
 
   return {
     ok: true as const,

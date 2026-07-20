@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { requireMatchingAuthenticatedUser } from "../lib/auth.js";
 import { applySystemPenalty } from "../lib/system-penalties.js";
 
 const applySystemPenaltySchema = z.object({
@@ -21,6 +22,10 @@ export const moderationRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const data = parsed.data;
+
+    if (!requireMatchingAuthenticatedUser(request, reply, data.userId)) {
+      return;
+    }
 
     const result = await applySystemPenalty({
       userId: data.userId,

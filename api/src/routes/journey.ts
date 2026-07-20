@@ -1,6 +1,8 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { z } from "zod";
+import { requireMatchingAuthenticatedUser } from "../lib/auth.js";
 import {
+  blockJourneyPartner,
   createJourneyMessage,
   getCurrentJourneyForUser,
   setPhaseOneDecision,
@@ -33,6 +35,10 @@ const phaseThreeDecisionSchema = z.object({
   decision: z.enum(["stay", "new-match"]),
 });
 
+const blockPartnerSchema = z.object({
+  blockedUserId: z.string().trim().min(1),
+});
+
 function sendJourneyError(reply: FastifyReply, reason: string) {
   const status =
     reason === "USER_NOT_FOUND" || reason === "MATCH_NOT_FOUND"
@@ -43,6 +49,9 @@ function sendJourneyError(reply: FastifyReply, reason: string) {
         || reason === "INVALID_PHASE_TWO_OPTION"
         || reason === "PHASE_TWO_STARTER_PENDING"
         || reason === "REPORT_SELF_NOT_ALLOWED"
+        || reason === "CONTACT_SHARING_NOT_ALLOWED"
+        || reason === "OBJECTIONABLE_CONTENT"
+        || reason === "INVALID_BLOCK_TARGET"
           ? 400
           : reason === "NOT_YOUR_TURN"
             ? 403
@@ -62,6 +71,10 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
+    }
+
     const journey = await getCurrentJourneyForUser(parsedParams.data.userId);
     return reply.send({ ok: true, journey });
   });
@@ -78,6 +91,10 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
           body: parsedBody.success ? undefined : parsedBody.error.flatten(),
         },
       });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
     }
 
     const result = await createJourneyMessage({
@@ -108,6 +125,10 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
+    }
+
     const result = await setPhaseOneDecision({
       userId: parsedParams.data.userId,
       decision: parsedBody.data.decision,
@@ -128,6 +149,10 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
         error: "INVALID_PHASE_TWO_START",
         details: parsedParams.error.flatten(),
       });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
     }
 
     const result = await startPhaseTwoForUser(parsedParams.data.userId);
@@ -151,6 +176,10 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
           body: parsedBody.success ? undefined : parsedBody.error.flatten(),
         },
       });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
     }
 
     const result = await submitPhaseTwoAnswer({
@@ -181,9 +210,43 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
+    }
+
     const result = await setPhaseThreeDecision({
       userId: parsedParams.data.userId,
       decision: parsedBody.data.decision,
+    });
+
+    if (!result.ok) {
+      return sendJourneyError(reply, result.reason);
+    }
+
+    return reply.send(result);
+  });
+
+  app.post("/journey/:userId/block", async (request, reply) => {
+    const parsedParams = paramsSchema.safeParse(request.params);
+    const parsedBody = blockPartnerSchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return reply.status(400).send({
+        error: "INVALID_BLOCK_REQUEST",
+        details: {
+          params: parsedParams.success ? undefined : parsedParams.error.flatten(),
+          body: parsedBody.success ? undefined : parsedBody.error.flatten(),
+        },
+      });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
+    }
+
+    const result = await blockJourneyPartner({
+      userId: parsedParams.data.userId,
+      blockedUserId: parsedBody.data.blockedUserId,
     });
 
     if (!result.ok) {

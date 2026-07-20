@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { requireAuthenticatedUser } from "../lib/auth.js";
 
 const cloudinarySignSchema = z.object({
   folder: z.string().trim().min(1).max(120).optional(),
@@ -8,6 +9,12 @@ const cloudinarySignSchema = z.object({
 
 export const uploadRoutes: FastifyPluginAsync = async (app) => {
   app.post("/uploads/cloudinary/sign", async (request, reply) => {
+    const authenticatedUserId = requireAuthenticatedUser(request, reply);
+
+    if (!authenticatedUserId) {
+      return;
+    }
+
     const parsed = cloudinarySignSchema.safeParse(request.body ?? {});
 
     if (!parsed.success) {
@@ -26,7 +33,7 @@ export const uploadRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const timestamp = Math.floor(Date.now() / 1000);
-    const folder = parsed.data.folder ?? "choice/profiles";
+    const folder = `choice/profiles/${authenticatedUserId}`;
     const signatureBase = `folder=${folder}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
     const signature = createHash("sha1").update(signatureBase).digest("hex");
 

@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { requireMatchingAuthenticatedUser } from "../lib/auth.js";
 import { registerPushDevice } from "../lib/push-notifications.js";
 
 const registerPushDeviceSchema = z.object({
@@ -17,6 +18,10 @@ export const pushRoutes: FastifyPluginAsync = async (app) => {
         error: "INVALID_PUSH_DEVICE",
         details: parsed.error.flatten(),
       });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsed.data.userId)) {
+      return;
     }
 
     const result = await registerPushDevice(parsed.data);

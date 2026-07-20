@@ -1,7 +1,7 @@
 import {
+  buildAccountStatePayload,
   buildPenaltyPauseAccountData,
   buildRestorePenaltyPauseAccountData,
-  mapAccountState,
 } from "./account-state.js";
 import { prisma } from "./prisma.js";
 
@@ -102,7 +102,7 @@ export async function reconcileUserPenaltyState(userId: string, now = new Date()
 
   if (!Object.keys(updateData).length) {
     return {
-      account: mapAccountState(user),
+      account: await buildAccountStatePayload(user),
       activePenaltyPoints: nextPenaltyPoints,
       recoveryWindowDays: PENALTY_RECOVERY_WINDOW_DAYS,
     };
@@ -113,6 +113,7 @@ export async function reconcileUserPenaltyState(userId: string, now = new Date()
     data: updateData,
     select: {
       id: true,
+      phoneNumber: true,
       isPremium: true,
       premiumActivatedAt: true,
       penaltyPoints: true,
@@ -127,7 +128,7 @@ export async function reconcileUserPenaltyState(userId: string, now = new Date()
   });
 
   return {
-    account: mapAccountState(updatedUser),
+    account: await buildAccountStatePayload(updatedUser),
     activePenaltyPoints: nextPenaltyPoints,
     recoveryWindowDays: PENALTY_RECOVERY_WINDOW_DAYS,
   };

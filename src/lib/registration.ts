@@ -60,6 +60,7 @@ export const selfDescriptionOptions = [
 
 export const interestOptions = [
   "Kunst",
+  "Musik",
   "Kochen",
   "Bouldern",
   "Tech",
@@ -222,7 +223,7 @@ export function validateStep(profile: RegistrationProfile, step: number) {
 
   if (step === 2) {
     if (!profile.consent) {
-      return "Bitte stimme Impressum, Datenschutz, Rechtlichem und AGB zu.";
+      return "Bitte stimme den Rechtstexten zu und willige auch in die Verarbeitung sensibler Profilangaben ein.";
     }
   }
 

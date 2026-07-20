@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import styles from "./page.module.css";
 
@@ -11,6 +11,8 @@ type AdminSummary = {
   payingUsers: number;
   pausedUsers: number;
   openReports: number;
+  reportsInReview: number;
+  overdueReports: number;
   activeMatches: number;
   upcomingMatches: number;
   nextPlannedMatches: number;
@@ -72,15 +74,28 @@ type AdminMatch = {
 };
 
 type AdminReport = {
+  chatTranscript: Array<{
+    id: string;
+    createdAt: string;
+    kind: "TEXT" | "IMAGE" | "SYSTEM";
+    body: string;
+    senderUserId: string;
+    senderLabel: string;
+    senderRole: "reporter" | "reported" | "system" | "other";
+  }>;
   id: string;
   createdAt: string;
   updatedAt: string;
-  status: "OPEN" | "CONFIRMED" | "DISMISSED";
+  status: "OPEN" | "IN_REVIEW" | "CONFIRMED" | "DISMISSED";
   reason: string;
   details: string | null;
   latestMessagePreview: string | null;
+  reviewStartedAt: string | null;
+  reviewStartedByAdminPhone: string | null;
   reviewerNote: string | null;
   reviewedAt: string | null;
+  reviewedByAdminPhone: string | null;
+  moderationAlertSentAt: string | null;
   reporter: {
     id: string;
     firstName: string | null;
@@ -108,17 +123,10 @@ type DashboardPayload = {
   reports: AdminReport[];
 };
 
-const storageKey = "choice.admin-settings";
+type ReportFilter = "unresolved" | "open" | "in_review" | "resolved" | "overdue" | "all";
+const REPORT_SLA_MS = 24 * 60 * 60 * 1000;
 
 function getDefaultApiUrl() {
-  if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-    return "http://localhost:4000/v1";
-  }
-
-  if (typeof window !== "undefined" && window.location.hostname.endsWith("choice-dating.app")) {
-    return "https://api.choice-dating.app/v1";
-  }
-
   return process.env.NEXT_PUBLIC_ADMIN_API_URL?.trim() || "https://api.choice-dating.app/v1";
 }
 
@@ -163,6 +171,84 @@ function formatPhaseTwoStage(value: string | null) {
   return "—";
 }
 
+function formatTranscriptBody(message: AdminReport["chatTranscript"][number]) {
+  if (message.kind === "IMAGE") {
+    return "[Bild]";
+  }
+
+  return message.body;
+}
+
+function formatReportStatus(value: AdminReport["status"]) {
+  if (value === "OPEN") {
+    return "Neu";
+  }
+
+  if (value === "IN_REVIEW") {
+    return "In Prüfung";
+  }
+
+  if (value === "CONFIRMED") {
+    return "Bestätigt";
+  }
+
+  return "Abgelehnt";
+}
+
+function isUnresolvedReport(report: AdminReport) {
+  return report.status === "OPEN" || report.status === "IN_REVIEW";
+}
+
+function isReportOverdue(report: AdminReport) {
+  return isUnresolvedReport(report) && Date.now() - new Date(report.createdAt).getTime() > REPORT_SLA_MS;
+}
+
+function formatCompactDuration(ms: number) {
+  const totalMinutes = Math.max(1, Math.round(ms / 60_000));
+
+  if (totalMinutes < 60) {
+    return `${totalMinutes} min`;
+  }
+
+  const totalHours = Math.round(totalMinutes / 60);
+
+  if (totalHours < 48) {
+    return `${totalHours} h`;
+  }
+
+  return `${Math.round(totalHours / 24)} d`;
+}
+
+function formatReportSlaLabel(report: AdminReport) {
+  if (!isUnresolvedReport(report)) {
+    return null;
+  }
+
+  const dueAtMs = new Date(report.createdAt).getTime() + REPORT_SLA_MS;
+  const delta = dueAtMs - Date.now();
+
+  return delta >= 0
+    ? `24h-Ziel in ${formatCompactDuration(delta)}`
+    : `Überfällig seit ${formatCompactDuration(Math.abs(delta))}`;
+}
+
+function getReportSearchValue(report: AdminReport) {
+  return [
+    report.reason,
+    report.details,
+    report.latestMessagePreview,
+    report.matchId,
+    report.reporter.firstName,
+    report.reporter.phoneNumber,
+    report.reportedUser.firstName,
+    report.reportedUser.phoneNumber,
+    report.reviewerNote,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
 function SummaryCard({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "alert" | "accent" }) {
   return (
     <article className={[styles.summaryCard, tone === "alert" ? styles.summaryCardAlert : "", tone === "accent" ? styles.summaryCardAccent : ""].join(" ")}>
@@ -173,7 +259,7 @@ function SummaryCard({ label, value, tone = "default" }: { label: string; value:
 }
 
 export default function AdminPage() {
-  const [apiUrl, setApiUrl] = useState("");
+  const [apiUrl, setApiUrl] = useState(getDefaultApiUrl);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [accessKey, setAccessKey] = useState("");
   const [data, setData] = useState<DashboardPayload | null>(null);
@@ -181,47 +267,9 @@ export default function AdminPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    const fallbackApiUrl = getDefaultApiUrl();
-    setApiUrl(fallbackApiUrl);
-
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    const raw = window.localStorage.getItem(storageKey);
-
-    if (!raw) {
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as Partial<{
-        apiUrl: string;
-        phoneNumber: string;
-        accessKey: string;
-      }>;
-
-      if (parsed.apiUrl) {
-        const shouldPreferLocalApi =
-          window.location.hostname === "localhost"
-          && parsed.apiUrl.includes("choice-api.onrender.com");
-
-        setApiUrl(shouldPreferLocalApi ? fallbackApiUrl : parsed.apiUrl);
-      }
-
-      if (parsed.phoneNumber) {
-        setPhoneNumber(parsed.phoneNumber);
-      }
-
-      if (parsed.accessKey) {
-        setAccessKey(parsed.accessKey);
-      }
-    } catch {
-      // Ignore corrupted local storage values.
-    }
-  }, []);
+  const [reportFilter, setReportFilter] = useState<ReportFilter>("unresolved");
+  const [reportSearch, setReportSearch] = useState("");
+  const [reviewerNotes, setReviewerNotes] = useState<Record<string, string>>({});
 
   const hasCredentials = useMemo(
     () => Boolean(apiUrl.trim() && phoneNumber.trim() && accessKey.trim()),
@@ -267,17 +315,6 @@ export default function AdminPage() {
     try {
       const payload = await adminFetch<DashboardPayload>("/admin/overview");
       setData(payload);
-
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(
-          storageKey,
-          JSON.stringify({
-            apiUrl,
-            phoneNumber,
-            accessKey,
-          }),
-        );
-      }
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Dashboard konnte nicht geladen werden.");
     } finally {
@@ -331,7 +368,31 @@ export default function AdminPage() {
     }
   }
 
-  async function resolveReport(reportId: string, decision: "confirmed" | "dismissed") {
+  async function startReview(reportId: string, reviewerNote: string) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      await adminFetch(`/admin/reports/${reportId}/start-review`, {
+        method: "POST",
+        body: JSON.stringify({ reviewerNote }),
+      });
+      setReviewerNotes((current) => {
+        const next = { ...current };
+        delete next[reportId];
+        return next;
+      });
+      setNotice("Meldung ist jetzt in Prüfung.");
+      await loadDashboard();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Meldung konnte nicht in Prüfung gesetzt werden.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function resolveReport(reportId: string, decision: "confirmed" | "dismissed", reviewerNote: string) {
     setIsSaving(true);
     setError(null);
     setNotice(null);
@@ -339,7 +400,12 @@ export default function AdminPage() {
     try {
       await adminFetch(`/admin/reports/${reportId}/resolve`, {
         method: "POST",
-        body: JSON.stringify({ decision }),
+        body: JSON.stringify({ decision, reviewerNote }),
+      });
+      setReviewerNotes((current) => {
+        const next = { ...current };
+        delete next[reportId];
+        return next;
       });
       setNotice(decision === "confirmed" ? "Meldung bestätigt und Strafpunkt vergeben." : "Meldung als kein Verstoß markiert.");
       await loadDashboard();
@@ -371,6 +437,61 @@ export default function AdminPage() {
       setIsSaving(false);
     }
   }
+
+  const filteredReports = useMemo(() => {
+    if (!data) {
+      return [];
+    }
+
+    const normalizedSearch = reportSearch.trim().toLowerCase();
+
+    return data.reports
+      .filter((report) => {
+        if (reportFilter === "open" && report.status !== "OPEN") {
+          return false;
+        }
+
+        if (reportFilter === "in_review" && report.status !== "IN_REVIEW") {
+          return false;
+        }
+
+        if (reportFilter === "resolved" && isUnresolvedReport(report)) {
+          return false;
+        }
+
+        if (reportFilter === "unresolved" && !isUnresolvedReport(report)) {
+          return false;
+        }
+
+        if (reportFilter === "overdue" && !isReportOverdue(report)) {
+          return false;
+        }
+
+        if (normalizedSearch && !getReportSearchValue(report).includes(normalizedSearch)) {
+          return false;
+        }
+
+        return true;
+      })
+      .sort((left, right) => {
+        const leftUnresolved = isUnresolvedReport(left);
+        const rightUnresolved = isUnresolvedReport(right);
+
+        if (leftUnresolved !== rightUnresolved) {
+          return leftUnresolved ? -1 : 1;
+        }
+
+        if (leftUnresolved && rightUnresolved) {
+          const leftTime = new Date(left.createdAt).getTime();
+          const rightTime = new Date(right.createdAt).getTime();
+          return leftTime - rightTime;
+        }
+
+        const leftReviewTime = new Date(left.reviewedAt ?? left.updatedAt).getTime();
+        const rightReviewTime = new Date(right.reviewedAt ?? right.updatedAt).getTime();
+        return rightReviewTime - leftReviewTime;
+      });
+  }, [data, reportFilter, reportSearch]);
 
   return (
     <main className={styles.page}>
@@ -414,7 +535,7 @@ export default function AdminPage() {
             <button type="button" className={styles.primaryButton} onClick={() => void loadDashboard()} disabled={isLoading || !hasCredentials}>
               {isLoading ? "Lädt..." : "Dashboard laden"}
             </button>
-            <p className={styles.authHint}>Für lokalen Test kannst du hier auch deine lokale API-IP eintragen.</p>
+            <p className={styles.authHint}>Der Admin-Key bleibt nur im aktuellen Tab und wird nicht lokal gespeichert.</p>
           </div>
 
           {error ? <p className={styles.error}>{error}</p> : null}
@@ -431,7 +552,9 @@ export default function AdminPage() {
               <SummaryCard label="Aktive Matches" value={data.summary.activeMatches} />
               <SummaryCard label="Kommende Matches" value={data.summary.upcomingMatches} />
               <SummaryCard label="Nächster Slot" value={data.summary.nextPlannedMatches} />
-              <SummaryCard label="Offene Meldungen" value={data.summary.openReports} tone="alert" />
+              <SummaryCard label="Unerledigte Meldungen" value={data.summary.openReports} tone="alert" />
+              <SummaryCard label="In Prüfung" value={data.summary.reportsInReview} tone="alert" />
+              <SummaryCard label="Überfällig" value={data.summary.overdueReports} tone="alert" />
               <SummaryCard label="Pausierte Konten" value={data.summary.pausedUsers} tone="alert" />
             </section>
 
@@ -440,22 +563,74 @@ export default function AdminPage() {
                 <div>
                   <p className={styles.sectionEyebrow}>Meldungen</p>
                   <h2 className={styles.sectionTitle}>Offene und bearbeitete Reports</h2>
+                  <p className={styles.sectionHint}>
+                    Neue Meldungen sollen möglichst innerhalb von 24 Stunden gesichtet werden. E-Mail-Alarme gehen an die
+                    konfigurierte Moderationsadresse, das Dashboard dokumentiert Verlauf, Status und Entscheidung.
+                  </p>
                 </div>
               </div>
 
+              <div className={styles.reportTools}>
+                <label className={styles.reportToolField}>
+                  <span>Suche</span>
+                  <input
+                    value={reportSearch}
+                    onChange={(event) => setReportSearch(event.target.value)}
+                    placeholder="Name, Nummer, Grund, Match-ID ..."
+                  />
+                </label>
+
+                <label className={styles.reportToolField}>
+                  <span>Filter</span>
+                  <select value={reportFilter} onChange={(event) => setReportFilter(event.target.value as ReportFilter)}>
+                    <option value="unresolved">Nur offen oder in Prüfung</option>
+                    <option value="open">Nur neu</option>
+                    <option value="in_review">Nur in Prüfung</option>
+                    <option value="overdue">Nur überfällig</option>
+                    <option value="resolved">Nur entschieden</option>
+                    <option value="all">Alle Meldungen</option>
+                  </select>
+                </label>
+              </div>
+
               <div className={styles.reportList}>
-                {data.reports.length ? (
-                  data.reports.map((report) => (
+                {filteredReports.length ? (
+                  filteredReports.map((report) => {
+                    const reviewerNote = reviewerNotes[report.id] ?? report.reviewerNote ?? "";
+                    const reportSlaLabel = formatReportSlaLabel(report);
+                    const overdue = isReportOverdue(report);
+
+                    return (
                     <article key={report.id} className={styles.reportCard}>
                       <div className={styles.reportTop}>
                         <div>
-                          <span className={styles.reportBadge}>{report.status}</span>
+                          <div className={styles.reportBadgeRow}>
+                            <span
+                              className={[
+                                styles.reportBadge,
+                                report.status === "OPEN"
+                                  ? styles.reportBadgeOpen
+                                  : report.status === "IN_REVIEW"
+                                    ? styles.reportBadgeInReview
+                                    : styles.reportBadgeResolved,
+                              ].join(" ")}
+                            >
+                              {formatReportStatus(report.status)}
+                            </span>
+                            {overdue ? <span className={[styles.reportBadge, styles.reportBadgeOverdue].join(" ")}>Überfällig</span> : null}
+                            {report.moderationAlertSentAt ? (
+                              <span className={[styles.reportBadge, styles.reportBadgeAlert].join(" ")}>Mail gesendet</span>
+                            ) : null}
+                          </div>
                           <h3 className={styles.reportTitle}>
                             {report.reportedUser.firstName || report.reportedUser.phoneNumber || report.reportedUser.id} wurde von{" "}
                             {report.reporter.firstName || report.reporter.phoneNumber || report.reporter.id} gemeldet
                           </h3>
                         </div>
-                        <span className={styles.reportMeta}>{formatDate(report.createdAt)}</span>
+                        <div className={styles.reportMetaColumn}>
+                          <span className={styles.reportMeta}>{formatDate(report.createdAt)}</span>
+                          {reportSlaLabel ? <span className={styles.reportMetaSecondary}>{reportSlaLabel}</span> : null}
+                        </div>
                       </div>
 
                       <div className={styles.reportContent}>
@@ -467,14 +642,34 @@ export default function AdminPage() {
                             <strong>Details:</strong> {report.details}
                           </p>
                         ) : null}
-                        {report.latestMessagePreview ? (
-                          <p>
-                            <strong>Letzte Nachricht:</strong> “{report.latestMessagePreview}”
-                          </p>
-                        ) : null}
                         <p>
                           <strong>Aktuelle Strafpunkte:</strong> {report.reportedUser.penaltyPoints}/3
                         </p>
+                        {report.matchId ? (
+                          <p>
+                            <strong>Match-ID:</strong> {report.matchId}
+                          </p>
+                        ) : null}
+                        {report.latestMessagePreview ? (
+                          <p>
+                            <strong>Letzte Nachricht:</strong> {report.latestMessagePreview}
+                          </p>
+                        ) : null}
+                        {report.reviewStartedByAdminPhone ? (
+                          <p>
+                            <strong>In Prüfung seit:</strong> {formatDate(report.reviewStartedAt)} durch {report.reviewStartedByAdminPhone}
+                          </p>
+                        ) : null}
+                        {report.reviewedByAdminPhone ? (
+                          <p>
+                            <strong>Entschieden von:</strong> {report.reviewedByAdminPhone}
+                          </p>
+                        ) : null}
+                        {report.moderationAlertSentAt ? (
+                          <p>
+                            <strong>Mail-Alarm:</strong> {formatDate(report.moderationAlertSentAt)}
+                          </p>
+                        ) : null}
                         {report.reportedUser.bannedAt ? (
                           <p>
                             <strong>Status:</strong> dauerhaft gesperrt
@@ -482,12 +677,82 @@ export default function AdminPage() {
                         ) : null}
                       </div>
 
-                      {report.status === "OPEN" ? (
+                      <div className={styles.reportTranscriptCard}>
+                        <div className={styles.reportTranscriptHeader}>
+                          <strong>Chatverlauf</strong>
+                          <span>{report.chatTranscript.length} Nachrichten</span>
+                        </div>
+                        {report.chatTranscript.length ? (
+                          <div className={styles.reportTranscriptList}>
+                            {report.chatTranscript.map((message) => (
+                              <article
+                                key={message.id}
+                                className={[
+                                  styles.reportTranscriptMessage,
+                                  message.senderRole === "reporter"
+                                    ? styles.reportTranscriptMessageReporter
+                                    : message.senderRole === "reported"
+                                      ? styles.reportTranscriptMessageReported
+                                      : message.senderRole === "system"
+                                        ? styles.reportTranscriptMessageSystem
+                                        : "",
+                                ].join(" ")}
+                              >
+                                <div className={styles.reportTranscriptMeta}>
+                                  <strong>{message.senderLabel}</strong>
+                                  <span>{formatDate(message.createdAt)}</span>
+                                </div>
+                                <p className={styles.reportTranscriptText}>{formatTranscriptBody(message)}</p>
+                              </article>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className={styles.reportTranscriptEmpty}>Für diese Meldung liegt noch kein Chatverlauf vor.</p>
+                        )}
+                      </div>
+
+                      <label className={styles.reportNoteField}>
+                        <span>Prüfnotiz</span>
+                        <textarea
+                          value={reviewerNote}
+                          onChange={(event) =>
+                            setReviewerNotes((current) => ({
+                              ...current,
+                              [report.id]: event.target.value,
+                            }))
+                          }
+                          placeholder="Kurz festhalten, was geprüft wurde und warum du so entschieden hast."
+                          rows={4}
+                          readOnly={!isUnresolvedReport(report)}
+                        />
+                      </label>
+
+                      {isUnresolvedReport(report) ? (
                         <div className={styles.inlineActions}>
-                          <button type="button" className={styles.secondaryButton} onClick={() => void resolveReport(report.id, "dismissed")} disabled={isSaving}>
+                          {report.status === "OPEN" ? (
+                            <button
+                              type="button"
+                              className={styles.secondaryButton}
+                              onClick={() => void startReview(report.id, reviewerNote)}
+                              disabled={isSaving}
+                            >
+                              In Prüfung übernehmen
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className={styles.secondaryButton}
+                            onClick={() => void resolveReport(report.id, "dismissed", reviewerNote)}
+                            disabled={isSaving}
+                          >
                             Kein Verstoß
                           </button>
-                          <button type="button" className={styles.primaryButton} onClick={() => void resolveReport(report.id, "confirmed")} disabled={isSaving}>
+                          <button
+                            type="button"
+                            className={styles.primaryButton}
+                            onClick={() => void resolveReport(report.id, "confirmed", reviewerNote)}
+                            disabled={isSaving}
+                          >
                             Strafpunkt geben
                           </button>
                         </div>
@@ -495,12 +760,14 @@ export default function AdminPage() {
                         <p className={styles.resolutionText}>
                           {report.status === "CONFIRMED" ? "Bestätigt" : "Abgelehnt"}
                           {report.reviewedAt ? ` · ${formatDate(report.reviewedAt)}` : ""}
+                          {report.reviewerNote ? ` · Notiz vorhanden` : ""}
                         </p>
                       )}
                     </article>
-                  ))
+                    );
+                  })
                 ) : (
-                  <p className={styles.emptyState}>Noch keine Meldungen vorhanden.</p>
+                  <p className={styles.emptyState}>Für diesen Filter gibt es gerade keine Meldungen.</p>
                 )}
               </div>
             </section>

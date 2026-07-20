@@ -39,10 +39,14 @@ const start = async () => {
       host: "0.0.0.0",
     });
 
-    void runJourneyAutomation("startup");
-    setInterval(() => {
-      void runJourneyAutomation("interval");
-    }, journeyAutomationIntervalMs);
+    if (env.JOURNEY_AUTOMATION_ENABLED) {
+      void runJourneyAutomation("startup");
+      setInterval(() => {
+        void runJourneyAutomation("interval");
+      }, journeyAutomationIntervalMs);
+    } else {
+      app.log.info("Journey automation is disabled for this API instance.");
+    }
   } catch (error) {
     app.log.error(error);
     process.exit(1);
