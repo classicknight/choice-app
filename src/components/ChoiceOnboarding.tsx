@@ -4562,7 +4562,9 @@ function OverviewScreen({
 
     if (!phaseTwoHasStarted && phaseOneCanAdvanceToPhaseTwo && !phaseTwoAvailableByTime) {
       phaseTwoStatusTitle = "Dieses Match läuft weiter.";
-      phaseTwoStatusText = `${phaseOneEndPhrase}. Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
+      phaseTwoStatusText = phaseOneClosed
+        ? `Heute um ${phaseTwoClockLabel} beginnt Phase 2. Noch ${phaseTwoStartsInLabel}.`
+        : `${phaseOneEndPhrase}. Phase 2 startet ${phaseTwoStartLabel}. Noch ${phaseTwoStartsInLabel}.`;
     }
 
     if (!phaseTwoHasStarted && phaseOneCanAdvanceToPhaseTwo && phaseTwoAvailableByTime) {
@@ -6655,7 +6657,9 @@ function OverviewScreen({
     } else if (phaseOneCanAdvanceToPhaseTwo) {
       eyebrow = "Phase 1";
       title = "Dieses Match läuft weiter.";
-      text = `${phaseOneEndPhrase}. Danach startet eure Choice-Runde ${phaseTwoStartLabel}.`;
+      text = phaseOneClosed
+        ? `Heute um ${phaseTwoClockLabel} beginnt eure Choice-Runde.`
+        : `${phaseOneEndPhrase}. Danach startet eure Choice-Runde ${phaseTwoStartLabel}.`;
       pills.push(`Noch ${phaseTwoStartsInLabel}`);
       pills.push(`Start ${phaseTwoStartLabel}`);
     } else {
