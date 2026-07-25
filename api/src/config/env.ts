@@ -13,6 +13,8 @@ const envSchema = z.object({
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_VERIFY_SERVICE_SID: z.string().optional(),
+  APP_REVIEW_PHONE_NUMBER: z.string().optional(),
+  APP_REVIEW_CODE: z.string().regex(/^\d{6}$/, "APP_REVIEW_CODE must contain exactly 6 digits").optional(),
   CLOUDINARY_CLOUD_NAME: z.string().optional(),
   CLOUDINARY_API_KEY: z.string().optional(),
   CLOUDINARY_API_SECRET: z.string().optional(),

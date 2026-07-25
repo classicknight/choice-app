@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { issueAccessToken } from "../lib/auth.js";
+import { ensureAppReviewDemoAccount } from "../lib/app-review.js";
 import { prisma } from "../lib/prisma.js";
 import { generateOtpCode, hashOtpCode, normalizeEmail, normalizePhone } from "../services/verification.service.js";
 import {
@@ -36,6 +37,14 @@ const devSessionSchema = z.object({
 const VERIFICATION_TTL_MS = 10 * 60 * 1000;
 const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 const MAX_VERIFICATION_ATTEMPTS = 5;
+
+function isAppReviewPhone(phoneNumber: string, app: Parameters<FastifyPluginAsync>[0]) {
+  if (!app.config.APP_REVIEW_PHONE_NUMBER || !app.config.APP_REVIEW_CODE) {
+    return false;
+  }
+
+  return normalizePhone(app.config.APP_REVIEW_PHONE_NUMBER) === phoneNumber;
+}
 
 async function verifyLatestChallenge(target: string, channel: "EMAIL" | "PHONE", code: string) {
   const challenge = await prisma.verificationChallenge.findFirst({
@@ -397,11 +406,20 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       select: { id: true, phoneNumber: true, profileCompleted: true },
     });
 
+    const appReviewPhone = isAppReviewPhone(phoneNumber, app);
+
+    if (appReviewPhone) {
+      await ensureAppReviewDemoAccount(user.id, phoneNumber);
+    }
+
     let devCodePreview: string | undefined;
     let verificationProvider = "twilio-verify";
     let codeHash = "twilio-managed";
 
-    if (isTwilioVerifyConfigured({
+    if (appReviewPhone) {
+      codeHash = hashOtpCode(app.config.APP_REVIEW_CODE!);
+      verificationProvider = "app-review";
+    } else if (isTwilioVerifyConfigured({
       accountSid: app.config.TWILIO_ACCOUNT_SID,
       authToken: app.config.TWILIO_AUTH_TOKEN,
       serviceSid: app.config.TWILIO_VERIFY_SERVICE_SID,
@@ -437,7 +455,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       channel: "phone",
       target: phoneNumber,
       userId: user.id,
-      profileCompleted: user.profileCompleted,
+      profileCompleted: appReviewPhone ? true : user.profileCompleted,
       verificationProvider,
       devCodePreview,
     });
@@ -486,13 +504,15 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const normalizedPhone = normalizePhone(parsed.data.phoneNumber);
-    const result = isTwilioVerifyConfigured({
-      accountSid: app.config.TWILIO_ACCOUNT_SID,
-      authToken: app.config.TWILIO_AUTH_TOKEN,
-      serviceSid: app.config.TWILIO_VERIFY_SERVICE_SID,
-    })
-      ? await verifyTwilioChallenge(normalizedPhone, parsed.data.code, app)
-      : await verifyLatestChallenge(normalizedPhone, "PHONE", parsed.data.code);
+    const result = isAppReviewPhone(normalizedPhone, app)
+      ? await verifyLatestChallenge(normalizedPhone, "PHONE", parsed.data.code)
+      : isTwilioVerifyConfigured({
+          accountSid: app.config.TWILIO_ACCOUNT_SID,
+          authToken: app.config.TWILIO_AUTH_TOKEN,
+          serviceSid: app.config.TWILIO_VERIFY_SERVICE_SID,
+        })
+        ? await verifyTwilioChallenge(normalizedPhone, parsed.data.code, app)
+        : await verifyLatestChallenge(normalizedPhone, "PHONE", parsed.data.code);
 
     if (!result.ok) {
       return reply.status(result.reason === "TOO_MANY_ATTEMPTS" ? 429 : 400).send({

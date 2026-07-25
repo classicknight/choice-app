@@ -38,6 +38,10 @@ services:
         sync: false
       - key: TWILIO_VERIFY_SERVICE_SID
         sync: false
+      - key: APP_REVIEW_PHONE_NUMBER
+        sync: false
+      - key: APP_REVIEW_CODE
+        sync: false
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY

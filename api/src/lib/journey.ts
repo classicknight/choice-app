@@ -6,6 +6,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { env } from "../config/env.js";
+import { isAppReviewAccountEmail } from "./app-review.js";
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
@@ -355,7 +356,7 @@ async function getAvailableJourneyCandidateUsers(excludedUserIds: string[]) {
   const blockedUserIds = await getBlockedUserIdsForUsers(excludedUserIds);
   const idsToExclude = Array.from(new Set([...excludedUserIds, ...blockedUserIds]));
 
-  return prisma.user.findMany({
+  const candidates = await prisma.user.findMany({
     where: {
       id: { notIn: idsToExclude },
       profileCompleted: true,
@@ -380,6 +381,8 @@ async function getAvailableJourneyCandidateUsers(excludedUserIds: string[]) {
       profile: true,
     },
   });
+
+  return candidates.filter((candidate) => !isAppReviewAccountEmail(candidate.email));
 }
 
 async function getBlockedUserIdsForUsers(userIds: string[]) {
@@ -1519,7 +1522,14 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     },
   });
 
-  if (!user?.profile || !user.profileCompleted || user.suspendedAt || user.penaltySuspendedAt || user.bannedAt) {
+  if (
+    !user?.profile
+    || !user.profileCompleted
+    || user.suspendedAt
+    || user.penaltySuspendedAt
+    || user.bannedAt
+    || isAppReviewAccountEmail(user.email)
+  ) {
     return null;
   }
 
