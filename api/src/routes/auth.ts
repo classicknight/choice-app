@@ -1,7 +1,11 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { issueAccessToken } from "../lib/auth.js";
-import { ensureAppReviewDemoAccount } from "../lib/app-review.js";
+import {
+  APP_REVIEW_CODE,
+  APP_REVIEW_PHONE_NUMBER,
+  ensureAppReviewDemoAccount,
+} from "../lib/app-review.js";
 import { prisma } from "../lib/prisma.js";
 import { generateOtpCode, hashOtpCode, normalizeEmail, normalizePhone } from "../services/verification.service.js";
 import {
@@ -38,12 +42,8 @@ const VERIFICATION_TTL_MS = 10 * 60 * 1000;
 const VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000;
 const MAX_VERIFICATION_ATTEMPTS = 5;
 
-function isAppReviewPhone(phoneNumber: string, app: Parameters<FastifyPluginAsync>[0]) {
-  if (!app.config.APP_REVIEW_PHONE_NUMBER || !app.config.APP_REVIEW_CODE) {
-    return false;
-  }
-
-  return normalizePhone(app.config.APP_REVIEW_PHONE_NUMBER) === phoneNumber;
+function isAppReviewPhone(phoneNumber: string) {
+  return normalizePhone(APP_REVIEW_PHONE_NUMBER) === phoneNumber;
 }
 
 async function verifyLatestChallenge(target: string, channel: "EMAIL" | "PHONE", code: string) {
@@ -406,7 +406,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       select: { id: true, phoneNumber: true, profileCompleted: true },
     });
 
-    const appReviewPhone = isAppReviewPhone(phoneNumber, app);
+    const appReviewPhone = isAppReviewPhone(phoneNumber);
 
     if (appReviewPhone) {
       await ensureAppReviewDemoAccount(user.id, phoneNumber);
@@ -417,7 +417,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     let codeHash = "twilio-managed";
 
     if (appReviewPhone) {
-      codeHash = hashOtpCode(app.config.APP_REVIEW_CODE!);
+      codeHash = hashOtpCode(APP_REVIEW_CODE);
       verificationProvider = "app-review";
     } else if (isTwilioVerifyConfigured({
       accountSid: app.config.TWILIO_ACCOUNT_SID,
@@ -504,7 +504,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const normalizedPhone = normalizePhone(parsed.data.phoneNumber);
-    const result = isAppReviewPhone(normalizedPhone, app)
+    const result = isAppReviewPhone(normalizedPhone)
       ? await verifyLatestChallenge(normalizedPhone, "PHONE", parsed.data.code)
       : isTwilioVerifyConfigured({
           accountSid: app.config.TWILIO_ACCOUNT_SID,

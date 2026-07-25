@@ -13,6 +13,10 @@ const REVIEW_EMAIL_SUFFIX = "@choice-review.local";
 const REVIEW_ACCOUNT_EMAIL = `apple${REVIEW_EMAIL_SUFFIX}`;
 const REVIEW_PARTNER_EMAIL = `mila${REVIEW_EMAIL_SUFFIX}`;
 
+// App Review credentials only expose the isolated synthetic accounts below.
+export const APP_REVIEW_PHONE_NUMBER = "+491713920042";
+export const APP_REVIEW_CODE = "847822";
+
 const reviewRounds = [
   {
     id: "review-spontaneity",
