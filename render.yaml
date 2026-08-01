@@ -16,7 +16,7 @@ services:
     name: choice-api
     runtime: node
     rootDir: api
-    buildCommand: npm install --include=dev && npm run prisma:generate && npm run build
+    buildCommand: npm install --include=dev && npm run prisma:generate && npm run prisma:push && npm run build
     startCommand: npm run start
     healthCheckPath: /v1/health
     envVars:
@@ -44,6 +44,12 @@ services:
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      - key: REVENUECAT_WEBHOOK_AUTH
+        sync: false
+      - key: MODERATION_ALERT_EMAILS
+        value: aleks.g.gotfrid@gmail.com
+      - key: ADMIN_DASHBOARD_URL
+        value: https://choice-dating.app/admin
       - key: ADMIN_PHONE_NUMBERS
         sync: false
       - key: ADMIN_ACCESS_KEY

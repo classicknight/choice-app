@@ -7,6 +7,8 @@ type MatchAccessUser = {
   id: string;
   phoneNumber: string | null;
   paidMatchCredits: number;
+  isPremium: boolean;
+  premiumExpiresAt?: Date | null;
 };
 
 function normalizeTrackedPhoneNumber(phoneNumber: string | null | undefined) {
@@ -22,8 +24,15 @@ export function getRemainingIncludedMatches(totalMatchCount: number) {
   return Math.max(INCLUDED_MATCH_LIMIT - getConsumedIncludedMatches(totalMatchCount), 0);
 }
 
+export function hasActiveChoicePlus(
+  user: Pick<MatchAccessUser, "isPremium" | "premiumExpiresAt">,
+  now = new Date(),
+) {
+  return user.isPremium && (!user.premiumExpiresAt || user.premiumExpiresAt.getTime() > now.getTime());
+}
+
 export function canUserReceiveAnotherMatch(
-  user: Pick<MatchAccessUser, "phoneNumber" | "paidMatchCredits">,
+  user: Pick<MatchAccessUser, "phoneNumber" | "paidMatchCredits" | "isPremium" | "premiumExpiresAt">,
   totalMatchCount: number,
 ) {
   const normalizedPhoneNumber = normalizeTrackedPhoneNumber(user.phoneNumber);
@@ -32,7 +41,7 @@ export function canUserReceiveAnotherMatch(
     return false;
   }
 
-  return getRemainingIncludedMatches(totalMatchCount) > 0 || user.paidMatchCredits > 0;
+  return hasActiveChoicePlus(user) || getRemainingIncludedMatches(totalMatchCount) > 0 || user.paidMatchCredits > 0;
 }
 
 export async function getPhoneMatchStatsMap(
@@ -168,7 +177,7 @@ export async function createMatchAccessReservation(
       },
     });
 
-    if (totalMatchCount >= INCLUDED_MATCH_LIMIT) {
+    if (!hasActiveChoicePlus(user) && totalMatchCount >= INCLUDED_MATCH_LIMIT) {
       await transaction.user.update({
         where: { id: user.id },
         data: {

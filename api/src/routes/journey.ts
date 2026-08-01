@@ -5,6 +5,7 @@ import {
   blockJourneyPartner,
   createJourneyMessage,
   getCurrentJourneyForUser,
+  goBackPhaseTwoQuestionForUser,
   setPhaseOneDecision,
   setPhaseThreeDecision,
   startPhaseTwoForUser,
@@ -188,6 +189,29 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
       roundIndex: parsedBody.data.roundIndex,
       optionIndex: parsedBody.data.optionIndex,
     });
+
+    if (!result.ok) {
+      return sendJourneyError(reply, result.reason);
+    }
+
+    return reply.send(result);
+  });
+
+  app.post("/journey/:userId/phase-two/back", async (request, reply) => {
+    const parsedParams = paramsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return reply.status(400).send({
+        error: "INVALID_PHASE_TWO_BACK",
+        details: parsedParams.error.flatten(),
+      });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
+    }
+
+    const result = await goBackPhaseTwoQuestionForUser(parsedParams.data.userId);
 
     if (!result.ok) {
       return sendJourneyError(reply, result.reason);

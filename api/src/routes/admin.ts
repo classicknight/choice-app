@@ -14,7 +14,7 @@ const updateUserSchema = z.object({
 });
 
 const manageMatchAccessSchema = z.object({
-  action: z.enum(["grant_pack", "freeze_paid", "restore_frozen", "forfeit_paid", "ban_account"]),
+  action: z.enum(["grant_pack", "freeze_paid", "restore_frozen", "ban_account"]),
 });
 
 const resolveReportSchema = z.object({
@@ -332,6 +332,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         id: true,
         isPremium: true,
         premiumActivatedAt: true,
+        premiumExpiresAt: true,
+        premiumWillRenew: true,
+        premiumProductId: true,
+        premiumLastEventAt: true,
         penaltyPoints: true,
         suspendedAt: true,
         penaltySuspendedAt: true,
@@ -381,6 +385,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
             : parsed.data.isPremium
               ? existingUser.premiumActivatedAt ?? new Date()
               : null,
+        premiumExpiresAt: parsed.data.isPremium === undefined ? existingUser.premiumExpiresAt : null,
+        premiumWillRenew: parsed.data.isPremium === undefined ? existingUser.premiumWillRenew : false,
+        premiumProductId: parsed.data.isPremium === undefined ? existingUser.premiumProductId : null,
+        premiumLastEventAt: parsed.data.isPremium === undefined ? existingUser.premiumLastEventAt : null,
         penaltyPoints: nextPenaltyPoints,
         suspendedAt: nextBanned ? existingUser.suspendedAt ?? new Date() : nextSuspended ? existingUser.suspendedAt ?? new Date() : null,
         penaltySuspendedAt: nextBanned ? null : nextPenaltyPoints >= 3 ? existingUser.penaltySuspendedAt ?? new Date() : null,
@@ -459,14 +467,6 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
           suspendedAt: null,
           penaltySuspendedAt: null,
           bannedAt: null,
-        };
-        break;
-      case "forfeit_paid":
-        updateData = {
-          paidMatchCredits: 0,
-          frozenPaidMatchCredits: 0,
-          forfeitedPaidMatchCredits:
-            existingUser.forfeitedPaidMatchCredits + existingUser.paidMatchCredits + existingUser.frozenPaidMatchCredits,
         };
         break;
       case "ban_account":

@@ -1,6 +1,37 @@
+import Constants from "expo-constants";
+
 import { buildSummary, calculateAgeFromProfile, type RegistrationProfile } from "./registration";
 
-const apiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+const configuredApiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.trim();
+
+function resolveApiBaseUrl() {
+  if (!configuredApiBaseUrl || !__DEV__) {
+    return configuredApiBaseUrl;
+  }
+
+  try {
+    const configuredUrl = new URL(configuredApiBaseUrl);
+    const configuredHost = configuredUrl.hostname;
+    const isLocalHost =
+      configuredHost === "localhost" ||
+      configuredHost === "127.0.0.1" ||
+      configuredHost.startsWith("10.") ||
+      configuredHost.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(configuredHost);
+    const expoHostUri = Constants.expoConfig?.hostUri;
+
+    if (!isLocalHost || !expoHostUri) {
+      return configuredApiBaseUrl;
+    }
+
+    configuredUrl.hostname = new URL(`http://${expoHostUri}`).hostname;
+    return configuredUrl.toString().replace(/\/$/, "");
+  } catch {
+    return configuredApiBaseUrl;
+  }
+}
+
+const apiBaseUrl = resolveApiBaseUrl();
 let apiAccessToken: string | null = null;
 const API_REQUEST_TIMEOUT_MS = 12_000;
 
@@ -78,6 +109,10 @@ type RemoteAccountStateResult = {
     userId: string;
     isPremium: boolean;
     premiumActivatedAt: string | null;
+    choicePlusActive: boolean;
+    choicePlusProductId: string | null;
+    choicePlusExpiresAt: string | null;
+    choicePlusWillRenew: boolean;
     penaltyPoints: number;
     suspendedAt: string | null;
     penaltySuspendedAt: string | null;
@@ -767,6 +802,15 @@ export async function startRemotePhaseTwo(userId: string): Promise<RemoteJourney
   }
 
   const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}/phase-two/start`, {}, { auth: true });
+  return response.journey;
+}
+
+export async function goBackRemotePhaseTwoQuestion(userId: string): Promise<RemoteJourneyState> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await postJson<JourneyResponse>(`/journey/${encodeURIComponent(userId)}/phase-two/back`, {}, { auth: true });
   return response.journey;
 }
 

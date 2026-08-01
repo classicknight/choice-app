@@ -17,7 +17,7 @@ export default function DatenschutzPage() {
         <h1 className={styles.title}>Datenschutzerklärung</h1>
         <p className={styles.intro}>
           Diese Datenschutzerklärung beschreibt, wie personenbezogene Daten bei Choice auf der Website, in der App und in den
-          zugehörigen API- und Moderationsprozessen verarbeitet werden. Stand dieser Fassung: 19. Juli 2026.
+          zugehörigen API- und Moderationsprozessen verarbeitet werden. Stand dieser Fassung: 27. Juli 2026.
         </p>
 
         <section className={styles.section}>
@@ -38,7 +38,7 @@ export default function DatenschutzPage() {
             <li>Profildaten wie Vorname, Alter, Stadt, Interessen, Dating-Intentionen, Pronomen, Identität und Suchpräferenzen</li>
             <li>hochgeladene Fotos und optionale Videos</li>
             <li>Chat-, Match-, Moderations- und Blockierungsdaten</li>
-            <li>Kauf- und Store-Informationen zu Match-Paketen</li>
+            <li>Kauf-, Abo- und Store-Informationen zu Match-Paketen und Choice Plus</li>
             <li>technische Nutzungs- und Sicherheitsdaten, etwa Logdaten, Geräte- und Push-Informationen</li>
             <li>lokale Sitzungs-, Status- und Einstellungsdaten, die die App auf deinem Gerät speichert</li>
           </ul>
@@ -82,10 +82,12 @@ export default function DatenschutzPage() {
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>6. Käufe, App Stores und Zahlungsabwicklung</h2>
           <p className={styles.text}>
-            Wenn du kostenpflichtige Match-Pakete kaufst, läuft die Abrechnung über den jeweiligen Store. Wir selbst erhalten
-            keine vollständigen Zahlungsdaten deiner Karte, sondern verarbeiten insbesondere Store- und Kaufreferenzen,
-            Produktkennungen, Zeitpunkte, Statusmeldungen und Gutschriften, damit dein Kauf deinem Choice-Konto zugeordnet
-            werden kann.
+            Wenn du ein Match-Paket oder Choice Plus kaufst, läuft die Abrechnung über den jeweiligen Store. Wir selbst erhalten
+            keine vollständigen Zahlungsdaten deiner Karte. Wir verarbeiten insbesondere Store- und Transaktionsreferenzen,
+            Produkt- und Berechtigungskennungen, Kauf- und Verlängerungszeitpunkte, Laufzeit- und Kündigungsstatus,
+            Ablaufzeitpunkte, Test- oder Produktionsumgebung sowie Statusmeldungen und Gutschriften. Diese Daten werden
+            benötigt, um Käufe deinem Choice-Konto zuzuordnen, ein aktives Abo zu erkennen, Match-Zugänge freizuschalten und
+            Wiederherstellungen oder Erstattungen technisch zu berücksichtigen.
           </p>
         </section>
 
@@ -132,7 +134,9 @@ export default function DatenschutzPage() {
             Matchhistorien werden gelöscht oder anonymisiert, wenn sie für den Dienst nicht mehr erforderlich sind oder du dein
             Konto wirksam löschst, soweit keine gesetzlichen Aufbewahrungspflichten, Sicherheitsinteressen oder noch offene
             Moderations- bzw. Missbrauchsvorgänge entgegenstehen. Kauf- und Abrechnungsdaten können aufgrund handels- und
-            steuerrechtlicher Pflichten länger gespeichert werden.
+            steuerrechtlicher Pflichten länger gespeichert werden. Status- und Nachweisdaten zu Abonnements werden mindestens
+            so lange verarbeitet, wie dies für Freischaltung, Wiederherstellung, Erstattung und Abrechnungsnachweis erforderlich
+            ist.
           </p>
           <p className={styles.text}>
             Soweit dies für die Durchsetzung von Match-Kontingenten, Missbrauchsabwehr oder Abrechnungsnachweise erforderlich

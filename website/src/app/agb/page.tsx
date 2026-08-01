@@ -17,7 +17,7 @@ export default function AgbPage() {
         <h1 className={styles.title}>AGB</h1>
         <p className={styles.intro}>
           Diese Allgemeinen Geschäftsbedingungen regeln die Nutzung von Choice auf der Website und in der App. Sie gelten für
-          Account, Matching, Chat, Moderation und kostenpflichtige Match-Pakete.
+          Account, Matching, Chat, Moderation, kostenpflichtige Match-Pakete und Choice Plus. Stand: 27. Juli 2026.
         </p>
 
         <section className={styles.section}>
@@ -42,8 +42,9 @@ export default function AgbPage() {
           <p className={styles.text}>
             Choice ist ein kuratiertes Dating-Angebot. Nutzer erhalten Matches, durchlaufen phasenbasierte Interaktionen und
             können je nach Produktstand weitere Funktionen wie Chat, Meldungen, Blockierungen, Moderation, Match-Pakete oder
-            finale Auszeichnungen nutzen. Ein Anspruch auf eine bestimmte Anzahl von Matches, auf einen bestimmten Verlauf oder
-            auf Dating-Erfolg besteht nicht.
+            finale Auszeichnungen nutzen. Matches setzen voraus, dass ein nach den jeweiligen Suchkriterien geeignetes und
+            verfügbares Profil vorhanden ist. Ein Anspruch auf eine bestimmte Person, eine bestimmte Anzahl von Matches, einen
+            bestimmten Verlauf oder auf Dating-Erfolg besteht nicht.
           </p>
         </section>
 
@@ -70,19 +71,31 @@ export default function AgbPage() {
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>6. Kostenpflichtige Match-Pakete</h2>
+          <h2 className={styles.sectionTitle}>6. Kostenpflichtige Leistungen</h2>
           <p className={styles.text}>
-            Choice kann kostenlose und kostenpflichtige Funktionen anbieten. Derzeit betrifft dies insbesondere Match-Pakete.
-            Umfang, Preis und Produktbeschreibung ergeben sich aus der konkreten Darstellung im Produkt und im jeweiligen
-            Store. Soweit nicht ausdrücklich anders gekennzeichnet, handelt es sich bei Match-Paketen um Einmalkäufe und nicht
-            um automatisch verlängernde Abonnements.
+            Choice kann kostenlose und kostenpflichtige Funktionen anbieten. Umfang, Preis, Abrechnungszeitraum und
+            Produktbeschreibung ergeben sich aus der Darstellung unmittelbar vor dem Kauf und aus dem jeweiligen App Store.
+            Der dort angezeigte Preis ist maßgeblich.
           </p>
           <p className={styles.text}>
-            Käufe werden dem jeweiligen Choice-Konto zugeordnet. Wird ein Konto vorübergehend pausiert, können noch nicht
-            genutzte gekaufte Match-Pakete eingefroren und nach einer Entsperrung wieder freigegeben werden. Bei schweren oder
-            wiederholten Verstößen kann Choice ein Konto dauerhaft sperren; in solchen Fällen können verbleibende gekaufte
-            Match-Pakete verfallen, sofern dies im Einzelfall verhältnismäßig ist. Store-seitige Erstattungen und
-            Abrechnungsfragen richten sich nach den Bedingungen des jeweiligen Stores.
+            Match-Pakete sind Einmalkäufe und verlängern sich nicht automatisch. Gekaufte, noch nicht genutzte Match-Guthaben
+            laufen nicht ab. Bei einer Kontopause oder Sperre können sie für die Dauer der Einschränkung eingefroren werden.
+            Nach einer Aufhebung der Einschränkung stehen sie wieder zur Verfügung. Bereits verbrauchte Guthaben werden nicht
+            erneut gutgeschrieben, soweit keine Erstattung über den Store erfolgt.
+          </p>
+          <p className={styles.text}>
+            Choice Plus ist ein automatisch verlängerndes Monatsabonnement. Zum vorgesehenen Start beträgt der Preis im
+            deutschen Store 9,99 Euro pro Monat; verbindlich ist stets der Preis, den der jeweilige Store unmittelbar vor der
+            Bestätigung anzeigt. Choice Plus ermöglicht während einer aktiven Laufzeit bis zu ein bewusst ausgewähltes Match
+            pro Tag, ohne dass dafür Match-Guthaben verbraucht wird. Auch mit Choice Plus besteht kein Anspruch auf ein Match,
+            wenn kein geeignetes verfügbares Profil vorhanden ist. Es bleibt bei höchstens einem aktiven Match gleichzeitig.
+          </p>
+          <p className={styles.text}>
+            Choice Plus verlängert sich jeweils um einen weiteren Monat, solange die automatische Verlängerung nicht über das
+            Store-Konto beendet wird. Eine Kündigung wirkt zum Ende der bereits bezahlten Laufzeit. Abrechnung, Verwaltung,
+            Wiederherstellung und Erstattungen erfolgen über den Store, in dem das Abo abgeschlossen wurde. Die geltenden
+            Fairness-, Moderations-, Pausen- und Sperrregeln gelten auch für Abonnenten. Eine Pause oder Sperre beendet ein
+            Store-Abo nicht automatisch; das Abo muss bei Bedarf zusätzlich im Store gekündigt werden.
           </p>
         </section>
 
@@ -100,7 +113,9 @@ export default function AgbPage() {
           <p className={styles.text}>
             Nutzer können ihr Konto im Rahmen der verfügbaren Funktionen löschen oder die Nutzung beenden. Choice kann
             Konten bei schwerwiegenden oder wiederholten Verstößen gegen diese AGB einschränken, pausieren, sperren oder
-            löschen.
+            löschen. Die Löschung eines Choice-Kontos beendet ein über Apple oder Google abgeschlossenes Abonnement nicht
+            automatisch. Nutzer müssen die automatische Verlängerung zuvor oder anschließend selbst in ihrem Store-Konto
+            beenden.
           </p>
           <p className={styles.text}>
             Bereits verbrauchte Match-Kontingente und freigeschaltete Match-Zähler können dabei aus Gründen der
@@ -119,7 +134,17 @@ export default function AgbPage() {
         </section>
 
         <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>10. Verbraucherhinweise</h2>
+          <h2 className={styles.sectionTitle}>10. Widerruf, Kündigung und Erstattungen</h2>
+          <p className={styles.text}>
+            Für Käufe und Abonnements gelten die gesetzlichen Verbraucherrechte sowie die Kauf- und Erstattungsprozesse des
+            jeweiligen Stores. Die technische Nutzung einer kostenpflichtigen Leistung kann unmittelbar nach der
+            Kaufbestätigung beginnen. Eine Kündigung der automatischen Verlängerung ist von einer Erstattungsanfrage und von
+            der Löschung des Choice-Kontos zu unterscheiden. Gesetzliche Rechte werden durch diese AGB nicht eingeschränkt.
+          </p>
+        </section>
+
+        <section className={styles.section}>
+          <h2 className={styles.sectionTitle}>11. Verbraucherhinweise</h2>
           <p className={styles.text}>
             Es gilt deutsches Recht unter Ausschluss des UN-Kaufrechts, soweit dem keine zwingenden
             Verbraucherschutzvorschriften entgegenstehen. Informationen zur Streitbeilegung finden sich ergänzend auf der

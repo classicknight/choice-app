@@ -663,7 +663,7 @@ async function syncJourneyPhaseNotifications(
         kind: "phase-three-start",
         contextKey: `phase-three-start:${match.id}:${match.userAId}`,
         title: "Ihr seid jetzt in Phase 3",
-        body: "Dieses Match bleibt erstmal bestehen. Wenn du lieber neu starten willst, kannst du das jetzt noch ändern.",
+        body: "Nach Chat und Spiel kannst du deine erste Entscheidung einmal neu bewerten. Ohne Änderung bleibt dieses Match bestehen.",
         channelId: "phase-updates",
         data: {
           type: "phase-three-start",
@@ -676,7 +676,7 @@ async function syncJourneyPhaseNotifications(
         kind: "phase-three-start",
         contextKey: `phase-three-start:${match.id}:${match.userBId}`,
         title: "Ihr seid jetzt in Phase 3",
-        body: "Dieses Match bleibt erstmal bestehen. Wenn du lieber neu starten willst, kannst du das jetzt noch ändern.",
+        body: "Nach Chat und Spiel kannst du deine erste Entscheidung einmal neu bewerten. Ohne Änderung bleibt dieses Match bestehen.",
         channelId: "phase-updates",
         data: {
           type: "phase-three-start",
@@ -1585,6 +1585,8 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
           id: true,
           phoneNumber: true,
           paidMatchCredits: true,
+          isPremium: true,
+          premiumExpiresAt: true,
         },
       }),
       transaction.user.findUnique({
@@ -1593,6 +1595,8 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
           id: true,
           phoneNumber: true,
           paidMatchCredits: true,
+          isPremium: true,
+          premiumExpiresAt: true,
         },
       }),
     ]);
@@ -2115,106 +2119,6 @@ function mapMessage(
   };
 }
 
-function pickDistinctPhaseThreeSuggestionPair(
-  rankedForUserA: RankedJourneyCandidate[],
-  rankedForUserB: RankedJourneyCandidate[],
-) {
-  const topUserA = rankedForUserA[0] ?? null;
-  const topUserB = rankedForUserB[0] ?? null;
-
-  if (!topUserA || !topUserB) {
-    return null;
-  }
-
-  if (topUserA.user.id !== topUserB.user.id) {
-    return {
-      userA: topUserA,
-      userB: topUserB,
-    };
-  }
-
-  const alternativeUserB = rankedForUserB.find((candidate) => candidate.user.id !== topUserA.user.id) ?? null;
-  const alternativeUserA = rankedForUserA.find((candidate) => candidate.user.id !== topUserB.user.id) ?? null;
-
-  const optionKeepUserATop = alternativeUserB
-    ? {
-        userA: topUserA,
-        userB: alternativeUserB,
-        combinedRank: rankedForUserB.indexOf(alternativeUserB),
-        combinedScore: topUserA.score + alternativeUserB.score,
-      }
-    : null;
-  const optionKeepUserBTop = alternativeUserA
-    ? {
-        userA: alternativeUserA,
-        userB: topUserB,
-        combinedRank: rankedForUserA.indexOf(alternativeUserA),
-        combinedScore: alternativeUserA.score + topUserB.score,
-      }
-    : null;
-
-  if (!optionKeepUserATop && !optionKeepUserBTop) {
-    return null;
-  }
-
-  if (!optionKeepUserATop) {
-    return optionKeepUserBTop;
-  }
-
-  if (!optionKeepUserBTop) {
-    return optionKeepUserATop;
-  }
-
-  if (optionKeepUserATop.combinedRank !== optionKeepUserBTop.combinedRank) {
-    return optionKeepUserATop.combinedRank < optionKeepUserBTop.combinedRank
-      ? optionKeepUserATop
-      : optionKeepUserBTop;
-  }
-
-  return optionKeepUserATop.combinedScore >= optionKeepUserBTop.combinedScore
-    ? optionKeepUserATop
-    : optionKeepUserBTop;
-}
-
-async function getPhaseThreeSuggestionPair(match: MatchWithRelations) {
-  if (!match.userA.profile || !match.userB.profile) {
-    return {
-      userASuggestion: null,
-      userBSuggestion: null,
-    };
-  }
-
-  const candidateUsers = await getAvailableJourneyCandidateUsers([match.userAId, match.userBId]);
-
-  if (!candidateUsers.length) {
-    return {
-      userASuggestion: null,
-      userBSuggestion: null,
-    };
-  }
-
-  const [candidateHistoryForUserA, candidateHistoryForUserB] = await Promise.all([
-    getJourneyCandidateHistoryMap(match.userAId),
-    getJourneyCandidateHistoryMap(match.userBId),
-  ]);
-
-  const rankedForUserA = rankJourneyCandidatesForViewer(match.userA, candidateUsers, candidateHistoryForUserA);
-  const rankedForUserB = rankJourneyCandidatesForViewer(match.userB, candidateUsers, candidateHistoryForUserB);
-  const suggestionPair = pickDistinctPhaseThreeSuggestionPair(rankedForUserA, rankedForUserB);
-
-  if (!suggestionPair) {
-    return {
-      userASuggestion: null,
-      userBSuggestion: null,
-    };
-  }
-
-  return {
-    userASuggestion: mapJourneyPartnerProfile(suggestionPair.userA.user),
-    userBSuggestion: mapJourneyPartnerProfile(suggestionPair.userB.user),
-  };
-}
-
 export async function getCurrentJourneyForUser(userId: string): Promise<JourneyState> {
   const now = new Date();
   const match = await resolveJourneyMatchForUser(userId, now);
@@ -2278,19 +2182,6 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
 
   const phaseTwoRounds = parseJsonList<JourneyPhaseTwoRoundConfig>(match.phaseTwoRounds);
   const phaseTwoResults = parseJsonList<JourneyPhaseTwoRoundResult>(match.phaseTwoResults);
-  const phaseTwoReady = match.phaseTwoStage === PhaseTwoStage.RESULT && phaseTwoResults.length > 0;
-  const phaseTwoCompatibility = phaseTwoReady
-    ? Math.round(
-        phaseTwoResults.reduce((sum, entry) => sum + entry.compatibility, 0) / phaseTwoResults.length,
-      )
-    : 0;
-  const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
-  const phaseThreeSuggestions = isReleased && phaseThreeQualified
-    ? await getPhaseThreeSuggestionPair(match)
-    : {
-        userASuggestion: null,
-        userBSuggestion: null,
-      };
   const messages = (match.chat?.messages ?? [])
     .map(mapMessage)
     .filter((entry): entry is JourneyMessage => Boolean(entry));
@@ -2306,9 +2197,7 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
     phaseFiveStartAt: schedule.phaseFiveStart.toISOString(),
     status: match.status,
     partner,
-    phaseThreeSuggestion: userId === match.userAId
-      ? phaseThreeSuggestions.userASuggestion
-      : phaseThreeSuggestions.userBSuggestion,
+    phaseThreeSuggestion: null,
     sharedChatMessages: partner ? messages.filter((entry) => entry.kind !== "system") : [],
     phaseOneStarterUserId: match.phaseOneStarterUserId,
     phaseOneStarterPenaltyAppliedAt: match.phaseOneStarterPenaltyAppliedAt?.toISOString() ?? null,
@@ -2542,6 +2431,55 @@ export async function startPhaseTwoForUser(userId: string) {
       phaseTwoRoundIndex: 0,
       phaseTwoRounds: rounds as Prisma.InputJsonValue,
       phaseTwoResults: [] as Prisma.InputJsonValue,
+    },
+  });
+
+  return {
+    ok: true as const,
+    journey: await getCurrentJourneyForUser(userId),
+  };
+}
+
+export async function goBackPhaseTwoQuestionForUser(userId: string) {
+  const resolved = await requireCurrentReleasedMatch(userId);
+
+  if (!resolved.ok) {
+    return resolved;
+  }
+
+  const { match } = resolved;
+
+  if (!match.phaseTwoStage) {
+    return { ok: false as const, reason: "PHASE_TWO_NOT_STARTED" as const };
+  }
+
+  const stage =
+    match.phaseTwoStage === PhaseTwoStage.PARTNER
+      ? "partner"
+      : match.phaseTwoStage === PhaseTwoStage.STARTER
+        ? "starter"
+        : "result";
+
+  if (stage === "result") {
+    return { ok: false as const, reason: "PHASE_TWO_ALREADY_COMPLETED" as const };
+  }
+
+  const currentResponderUserId = stage === "starter"
+    ? match.phaseTwoStarterUserId
+    : match.phaseTwoPartnerUserId;
+
+  if (!currentResponderUserId || currentResponderUserId !== userId) {
+    return { ok: false as const, reason: "NOT_YOUR_TURN" as const };
+  }
+
+  if (match.phaseTwoRoundIndex <= 0) {
+    return { ok: false as const, reason: "PHASE_TWO_BACK_NOT_AVAILABLE" as const };
+  }
+
+  await prisma.match.update({
+    where: { id: match.id },
+    data: {
+      phaseTwoRoundIndex: match.phaseTwoRoundIndex - 1,
     },
   });
 

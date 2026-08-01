@@ -3,6 +3,8 @@ import Purchases, { LOG_LEVEL, type PurchasesStoreProduct } from "react-native-p
 
 export const MATCH_PACK_8_PRODUCT_ID = "match_pack_8";
 export const MATCH_PACK_8_CREDIT_AMOUNT = 8;
+export const CHOICE_PLUS_MONTHLY_PRODUCT_ID = "choice_plus_monthly";
+export const CHOICE_PLUS_ENTITLEMENT_ID = "choice_plus";
 
 const revenueCatApiKeyByPlatform = {
   ios: process.env.EXPO_PUBLIC_REVENUECAT_APPLE_API_KEY?.trim() ?? "",
@@ -101,4 +103,37 @@ export async function purchaseMatchPackProduct(product?: PurchasesStoreProduct |
   }
 
   return Purchases.purchaseStoreProduct(targetProduct);
+}
+
+export async function getChoicePlusStoreProduct() {
+  const apiKey = getRevenueCatApiKey();
+
+  if (!apiKey) {
+    return null;
+  }
+
+  const products = await Purchases.getProducts(
+    [CHOICE_PLUS_MONTHLY_PRODUCT_ID],
+    Purchases.PRODUCT_CATEGORY.SUBSCRIPTION,
+  );
+
+  return products.find((entry) => entry.identifier === CHOICE_PLUS_MONTHLY_PRODUCT_ID) ?? null;
+}
+
+export async function purchaseChoicePlusProduct(product?: PurchasesStoreProduct | null) {
+  const targetProduct = product ?? await getChoicePlusStoreProduct();
+
+  if (!targetProduct) {
+    throw new Error("CHOICE_PLUS_NOT_READY");
+  }
+
+  return Purchases.purchaseStoreProduct(targetProduct);
+}
+
+export async function restoreChoicePurchases() {
+  return Purchases.restorePurchases();
+}
+
+export async function openStoreSubscriptionManagement() {
+  return Purchases.showManageSubscriptions();
 }

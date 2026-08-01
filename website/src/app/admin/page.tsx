@@ -347,7 +347,7 @@ export default function AdminPage() {
 
   async function manageMatchAccess(
     userId: string,
-    action: "grant_pack" | "freeze_paid" | "restore_frozen" | "forfeit_paid" | "ban_account",
+    action: "grant_pack" | "freeze_paid" | "restore_frozen" | "ban_account",
     successText: string,
   ) {
     setIsSaving(true);
@@ -934,7 +934,7 @@ export default function AdminPage() {
                           <td>
                             {user.paidMatchCredits} aktiv
                             <div className={styles.cellSubline}>
-                              {user.frozenPaidMatchCredits} eingefroren · {user.forfeitedPaidMatchCredits} verfallen
+                              {user.frozenPaidMatchCredits} eingefroren · {user.forfeitedPaidMatchCredits} historisch entzogen
                             </div>
                           </td>
                           <td>{user.matchCount}</td>
@@ -996,14 +996,6 @@ export default function AdminPage() {
                                 disabled={isSaving}
                               >
                                 Paket freigeben
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.secondaryButton}
-                                onClick={() => void manageMatchAccess(user.id, "forfeit_paid", `${label} hat verbleibende gekaufte Matches verloren.`)}
-                                disabled={isSaving}
-                              >
-                                Paket verfallen
                               </button>
                               <button
                                 type="button"

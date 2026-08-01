@@ -1,9 +1,18 @@
-import { getOrCreatePhoneMatchCountForUser, getRemainingIncludedMatches, INCLUDED_MATCH_LIMIT } from "./match-access.js";
+import {
+  getOrCreatePhoneMatchCountForUser,
+  getRemainingIncludedMatches,
+  hasActiveChoicePlus,
+  INCLUDED_MATCH_LIMIT,
+} from "./match-access.js";
 
 export type AccountStateShape = {
   id: string;
   isPremium: boolean;
   premiumActivatedAt: Date | null;
+  premiumExpiresAt?: Date | null;
+  premiumWillRenew?: boolean;
+  premiumProductId?: string | null;
+  premiumLastEventAt?: Date | null;
   penaltyPoints: number;
   suspendedAt: Date | null;
   penaltySuspendedAt: Date | null;
@@ -19,10 +28,16 @@ export function isAccountPaused(user: Pick<AccountStateShape, "penaltyPoints" | 
 }
 
 export function mapAccountState(user: AccountStateShape) {
+  const choicePlusActive = hasActiveChoicePlus(user);
+
   return {
     userId: user.id,
     isPremium: user.isPremium,
     premiumActivatedAt: user.premiumActivatedAt,
+    choicePlusActive,
+    choicePlusProductId: user.premiumProductId ?? null,
+    choicePlusExpiresAt: user.premiumExpiresAt ?? null,
+    choicePlusWillRenew: choicePlusActive && Boolean(user.premiumWillRenew),
     penaltyPoints: user.penaltyPoints,
     suspendedAt: user.suspendedAt,
     penaltySuspendedAt: user.penaltySuspendedAt,
@@ -104,7 +119,7 @@ export function buildBanAccountData(
     suspendedAt: user.suspendedAt ?? new Date(),
     penaltySuspendedAt: null,
     paidMatchCredits: 0,
-    frozenPaidMatchCredits: 0,
-    forfeitedPaidMatchCredits: user.forfeitedPaidMatchCredits + user.paidMatchCredits + user.frozenPaidMatchCredits,
+    frozenPaidMatchCredits: user.frozenPaidMatchCredits + user.paidMatchCredits,
+    forfeitedPaidMatchCredits: user.forfeitedPaidMatchCredits,
   };
 }

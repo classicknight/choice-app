@@ -1,12 +1,12 @@
 import { StatusBar } from "expo-status-bar";
-import { SafeAreaView, StyleSheet, View } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { StyleSheet, View } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { ChoiceOnboarding } from "./src/components/ChoiceOnboarding";
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView edges={["top"]} style={styles.safeArea}>
         <StatusBar style="light" />
         <View style={styles.backgroundOrbTop} />
         <View style={styles.backgroundOrbCenter} />

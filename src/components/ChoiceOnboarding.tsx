@@ -38,6 +38,7 @@ import {
   fetchRemoteAccountState,
   fetchRemoteJourney,
   fetchRemoteProfile,
+  goBackRemotePhaseTwoQuestion,
   registerRemotePushToken,
   setApiAccessToken,
   type RemoteJourneyPartnerProfile,
@@ -57,9 +58,13 @@ import {
   type DemoProfile,
 } from "../lib/mock-data";
 import {
+  getChoicePlusStoreProduct,
   getMatchPackStoreProduct,
   hasRevenueCatConfig,
+  openStoreSubscriptionManagement,
+  purchaseChoicePlusProduct,
   purchaseMatchPackProduct,
+  restoreChoicePurchases,
   syncRevenueCatUser,
   logOutRevenueCat,
 } from "../lib/purchases";
@@ -147,6 +152,7 @@ const PHASE_TWO_ROUNDS_PER_SESSION = 3;
 const PHASE_WARNING_LEAD_MS = 60 * 60 * 1000;
 const MATCH_RELEASE_HOUR = 9;
 const MATCH_DECISION_HOUR = 21;
+const DEFAULT_DEMO_PROFILE = demoProfiles[1];
 const LEGAL_URLS = {
   impressum: "https://choice-dating.app/impressum",
   datenschutz: "https://choice-dating.app/datenschutz",
@@ -913,65 +919,6 @@ function buildProfileFromDemoProfile(entry: DemoProfile): RegistrationProfile {
     conversationStyle: "direct",
     consent: true,
   };
-}
-
-function classifyLocalProfileTarget(profile: { lookingFor: string; pronouns: string }) {
-  if (profile.lookingFor === "Alle") {
-    return "Alle";
-  }
-
-  if (profile.pronouns === "sie/ihr") {
-    return "Frauen";
-  }
-
-  if (profile.pronouns === "er/ihm") {
-    return "Männer";
-  }
-
-  return "Alle";
-}
-
-function isLocallyCompatible(
-  viewer: {
-    lookingFor: string;
-    pronouns: string;
-    age: number;
-    ageRangeMin: number;
-    ageRangeMax: number;
-  },
-  candidate: DemoProfile,
-) {
-  const viewerTarget = classifyLocalProfileTarget(candidate);
-  const candidateTarget = classifyLocalProfileTarget(viewer);
-
-  const viewerAccepts = viewer.lookingFor === "Alle" || viewer.lookingFor === viewerTarget;
-  const candidateAccepts = candidate.lookingFor === "Alle" || candidate.lookingFor === candidateTarget;
-  const viewerAgeOk = candidate.age >= viewer.ageRangeMin && candidate.age <= viewer.ageRangeMax;
-  const candidateAgeOk = viewer.age >= candidate.ageRangeMin && viewer.age <= candidate.ageRangeMax;
-
-  return viewerAccepts && candidateAccepts && viewerAgeOk && candidateAgeOk;
-}
-
-function calculateLocalCandidateScore(
-  viewer: {
-    city: string;
-    interests: string[];
-    lookingFor: string;
-    datingIntent: string;
-  },
-  candidate: DemoProfile,
-) {
-  const sharedInterests = viewer.interests.filter((interest) => candidate.interests.includes(interest));
-  const sameCity = viewer.city.trim().toLocaleLowerCase("de-DE") === candidate.city.trim().toLocaleLowerCase("de-DE");
-  const sameIntent = viewer.datingIntent === candidate.datingIntent;
-  const sameLookingFor = viewer.lookingFor === candidate.lookingFor;
-
-  return (
-    sharedInterests.length * 18
-    + (sameCity ? 12 : 0)
-    + (sameIntent ? 10 : 0)
-    + (sameLookingFor ? 6 : 0)
-  );
 }
 
 function getPhaseTwoDifferenceLabel(compatibility: number) {
@@ -2038,7 +1985,7 @@ function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyPartnerProfi
     return null;
   }
 
-  const primaryPhoto = partner.photoUrls.find((entry) => entry?.trim()) ?? partner.avatarUrl ?? demoProfiles[0].imageUri;
+  const primaryPhoto = partner.photoUrls.find((entry) => entry?.trim()) ?? partner.avatarUrl ?? DEFAULT_DEMO_PROFILE.imageUri;
   const preferenceTagline = partner.greenFlags.slice(0, 2).join(" • ");
   const interestTagline = partner.interests.slice(0, 2).join(" • ");
   const tagline = preferenceTagline
@@ -2803,8 +2750,10 @@ function OverviewScreen({
   const [phaseTwoPenaltyAppliedAt, setPhaseTwoPenaltyAppliedAt] = useState<string | null>(null);
   const [accountState, setAccountState] = useState<RemoteAccountState | null>(null);
   const [purchasePending, setPurchasePending] = useState(false);
+  const [purchaseAction, setPurchaseAction] = useState<"pack" | "plus" | "restore" | "manage" | null>(null);
   const [purchaseMessage, setPurchaseMessage] = useState<string | null>(null);
   const [matchPackPriceLabel, setMatchPackPriceLabel] = useState("3,99 €");
+  const [choicePlusPriceLabel, setChoicePlusPriceLabel] = useState("9,99 €");
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState("");
   const [reportDetails, setReportDetails] = useState("");
@@ -2993,6 +2942,7 @@ function OverviewScreen({
     }
 
     setPurchasePending(true);
+    setPurchaseAction("pack");
     setPurchaseMessage(null);
 
     try {
@@ -3026,6 +2976,127 @@ function OverviewScreen({
       }
     } finally {
       setPurchasePending(false);
+      setPurchaseAction(null);
+    }
+  }
+
+  async function waitForChoicePlusActivation(userId: string) {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 1500);
+      });
+
+      try {
+        const updatedAccount = await refreshAccountState(userId);
+
+        if (updatedAccount.choicePlusActive) {
+          return updatedAccount;
+        }
+      } catch {
+        // RevenueCat webhooks can take a few seconds to reach the API.
+      }
+    }
+
+    return null;
+  }
+
+  async function handleSubscribeChoicePlus() {
+    if (!currentUserId) {
+      setPurchaseMessage("Bitte zuerst normal eingeloggt sein.");
+      return;
+    }
+
+    if (!hasRevenueCatConfig()) {
+      setPurchaseMessage("Der Store-Schlüssel fehlt noch. Sobald RevenueCat verbunden ist, kannst du Choice Plus testen.");
+      return;
+    }
+
+    const activeUserId = currentUserId;
+    setPurchasePending(true);
+    setPurchaseAction("plus");
+    setPurchaseMessage(null);
+
+    try {
+      await syncRevenueCatUser(activeUserId);
+      const product = await getChoicePlusStoreProduct();
+
+      if (!product) {
+        setPurchaseMessage("Choice Plus ist im Store noch nicht bereit. Lege zuerst `choice_plus_monthly` an.");
+        return;
+      }
+
+      await purchaseChoicePlusProduct(product);
+      const updatedAccount = await waitForChoicePlusActivation(activeUserId);
+
+      if (updatedAccount) {
+        setAccountState(updatedAccount);
+        setPurchaseMessage("Choice Plus ist jetzt aktiv.");
+      } else {
+        setPurchaseMessage("Das Abo wurde im Store bestätigt. Die Freischaltung erscheint, sobald RevenueCat sie an Choice übermittelt hat.");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLocaleLowerCase("de-DE") : "";
+      setPurchaseMessage(message.includes("cancel") ? "Abo-Abschluss abgebrochen." : "Choice Plus konnte gerade nicht abgeschlossen werden.");
+    } finally {
+      setPurchasePending(false);
+      setPurchaseAction(null);
+    }
+  }
+
+  async function handleRestorePurchases() {
+    if (!currentUserId || !hasRevenueCatConfig()) {
+      setPurchaseMessage("Käufe können wiederhergestellt werden, sobald du eingeloggt und der Store verbunden ist.");
+      return;
+    }
+
+    const activeUserId = currentUserId;
+    setPurchasePending(true);
+    setPurchaseAction("restore");
+    setPurchaseMessage(null);
+
+    try {
+      await syncRevenueCatUser(activeUserId);
+      const customerInfo = await restoreChoicePurchases();
+      const entitlementActive = Boolean(customerInfo.entitlements.active.choice_plus);
+      const updatedAccount = entitlementActive
+        ? await waitForChoicePlusActivation(activeUserId)
+        : await refreshAccountState(activeUserId);
+
+      if (updatedAccount) {
+        setAccountState(updatedAccount);
+      }
+      setPurchaseMessage(
+        entitlementActive
+          ? updatedAccount?.choicePlusActive
+            ? "Choice Plus wurde wiederhergestellt."
+            : "Der Store hat Choice Plus gefunden. Die serverseitige Freischaltung folgt gleich."
+          : "Für dieses Store-Konto wurde kein aktives Choice-Plus-Abo gefunden.",
+      );
+    } catch {
+      setPurchaseMessage("Käufe konnten gerade nicht wiederhergestellt werden.");
+    } finally {
+      setPurchasePending(false);
+      setPurchaseAction(null);
+    }
+  }
+
+  async function handleManageChoicePlus() {
+    if (!hasRevenueCatConfig()) {
+      setPurchaseMessage("Die Abo-Verwaltung ist erst verfügbar, wenn der Store verbunden ist.");
+      return;
+    }
+
+    setPurchasePending(true);
+    setPurchaseAction("manage");
+    setPurchaseMessage(null);
+
+    try {
+      await openStoreSubscriptionManagement();
+    } catch {
+      setPurchaseMessage("Die Abo-Verwaltung konnte gerade nicht geöffnet werden.");
+    } finally {
+      setPurchasePending(false);
+      setPurchaseAction(null);
     }
   }
 
@@ -3036,7 +3107,7 @@ function OverviewScreen({
       return remotePartnerProfile;
     }
 
-    return demoProfiles[0];
+    return DEFAULT_DEMO_PROFILE;
   }, [remoteJourney?.partner]);
   const penaltyPoints = accountState?.penaltyPoints ?? 0;
   const penaltyRecoveryWindowDays = accountState?.penaltyRecoveryWindowDays ?? 3;
@@ -3044,13 +3115,28 @@ function OverviewScreen({
   const remainingPenaltyPoints = Math.max(maxPenaltyPoints - penaltyPoints, 0);
   const accountPaused = accountState?.accountPaused ?? false;
   const accountBanned = accountState?.accountBanned ?? false;
-  const canBuyMatchPack = Boolean(currentUserId && !accountPaused && !accountBanned && hasRevenueCatConfig());
+  const choicePlusActive = accountState?.choicePlusActive ?? accountState?.isPremium ?? false;
+  const choicePlusStoreManaged = Boolean(accountState?.choicePlusProductId);
+  const choicePlusWillRenew = accountState?.choicePlusWillRenew ?? false;
+  const choicePlusExpiresAt = accountState?.choicePlusExpiresAt ?? null;
+  const revenueCatConfigured = hasRevenueCatConfig();
+  const canSubscribeChoicePlus = Boolean(currentUserId && !accountPaused && !accountBanned && !choicePlusActive && revenueCatConfigured);
+  const canBuyMatchPack = Boolean(currentUserId && !accountPaused && !accountBanned && !choicePlusActive && revenueCatConfigured);
+  const previewPurchaseButtons = Boolean(
+    __DEV__
+    && currentUserId
+    && !accountPaused
+    && !accountBanned
+    && !choicePlusActive
+    && !revenueCatConfigured,
+  );
+  const choicePlusButtonDisabled = purchasePending || (choicePlusActive ? !choicePlusStoreManaged : !canSubscribeChoicePlus);
+  const matchPackButtonDisabled = !canBuyMatchPack || purchasePending;
   const activePartnerUserId = remoteJourney?.partner?.userId ?? null;
   const hasActiveChat = Boolean(currentUserId && remoteJourney?.partner);
   const includedMatchLimit = accountState?.includedMatchLimit ?? 8;
   const paidMatchCredits = accountState?.paidMatchCredits ?? 0;
   const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
-  const forfeitedPaidMatchCredits = accountState?.forfeitedPaidMatchCredits ?? 0;
   const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
   const totalMatchCount = accountState?.totalMatchCount ?? 0;
   const consumedIncludedMatchCount = Math.min(totalMatchCount, includedMatchLimit);
@@ -3327,70 +3413,6 @@ function OverviewScreen({
         ? "Choice zeigt dir vorher noch nicht, wer dein erstes Match wird."
         : `Choice hat ${phaseOneStarterName} ausgewählt, den Chat zu eröffnen.`
       : "Choice hat gerade noch kein Match für dich freigegeben.");
-  const remotePhaseThreeSuggestedProfile = useMemo(
-    () => mapRemoteJourneyPartnerToDemoProfile(remoteJourney?.phaseThreeSuggestion ?? null),
-    [remoteJourney?.phaseThreeSuggestion],
-  );
-  const phaseThreeSuggestedProfile = useMemo<DemoProfile | null>(() => {
-    if (remoteJourney) {
-      return remotePhaseThreeSuggestedProfile;
-    }
-
-    const excludedIds = new Set<string>([featuredProfile.id, activePartnerUserId ?? ""]);
-    const viewerAge = profileAge ?? Number(profile.ageRangeMin || 0);
-    const viewerAgeRangeMin = Number(profile.ageRangeMin || 0);
-    const viewerAgeRangeMax = Number(profile.ageRangeMax || 0);
-
-    if (!viewerAge || !viewerAgeRangeMin || !viewerAgeRangeMax) {
-      return null;
-    }
-
-    const viewerProfile = {
-      city: profile.city || "Berlin",
-      interests: profile.interests,
-      pronouns: profile.pronouns || "keine-angabe",
-      lookingFor: profile.lookingFor || "Alle",
-      datingIntent: profile.datingIntent,
-      age: viewerAge,
-      ageRangeMin: viewerAgeRangeMin,
-      ageRangeMax: viewerAgeRangeMax,
-    };
-
-    const compatibleCandidates = demoProfiles
-      .filter((entry) => !excludedIds.has(entry.id))
-      .filter((entry) => isLocallyCompatible(viewerProfile, entry))
-      .map((entry) => ({
-        entry,
-        score: calculateLocalCandidateScore(viewerProfile, entry),
-      }))
-      .sort((candidateA, candidateB) => {
-        if (candidateB.score !== candidateA.score) {
-          return candidateB.score - candidateA.score;
-        }
-
-        return candidateA.entry.firstName.localeCompare(candidateB.entry.firstName, "de-DE");
-      });
-
-    return compatibleCandidates[0]?.entry ?? null;
-  }, [
-    activePartnerUserId,
-    featuredProfile.id,
-    remoteJourney,
-    remotePhaseThreeSuggestedProfile,
-    profile.ageRangeMax,
-    profile.ageRangeMin,
-    profile.city,
-    profile.datingIntent,
-    profile.interests,
-    profile.lookingFor,
-    profile.pronouns,
-    profileAge,
-  ]);
-  const phaseThreeSuggestedDistanceLabel = phaseThreeSuggestedProfile
-    ? formatDistanceLabel(estimateDistanceKm(profile.city || "Berlin", phaseThreeSuggestedProfile.city))
-    : "";
-  const phaseThreeSuggestedNewMatchLabel = phaseThreeSuggestedProfile?.firstName ?? "ein neues Match";
-  const phaseThreeSuggestedWithMatchLabel = phaseThreeSuggestedProfile?.firstName ?? "einem neuen Match";
   const phaseTwoViewerUserId = currentUserId ?? "choice_local_viewer";
   const phaseTwoFallbackPartnerUserId = activePartnerUserId ?? "choice_partner_placeholder";
   const phaseTwoAssignedStarterUserId = remoteJourney?.phaseTwoStarterUserId ?? chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId);
@@ -3568,7 +3590,7 @@ function OverviewScreen({
           ? phaseFourUnlocked
             ? "Die Pause ist vorbei. Jetzt ist der Choice Award da."
             : phaseThreePartnerDecision === "new-match"
-              ? `${featuredProfile.firstName} möchte morgen lieber mit dem neuen Vorschlag weitermachen. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} schreibt nicht weiter.`
+              ? `${featuredProfile.firstName} möchte morgen neu starten. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} schreibt nicht weiter.`
               : "Ihr habt euch beide gegen das neue Match entschieden. Jetzt könnt ihr in Phase 3 weiterschreiben."
           : "Die Choice-Runde ist abgeschlossen. Jetzt könnt ihr in Phase 2 ganz normal weiterschreiben."
         : phaseThreeStartsLater
@@ -3576,11 +3598,11 @@ function OverviewScreen({
         : phaseThreeViewerDecision === "new-match"
           ? "Du hast dich für ein neues Match entschieden. Für dich bleibt dieser Chat jetzt zu."
         : phaseThreeAnyLeave
-          ? "Mindestens eine Person möchte morgen lieber mit dem neuen Vorschlag weitermachen. Dieser Chat bleibt zu."
+          ? "Mindestens eine Person möchte morgen neu starten. Dieser Chat bleibt zu."
           : phaseThreeWindowFinished
             ? "Das Zeitfenster für Phase 3 ist vorbei."
         : phaseThreeDecisionPending
-            ? `Choice zeigt euch für morgen ${phaseThreeSuggestedNewMatchLabel} als Alternative. Dieses Match bleibt aktuell bestehen, außer jemand wechselt noch bewusst auf ein neues Match.`
+            ? "Nach eurem Spiel könnt ihr dieses Match noch einmal neu bewerten. Ohne Änderung bleibt es bestehen; ein neues Match wird erst morgen ausgewählt."
         : phaseOneClosed
           ? !phaseOneChatStarted
             ? "Die erste Nachricht ist ausgeblieben. Deshalb endet dieses Match jetzt und danach startet wieder ein neues Match."
@@ -3733,21 +3755,21 @@ function OverviewScreen({
           ? phaseFourUnlocked
             ? "Die Pause ist vorbei. Jetzt ist der Choice Award da."
             : phaseThreePartnerDecision === "new-match"
-              ? `${featuredProfile.firstName} möchte morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} starten. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} wird nicht mehr antworten.`
+              ? `${featuredProfile.firstName} möchte morgen neu starten. Du kannst hier noch schreiben, aber ${featuredProfile.firstName} wird nicht mehr antworten.`
               : "Ihr bleibt bei diesem Match. Jetzt könnt ihr hier in Phase 3 weiterschreiben."
           : "Die Choice-Runde ist geschafft. Jetzt könnt ihr hier in Phase 2 weiterschreiben."
         : phaseThreeStartsLater
           ? `Choice hat eure Runde ausgewertet. Phase 3 startet ${phaseThreeStartLabel}. Noch ${phaseThreeStartsInLabel}.`
         : phaseThreeViewerDecision === "new-match"
-          ? `Du hast dich für ${phaseThreeSuggestedNewMatchLabel} entschieden. Für dich bleibt dieser Chat jetzt zu, und morgen startet für dich ein neues Match.`
+          ? "Du hast dich für einen Neustart entschieden. Für dich bleibt dieser Chat jetzt zu, und morgen sucht Choice neu."
         : phaseThreeAnyLeave
-          ? `Mindestens eine Person möchte morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} starten. Deshalb bleibt dieser Chat jetzt zu.`
+          ? "Mindestens eine Person möchte morgen neu starten. Deshalb bleibt dieser Chat jetzt zu."
           : phaseThreeWindowFinished
             ? phaseThreeAnyLeave
-              ? `Mindestens eine Person möchte lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten. Deshalb endet dieses Match nach Phase 4.`
+              ? "Mindestens eine Person möchte neu starten. Deshalb endet dieses Match nach Phase 4."
               : "Die Pause ist vorbei. Für dieses Match wurde danach aber kein gemeinsamer nächster Schritt mehr freigeschaltet."
         : phaseThreeDecisionPending
-            ? `Choice zeigt euch für morgen ${phaseThreeSuggestedNewMatchLabel} als Alternative. Standardmäßig bleibt ihr bei diesem Match. Wenn jemand lieber wechseln möchte, kann das bis zum Ende von Phase 4 noch geändert werden.`
+            ? "Nach dem gemeinsamen Spiel könnt ihr eure erste Entscheidung noch einmal prüfen. Standardmäßig bleibt ihr bei diesem Match; ein neues Profil wird heute bewusst noch nicht gezeigt."
         : phaseOneClosed
           ? !phaseOneChatStarted
             ? `Bis ${decisionClockLabel} kam keine erste Nachricht. Die Start-Person bekommt dafür einen Strafpunkt, und danach startet wieder ein neues Match.`
@@ -3830,8 +3852,8 @@ function OverviewScreen({
     {
       phase: "Phase 3",
       icon: "↻",
-      title: "Ein neuer Reiz zeigt, wie stark das Interesse ist",
-      text: "Beide bekommen erneut die Chance auf ein neues Match. Genau daran wird sichtbar, ob man bei dieser Person bleiben will oder sich sofort neu orientiert.",
+      title: "Nach neuen Eindrücken noch einmal bewusst entscheiden",
+      text: "In Phase 1 kanntet ihr euch kaum. Nach Chat und Choice-Runde prüft ihr einmal neu, ob ihr diesem Match weiter Raum gebt. Ohne Änderung bleibt es bestehen.",
       status: homePhaseThreeStatus,
     },
     {
@@ -4131,6 +4153,31 @@ function OverviewScreen({
     applyPhaseTwoAnswerBOptimistically(answer);
   }
 
+  function goBackToPreviousPhaseTwoQuestion() {
+    if (!phaseTwoViewerCanAnswer || phaseTwoSubmitPending || phaseTwoRoundIndex <= 0) {
+      return;
+    }
+
+    if (isServerJourneyMode && journeyOwnerUserId) {
+      setPhaseTwoSubmitPending(true);
+      void (async () => {
+        try {
+          const journey = await goBackRemotePhaseTwoQuestion(journeyOwnerUserId);
+          applyRemoteJourneyState(journey);
+        } catch {
+          void refreshJourneyState(journeyOwnerUserId).catch(() => {
+            setPhaseTwoSubmitPending(false);
+          });
+        } finally {
+          setPhaseTwoSubmitPending(false);
+        }
+      })();
+      return;
+    }
+
+    setPhaseTwoRoundIndex((current) => Math.max(0, current - 1));
+  }
+
   function sendChatMessage() {
     const nextText = chatDraft.trim();
 
@@ -4352,7 +4399,9 @@ function OverviewScreen({
         : pendingAccountAction === "delete"
           ? {
               title: "Konto wirklich löschen?",
-              text: "Dein Profil, deine Matches und deine Chats werden dauerhaft entfernt. Bereits verbrauchte Match-Freischaltungen bleiben aber an deine Telefonnummer gebunden.",
+              text: choicePlusActive && choicePlusStoreManaged
+                ? "Dein Profil, deine Matches und deine Chats werden dauerhaft entfernt. Wichtig: Dein Choice-Plus-Abo läuft im Store weiter, bis du es dort separat kündigst. Bereits verbrauchte Match-Freischaltungen bleiben an deine Telefonnummer gebunden."
+                : "Dein Profil, deine Matches und deine Chats werden dauerhaft entfernt. Bereits verbrauchte Match-Freischaltungen bleiben aber an deine Telefonnummer gebunden.",
               confirmLabel: "Konto löschen",
               confirmTone: "danger" as const,
               onConfirm: onDeleteAccount,
@@ -4483,8 +4532,8 @@ function OverviewScreen({
               <Text style={styles.chatDecisionInlineOptionText}>
                 {decisionIsAfterGame
                   ? decisionInPause
-                    ? `Nach der Pause lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten.`
-                    : "Du möchtest morgen ein neues Match."
+                    ? "Nach der Pause dieses Match beenden und morgen neu starten."
+                    : "Dieses Match beenden und morgen neu starten."
                   : "Du möchtest morgen ein neues Match."}
               </Text>
             </View>
@@ -4611,7 +4660,7 @@ function OverviewScreen({
       phaseTwoStatusTitle = "Die Choice-Runde ist abgeschlossen.";
       phaseTwoStatusText = phaseThreeQualified
         ? phaseThreeDecisionOpen
-          ? `Choice hat eure Runde ausgewertet. Für morgen zeigt euch Choice ${phaseThreeSuggestedNewMatchLabel} als Alternative. Dieses Match bleibt erstmal offen, solange niemand bewusst auf ein neues Match wechselt.`
+          ? "Choice hat eure Runde ausgewertet. Jetzt könnt ihr eure erste Entscheidung noch einmal prüfen. Ohne Änderung bleibt dieses Match bestehen."
           : `Choice hat eure Runde ausgewertet. Ihr seid über 50%. Phase 3 startet ${phaseThreeStartLabel}. Noch ${phaseThreeStartsInLabel}.`
         : "Choice hat eure Runde ausgewertet. Der Chat ist jetzt in Phase 2 wieder offen, auch wenn es noch nicht für Phase 3 reicht.";
     }
@@ -4674,23 +4723,23 @@ function OverviewScreen({
 
     let phaseThreeTitle = decisionWindowInPause
       ? "Die Pause läuft. Euer Match bleibt aktuell bestehen."
-      : "Choice zeigt euch jetzt eine Alternative.";
+      : "Jetzt könnt ihr eure Entscheidung neu bewerten.";
     let phaseThreeText = decisionWindowInPause
-      ? `Bis ${phaseFiveClockLabel} kannst du noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn du lieber neu starten willst. Sonst geht euer Chat danach einfach weiter.`
-      : `Für morgen schlägt Choice ${phaseThreeSuggestedNewMatchLabel} vor. Dieses Match bleibt erstmal ausgewählt. Wenn du lieber wechseln willst, kannst du das bis ${phaseFourClockLabel} noch anpassen.`;
+      ? `Bis ${phaseFiveClockLabel} kannst du dieses Match noch beenden, wenn du morgen neu starten möchtest. Sonst geht euer Chat danach einfach weiter.`
+      : `In Phase 1 kanntet ihr euch kaum. Nach Chat und Choice-Runde kannst du jetzt fundierter entscheiden. Dieses Match bleibt ausgewählt, solange du nichts änderst.`;
 
     if (phaseThreeViewerStayedExplicitly && phaseThreePartnerDecision === "undecided") {
       phaseThreeTitle = "Du bleibst bei diesem Match.";
       phaseThreeText = decisionWindowInPause
-        ? `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFiveClockLabel} noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn es sich richtiger anfühlt.`
-        : `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFourClockLabel} noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn es sich richtiger anfühlt.`;
+        ? `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFiveClockLabel} noch entscheiden, morgen neu zu starten.`
+        : `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFourClockLabel} noch entscheiden, morgen neu zu starten.`;
     }
 
     if (phaseThreeViewerDecision !== "stay" && phaseThreePartnerStayedExplicitly) {
       phaseThreeTitle = `${featuredProfile.firstName} bleibt bei euch.`;
       phaseThreeText = decisionWindowInPause
-        ? `Wenn du nichts mehr änderst, geht euer Chat nach ${phaseFiveClockLabel} einfach weiter. Bis dahin kannst du trotzdem noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln.`
-        : `Wenn du nichts mehr änderst, bleibt ihr bei diesem Match. Bis ${phaseFourClockLabel} kannst du trotzdem noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln.`;
+        ? `Wenn du nichts mehr änderst, geht euer Chat nach ${phaseFiveClockLabel} einfach weiter. Bis dahin kannst du dieses Match noch beenden.`
+        : `Wenn du nichts mehr änderst, bleibt ihr bei diesem Match. Bis ${phaseFourClockLabel} kannst du dich noch für einen Neustart entscheiden.`;
     }
 
     if (phaseThreeBothStayExplicit) {
@@ -4707,8 +4756,8 @@ function OverviewScreen({
         ? "Mindestens eine Person möchte nach der Pause neu starten."
         : "Mindestens eine Person möchte morgen ein neues Match.";
       phaseThreeText = decisionWindowInPause
-        ? `Nach ${phaseFiveClockLabel} endet euer aktueller Chat. Danach würde stattdessen ${phaseThreeSuggestedWithMatchLabel} in Phase 1 bereitstehen.`
-        : `Damit endet euer aktueller Chat. Morgen würde stattdessen ${phaseThreeSuggestedWithMatchLabel} in Phase 1 bereitstehen.`;
+        ? `Nach ${phaseFiveClockLabel} endet euer aktueller Chat. Choice sucht erst danach ein neues passendes Match.`
+        : "Damit endet euer aktueller Chat. Morgen sucht Choice anhand der dann verfügbaren Personen neu.";
     }
 
     return (
@@ -4717,34 +4766,12 @@ function OverviewScreen({
         <Text style={styles.phaseThreeEntryTitle}>{phaseThreeTitle}</Text>
         <Text style={styles.phaseTwoEntryText}>{phaseThreeText}</Text>
 
-        {phaseThreeSuggestedProfile ? (
-          <View style={styles.phaseThreePreviewWrap}>
-            <Image source={{ uri: phaseThreeSuggestedProfile.imageUri }} style={styles.phaseThreePreviewImage} />
-            <View style={styles.phaseThreePreviewCopy}>
-              <View style={styles.phaseThreePreviewTopRow}>
-                <Text style={styles.phaseThreePreviewName}>
-                  {phaseThreeSuggestedProfile.firstName}, {phaseThreeSuggestedProfile.age}
-                </Text>
-                <View style={styles.phaseThreePreviewPill}>
-                  <Text style={styles.phaseThreePreviewPillText}>
-                    {decisionWindowInPause ? `offen bis ${phaseFiveClockLabel}` : `heute ${phaseThreeClockLabel}`}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.phaseThreePreviewMeta}>
-                {[phaseThreeSuggestedProfile.city, phaseThreeSuggestedDistanceLabel].filter(Boolean).join(" • ")}
-              </Text>
-              <Text style={styles.phaseThreePreviewTagline}>{phaseThreeSuggestedProfile.tagline}</Text>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.phaseThreePreviewFallback}>
-            <Text style={styles.phaseThreePreviewFallbackTitle}>Choice sucht gerade noch den passendsten neuen Vorschlag.</Text>
-            <Text style={styles.phaseThreePreviewFallbackText}>
-              Sobald ein wirklich passendes neues Match feststeht, siehst du es hier statt eines zufälligen Profils.
-            </Text>
-          </View>
-        )}
+        <View style={styles.phaseThreePreviewFallback}>
+          <Text style={styles.phaseThreePreviewFallbackTitle}>Ein neues Match wird erst morgen ausgewählt.</Text>
+          <Text style={styles.phaseThreePreviewFallbackText}>
+            Choice zeigt heute bewusst kein Ersatzprofil. Bei einem Neustart endet dieses Match, und morgen wird anhand der dann verfügbaren Personen neu gesucht.
+          </Text>
+        </View>
 
         <View style={styles.phaseThreeDecisionRow}>
           <Pressable
@@ -4806,8 +4833,8 @@ function OverviewScreen({
               </Text>
               <Text style={styles.phaseThreeDecisionText}>
                 {decisionWindowInPause
-                  ? `Nach der Pause lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten.`
-                  : `Morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} chatten.`}
+                  ? "Nach der Pause dieses Match beenden und morgen neu starten."
+                  : "Dieses Match beenden und morgen neu starten."}
               </Text>
             </View>
           </Pressable>
@@ -5083,6 +5110,7 @@ function OverviewScreen({
     if (!currentUserId) {
       setPurchaseMessage(null);
       setMatchPackPriceLabel("3,99 €");
+      setChoicePlusPriceLabel("9,99 €");
       void logOutRevenueCat().catch(() => {
         // Ignore logout cleanup errors while leaving the app surface.
       });
@@ -5097,28 +5125,37 @@ function OverviewScreen({
   useEffect(() => {
     if (!currentUserId || !hasRevenueCatConfig()) {
       setMatchPackPriceLabel("3,99 €");
+      setChoicePlusPriceLabel("9,99 €");
       return;
     }
 
     const activeUserId = currentUserId;
     let cancelled = false;
 
-    async function loadMatchPackPrice() {
+    async function loadPurchasePrices() {
       try {
         await syncRevenueCatUser(activeUserId);
-        const product = await getMatchPackStoreProduct();
+        const [matchPackProduct, choicePlusProduct] = await Promise.all([
+          getMatchPackStoreProduct(),
+          getChoicePlusStoreProduct(),
+        ]);
 
-        if (!cancelled && product?.priceString) {
-          setMatchPackPriceLabel(product.priceString);
+        if (!cancelled && matchPackProduct?.priceString) {
+          setMatchPackPriceLabel(matchPackProduct.priceString);
+        }
+
+        if (!cancelled && choicePlusProduct?.priceString) {
+          setChoicePlusPriceLabel(choicePlusProduct.priceString);
         }
       } catch {
         if (!cancelled) {
           setMatchPackPriceLabel("3,99 €");
+          setChoicePlusPriceLabel("9,99 €");
         }
       }
     }
 
-    void loadMatchPackPrice();
+    void loadPurchasePrices();
 
     return () => {
       cancelled = true;
@@ -5755,7 +5792,12 @@ function OverviewScreen({
 
   if (!isJourneyHydrated) {
     return (
-      <View style={styles.sessionRestoreShell}>
+      <View
+        style={[
+          styles.sessionRestoreShell,
+          { transform: [{ translateY: -insets.top / 2 }] },
+        ]}
+      >
         <Text style={styles.sessionRestoreText}>CHOICE</Text>
       </View>
     );
@@ -5792,9 +5834,7 @@ function OverviewScreen({
             <Text style={styles.overviewRuleTitle}>{accountBanned ? "Was das für gekaufte Matches bedeutet" : "Warum das passiert ist"}</Text>
             <Text style={styles.overviewRuleText}>
               {accountBanned
-                ? forfeitedPaidMatchCredits > 0
-                  ? `${forfeitedPaidMatchCredits} gekaufte Matches sind mit der Sperrung verfallen.`
-                  : "Auch zahlende Konten können dauerhaft gesperrt werden."
+                ? "Auch zahlende Konten können dauerhaft gesperrt werden. Gekaufte Match-Guthaben laufen dadurch nicht ab, können während der Sperre aber nicht genutzt werden. Ein Store-Abo muss separat im Store gekündigt werden."
                 : frozenPaidMatchCredits > 0
                   ? `${frozenPaidMatchCredits} gekaufte Matches sind eingefroren und können nach einer Entsperrung wieder freigegeben werden.`
                   : `Choice pausiert Konten bei drei bestätigten Strafpunkten automatisch. Wenn derselbe Verstoß ${penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Punkt wieder.`}
@@ -5810,6 +5850,13 @@ function OverviewScreen({
             <Text style={styles.legalSupportButtonText}>Entscheidung prüfen lassen</Text>
             <Text style={styles.legalSupportButtonMeta}>Öffnet direkt den Kontakt für Moderations- und Einspruchsanliegen.</Text>
           </Pressable>
+
+          {choicePlusActive && choicePlusStoreManaged ? (
+            <Pressable onPress={() => void handleManageChoicePlus()} style={styles.legalSupportButton}>
+              <Text style={styles.legalSupportButtonText}>Choice Plus im Store verwalten</Text>
+              <Text style={styles.legalSupportButtonMeta}>Eine Kontosperre beendet die automatische Verlängerung nicht.</Text>
+            </Pressable>
+          ) : null}
 
           <View style={styles.accountActionsList}>
             <Pressable onPress={() => { void onSignOut(); }} style={styles.accountActionButton} disabled={accountActionPending}>
@@ -5827,7 +5874,11 @@ function OverviewScreen({
             >
               <View style={styles.accountActionCopy}>
                 <Text style={[styles.accountActionTitle, styles.accountActionTitleDanger]}>Konto löschen</Text>
-                <Text style={styles.accountActionMeta}>Profil, Matches und Chats dauerhaft entfernen.</Text>
+                <Text style={styles.accountActionMeta}>
+                  {choicePlusActive && choicePlusStoreManaged
+                    ? "Profil dauerhaft entfernen. Das Store-Abo vorher separat kündigen."
+                    : "Profil, Matches und Chats dauerhaft entfernen."}
+                </Text>
               </View>
               <Text style={[styles.accountActionArrow, styles.accountActionArrowDanger]}>›</Text>
             </Pressable>
@@ -5846,7 +5897,6 @@ function OverviewScreen({
           styles.chatFullScreenShell,
           {
             marginTop: -insets.top,
-            marginBottom: -insets.bottom,
           },
         ]}
       >
@@ -5972,6 +6022,33 @@ function OverviewScreen({
                     </View>
                   ) : null}
 
+                  {phaseTwoRoundIndex > 0 ? (
+                    <View style={styles.phaseTwoQuestionBackRow}>
+                      <Pressable
+                        onPress={goBackToPreviousPhaseTwoQuestion}
+                        disabled={phaseTwoSubmitPending}
+                        accessibilityRole="button"
+                        accessibilityLabel="Zur vorherigen Frage"
+                        style={({ pressed }) => [
+                          styles.phaseTwoQuestionBackButton,
+                          pressed && !phaseTwoSubmitPending && styles.phaseTwoQuestionBackButtonPressed,
+                          phaseTwoSubmitPending && styles.phaseTwoQuestionBackButtonDisabled,
+                        ]}
+                      >
+                        <Svg width={20} height={20} viewBox="0 0 20 20">
+                          <Path
+                            d="M12.5 4.75L7.25 10l5.25 5.25"
+                            fill="none"
+                            stroke="rgba(216, 242, 255, 0.76)"
+                            strokeWidth={1.8}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </Svg>
+                      </Pressable>
+                    </View>
+                  ) : null}
+
                   <View style={styles.phaseTwoQuestionCard}>
                     <Text style={styles.phaseTwoQuestionEyebrow}>
                       {phaseTwoStage === "starter"
@@ -5990,25 +6067,34 @@ function OverviewScreen({
                     {(phaseTwoStage === "starter"
                       ? phaseTwoCurrentRound.answerOptions
                       : phaseTwoCurrentResult?.followUpOptions ?? []
-                    ).map((option) => (
-                      <Pressable
-                        key={`${phaseTwoCurrentRound.id}-${phaseTwoStage}-${option.label}`}
-                        onPress={() =>
-                          phaseTwoStage === "starter"
-                            ? selectPhaseTwoAnswerA(option as PhaseTwoAnswerBranch)
-                            : selectPhaseTwoAnswerB(option as PhaseTwoResponseOption)
-                        }
-                        style={({ pressed }) => [
-                          styles.phaseTwoAnswerCard,
-                          pressed && styles.phaseTwoAnswerCardPressed,
-                        ]}
-                      >
-                        <View style={styles.phaseTwoAnswerScoreBubble}>
-                          <Text style={styles.phaseTwoAnswerScoreText}>{option.score}</Text>
-                        </View>
-                        <Text style={styles.phaseTwoAnswerText}>{option.label}</Text>
-                      </Pressable>
-                    ))}
+                    ).map((option) => {
+                      const selectedAnswerLabel = phaseTwoStage === "starter"
+                        ? phaseTwoCurrentResult?.personALabel
+                        : phaseTwoCurrentResult?.personBLabel;
+                      const selected = selectedAnswerLabel === option.label;
+
+                      return (
+                        <Pressable
+                          key={`${phaseTwoCurrentRound.id}-${phaseTwoStage}-${option.label}`}
+                          onPress={() =>
+                            phaseTwoStage === "starter"
+                              ? selectPhaseTwoAnswerA(option as PhaseTwoAnswerBranch)
+                              : selectPhaseTwoAnswerB(option as PhaseTwoResponseOption)
+                          }
+                          style={({ pressed }) => [
+                            styles.phaseTwoAnswerCard,
+                            selected && styles.phaseTwoAnswerCardSelected,
+                            pressed && styles.phaseTwoAnswerCardPressed,
+                          ]}
+                        >
+                          <View style={[styles.phaseTwoAnswerScoreBubble, selected && styles.phaseTwoAnswerScoreBubbleSelected]}>
+                            <Text style={[styles.phaseTwoAnswerScoreText, selected && styles.phaseTwoAnswerScoreTextSelected]}>{option.score}</Text>
+                          </View>
+                          <Text style={[styles.phaseTwoAnswerText, selected && styles.phaseTwoAnswerTextSelected]}>{option.label}</Text>
+                          {selected ? <Text style={styles.phaseTwoAnswerSelectedMark}>✓</Text> : null}
+                        </Pressable>
+                      );
+                    })}
                   </View>
                 </>
               ) : (
@@ -6038,7 +6124,6 @@ function OverviewScreen({
           styles.chatFullScreenShell,
           {
             marginTop: -insets.top,
-            marginBottom: -insets.bottom,
           },
         ]}
       >
@@ -6094,8 +6179,8 @@ function OverviewScreen({
               <Text style={styles.chatDecisionText}>
                 {phaseThreeUnlocked
                   ? phaseFourWindowLocked
-                    ? `Der Chat pausiert gerade bis ${phaseFiveClockLabel}. Standardmäßig geht es danach mit ${featuredProfile.firstName} weiter. Wenn du lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten willst, kannst du das bis dahin noch ändern.`
-                    : `Choice schlägt dir für morgen ${phaseThreeSuggestedNewMatchLabel} als Alternative vor. Standardmäßig bleibst du bei diesem Match, kannst aber bis ${phaseFourClockLabel} noch wechseln.`
+                    ? `Der Chat pausiert gerade bis ${phaseFiveClockLabel}. Standardmäßig geht es danach mit ${featuredProfile.firstName} weiter. Bis dahin kannst du dieses Match noch beenden und morgen neu starten.`
+                    : `Nach Chat und Choice-Runde kannst du deine erste Entscheidung noch einmal prüfen. Standardmäßig bleibst du bei diesem Match; ein neues Match wird erst morgen ausgewählt.`
                   : "Wenn es sich gut anfühlt, kannst du Phase 2 vormerken. Sonst gehst du morgen einfach mit einem neuen Match weiter."}
               </Text>
 
@@ -6179,8 +6264,8 @@ function OverviewScreen({
                     <Text style={styles.chatDecisionOptionText}>
                       {phaseThreeUnlocked
                         ? phaseFourWindowLocked
-                          ? `Nach der Pause lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten.`
-                          : `Morgen lieber mit ${phaseThreeSuggestedWithMatchLabel} chatten.`
+                          ? "Nach der Pause dieses Match beenden und morgen neu starten."
+                          : "Dieses Match beenden und morgen neu starten."
                         : "Du möchtest morgen ein neues Match."}
                     </Text>
                   </View>
@@ -6322,7 +6407,7 @@ function OverviewScreen({
         </View>
 
         <Text style={styles.penaltyText}>
-          Ein bestätigter Verstoß gibt einen Strafpunkt. Bei drei Punkten wird dein Konto pausiert. So baust du Punkte wieder ab: Wenn derselbe Verstoß {penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Strafpunkt wieder. Gekaufte Match-Pakete werden dann eingefroren und nur bei dauerhafter Sperre endgültig verloren.
+          Ein bestätigter Verstoß gibt einen Strafpunkt. Bei drei Punkten wird dein Konto pausiert. So baust du Punkte wieder ab: Wenn derselbe Verstoß {penaltyRecoveryWindowDays} Tage lang nicht noch einmal vorkommt, verschwindet der dazugehörige Strafpunkt wieder. Gekaufte Match-Pakete werden während einer Pause oder Sperre eingefroren und laufen dadurch nicht ab.
         </Text>
 
         <View style={styles.penaltyProgressRow}>
@@ -6508,13 +6593,13 @@ function OverviewScreen({
     } else if (phaseFourWindowLocked && phaseThreeDecisionPending) {
       eyebrow = "Phase 4";
       title = "Die Pause läuft gerade.";
-      text = `Euer Match bleibt aktuell bestehen. Bis ${phaseFiveClockLabel} kannst du noch auf ${phaseThreeSuggestedWithMatchLabel} wechseln, wenn du lieber neu starten willst.`;
+      text = `Euer Match bleibt aktuell bestehen. Bis ${phaseFiveClockLabel} kannst du es noch beenden, wenn du morgen neu starten möchtest.`;
       buttonLabel = "Ändern";
       onPress = () => setShowChatDecisionModal(true);
     } else if (phaseThreeDecisionPending) {
       eyebrow = "Phase 3";
       title = "Phase 3 ist jetzt da.";
-      text = `Choice zeigt euch ${phaseThreeSuggestedNewMatchLabel} für morgen als Alternative. Aktuell bleibt ihr bei diesem Match. Wenn du lieber wechseln willst, kannst du das bis ${phaseFourClockLabel} ändern.`;
+      text = `Nach Chat und Choice-Runde könnt ihr eure erste Entscheidung noch einmal prüfen. Aktuell bleibt dieses Match ausgewählt. Wenn du morgen neu starten willst, kannst du das bis ${phaseFourClockLabel} ändern.`;
       buttonLabel = "Optionen";
       onPress = () => setShowChatDecisionModal(true);
     } else if (phaseFiveRestartSelected) {
@@ -6605,7 +6690,7 @@ function OverviewScreen({
         ? "Dieses Match endet nach Phase 4."
         : "Die letzte Entscheidung ist abgelaufen.";
       text = phaseThreeAnyLeave
-        ? `Mindestens eine Person wollte lieber mit ${phaseThreeSuggestedWithMatchLabel} neu starten. Deshalb öffnet sich der Award für dieses Match nicht.`
+        ? "Mindestens eine Person wollte morgen neu starten. Deshalb öffnet sich der Award für dieses Match nicht."
         : `Bis ${phaseFiveClockLabel} gab es keine gemeinsame Zusage mehr für dieses Match. Deshalb wird der Award hier nicht freigeschaltet.`;
       pills.push(phaseThreeAnyLeave ? "Neustart gewählt" : "Nicht freigeschaltet");
     } else if (phaseFourWindowLocked) {
@@ -6617,7 +6702,7 @@ function OverviewScreen({
     } else if (phaseThreeDecisionPending) {
       eyebrow = "Phase 3";
       title = "Phase 3 läuft gerade.";
-      text = `Choice zeigt euch ${phaseThreeSuggestedNewMatchLabel} für morgen als Alternative. Aktuell bleibt euer Match bestehen. Wenn jemand lieber wechseln will, geht das noch bis ${phaseFourClockLabel}.`;
+      text = `Nach Chat und Choice-Runde könnt ihr eure erste Entscheidung noch einmal prüfen. Ohne Änderung bleibt euer Match bestehen. Ein neues Match wird erst morgen ausgewählt.`;
       pills.push(`Noch ${formatDurationLabel(Math.max(0, phaseFourStartTime.getTime() - currentTime.getTime()))}`);
       pills.push(`bis ${phaseFourClockLabel}`);
     } else if (phaseThreeStartsLater) {
@@ -7015,21 +7100,154 @@ function OverviewScreen({
     if (currentTab === "activity") {
       return (
         <>
+          <View style={[styles.choicePlusCard, choicePlusActive && styles.choicePlusCardActive]}>
+            <View style={styles.choicePlusGlow} />
+            <View style={styles.choicePlusHeaderRow}>
+              <View style={styles.choicePlusTitleWrap}>
+                <Text style={styles.choicePlusEyebrow}>Choice Plus</Text>
+                <Text style={styles.choicePlusTitle}>
+                  {choicePlusActive ? "Dein tägliches Match bleibt offen." : "Jeden Tag eine neue Chance."}
+                </Text>
+              </View>
+              <View style={[styles.choicePlusBadge, choicePlusActive && styles.choicePlusBadgeActive]}>
+                <Text style={[styles.choicePlusBadgeText, choicePlusActive && styles.choicePlusBadgeTextActive]}>
+                  {choicePlusActive ? "Aktiv" : "Monatlich"}
+                </Text>
+              </View>
+            </View>
+
+            <Text style={styles.choicePlusText}>
+              Bis zu ein bewusst ausgewähltes Match pro Tag, ohne Match-Guthaben. Ein passendes Profil kann nur angeboten werden, wenn es verfügbar ist.
+            </Text>
+
+            <View style={styles.choicePlusFeatureList}>
+              <View style={styles.choicePlusFeatureRow}>
+                <View style={styles.choicePlusFeatureDot} />
+                <Text style={styles.choicePlusFeatureText}>Weiterhin nur ein aktives Match gleichzeitig</Text>
+              </View>
+              <View style={styles.choicePlusFeatureRow}>
+                <View style={styles.choicePlusFeatureDot} />
+                <Text style={styles.choicePlusFeatureText}>Kein zusätzliches Match-Guthaben erforderlich</Text>
+              </View>
+              <View style={styles.choicePlusFeatureRow}>
+                <View style={styles.choicePlusFeatureDot} />
+                <Text style={styles.choicePlusFeatureText}>Fairness-Regeln und Strafpunkte bleiben unverändert</Text>
+              </View>
+            </View>
+
+            {choicePlusActive ? (
+              <View style={styles.choicePlusActiveNotice}>
+                <Text style={styles.choicePlusActiveNoticeTitle}>
+                  {!choicePlusStoreManaged
+                    ? "Manuell freigeschaltet"
+                    : choicePlusWillRenew
+                      ? "Verlängert sich monatlich"
+                      : "Verlängerung beendet"}
+                </Text>
+                <Text style={styles.choicePlusActiveNoticeText}>
+                  {!choicePlusStoreManaged
+                    ? "Dieser Zugang wurde für einen Test oder durch den Support freigeschaltet."
+                    : choicePlusExpiresAt
+                    ? choicePlusWillRenew
+                      ? `Nächste Laufzeit ab ${formatDateTime(choicePlusExpiresAt)}.`
+                      : `Choice Plus bleibt noch bis ${formatDateTime(choicePlusExpiresAt)} aktiv.`
+                    : "Dein Store verwaltet Laufzeit, Verlängerung und Abrechnung."}
+                </Text>
+              </View>
+            ) : null}
+
+            <Pressable
+              onPress={() => {
+                if (choicePlusActive) {
+                  if (choicePlusStoreManaged) {
+                    void handleManageChoicePlus();
+                  }
+                } else {
+                  void handleSubscribeChoicePlus();
+                }
+              }}
+              disabled={choicePlusButtonDisabled}
+              style={({ pressed }) => [
+                styles.choicePlusButton,
+                choicePlusActive && styles.choicePlusManageButton,
+                choicePlusButtonDisabled && !previewPurchaseButtons && styles.choicePlusButtonDisabled,
+                pressed && !purchasePending && styles.choicePlusButtonPressed,
+              ]}
+            >
+              <View style={[styles.choicePlusButtonCopy, choicePlusActive && styles.choicePlusManageButtonCopy]}>
+                <Text style={[styles.choicePlusButtonTitle, choicePlusActive && styles.choicePlusManageButtonTitle]}>
+                  {purchaseAction === "plus"
+                    ? "Wird vorbereitet ..."
+                    : purchaseAction === "manage"
+                      ? "Wird geöffnet ..."
+                      : choicePlusActive
+                        ? choicePlusStoreManaged
+                          ? "Abo im Store verwalten"
+                          : "Choice Plus aktiv"
+                        : "Choice Plus abonnieren"}
+                </Text>
+                {!choicePlusActive ? <Text style={styles.choicePlusButtonMeta}>Monatlich kündbar</Text> : null}
+              </View>
+              {!choicePlusActive ? (
+                <View style={styles.choicePlusPriceBlock}>
+                  <Text style={styles.choicePlusPriceText}>{choicePlusPriceLabel}</Text>
+                  <Text style={styles.choicePlusPriceUnit}>pro Monat</Text>
+                </View>
+              ) : null}
+            </Pressable>
+
+            {!choicePlusActive || choicePlusStoreManaged ? (
+              <Text style={styles.choicePlusLegalText}>
+                Das Abo verlängert sich jeden Monat automatisch, bis du es in deinem Store-Konto kündigst. Die Kündigung beendet den Zugang erst zum Ende der bereits bezahlten Laufzeit.
+              </Text>
+            ) : null}
+
+            <View style={styles.choicePlusLinkRow}>
+              <Pressable
+                onPress={() => {
+                  void openExternalUrl(LEGAL_URLS.agb).catch(() => setPurchaseMessage("Die AGB konnten gerade nicht geöffnet werden."));
+                }}
+                style={styles.choicePlusLinkButton}
+              >
+                <Text style={styles.choicePlusLinkText}>AGB</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void openExternalUrl(LEGAL_URLS.datenschutz).catch(() => setPurchaseMessage("Der Datenschutz konnte gerade nicht geöffnet werden."));
+                }}
+                style={styles.choicePlusLinkButton}
+              >
+                <Text style={styles.choicePlusLinkText}>Datenschutz</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void handleRestorePurchases();
+                }}
+                disabled={purchasePending || !currentUserId || !hasRevenueCatConfig()}
+                style={styles.choicePlusRestoreButton}
+              >
+                <Text style={styles.choicePlusRestoreText}>
+                  {purchaseAction === "restore" ? "Wird gesucht ..." : "Käufe wiederherstellen"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+
           <View style={styles.unlockCard}>
             <View style={styles.unlockHeaderRow}>
               <View style={styles.unlockTitleWrap}>
-                <Text style={styles.unlockEyebrow}>Freischaltung</Text>
+                <Text style={styles.unlockEyebrow}>Ohne Abo</Text>
                 <Text style={styles.unlockTitle}>8 Matches inklusive</Text>
               </View>
               <View style={styles.unlockBadge}>
                 <Text style={styles.unlockBadgeText}>
-                  {hasPaidMatchAccess ? `+${paidMatchCredits} übrig` : `${consumedIncludedMatchCount} genutzt`}
+                  {paidMatchCredits > 0 ? `${paidMatchCredits} übrig` : "Inklusive"}
                 </Text>
               </View>
             </View>
 
             <Text style={styles.unlockText}>
-              Nach deinen ersten 8 Matches kannst du dir einmalig 8 weitere Matches für 3,99 € freischalten. Kein Abo, keine automatische Verlängerung.
+              Deine ersten 8 Matches sind inklusive. Danach kannst du flexibel ein weiteres 8er-Paket kaufen, ohne Abo und ohne automatische Verlängerung.
             </Text>
 
             <View style={styles.unlockProgressRow}>
@@ -7038,28 +7256,27 @@ function OverviewScreen({
                 total={includedMatchLimit}
                 activeColor="#ffb65f"
                 label="genutzt"
-                displayValue={`${consumedIncludedMatchCount}`}
-                unlocked={hasPaidMatchAccess}
+                displayValue={`${consumedIncludedMatchCount}/${includedMatchLimit}`}
               />
               <View style={styles.unlockProgressCopy}>
                 <Text style={styles.unlockProgressTitle}>
                   {hasPaidMatchAccess
                     ? `${paidMatchCredits} gekaufte Matches übrig`
-                    : `${remainingIncludedMatches} von ${includedMatchLimit} übrig`}
+                    : remainingIncludedMatches <= 0
+                      ? "Inklusive-Paket aufgebraucht"
+                      : `${consumedIncludedMatchCount} von ${includedMatchLimit} genutzt`}
                 </Text>
                 <Text style={styles.unlockFootnote}>
                   {accountBanned
-                    ? forfeitedPaidMatchCredits > 0
-                      ? `${forfeitedPaidMatchCredits} gekaufte Matches sind mit der Sperrung verfallen.`
-                      : "Dauerhafte Sperren können auch zahlende Konten betreffen."
+                    ? "Während einer dauerhaften Sperre können bezahlte Leistungen nicht genutzt werden. Gekaufte Match-Guthaben laufen dadurch nicht ab."
                     : accountPaused && frozenPaidMatchCredits > 0
                       ? `${frozenPaidMatchCredits} gekaufte Matches sind aktuell eingefroren.`
                       : hasPaidMatchAccess
                         ? "Wenn dein Konto pausiert wird, friert Choice das restliche Paket ein."
                         : remainingIncludedMatches <= 0
-                          ? `Die 8 inklusiven Matches für diese Telefonnummer sind genutzt. Bisher wurden insgesamt ${totalMatchCountLabel} freigeschaltet.`
+                          ? `Du hast alle ${includedMatchLimit} inklusiven Matches genutzt. Insgesamt wurden für diese Telefonnummer bisher ${totalMatchCountLabel} freigeschaltet.`
                           : totalMatchCount > 0
-                            ? `Mit dieser Telefonnummer wurden bisher ${totalMatchCountLabel} freigeschaltet. Danach kannst du dir für 3,99 € 8 weitere Matches kaufen.`
+                            ? `Du hast ${consumedIncludedMatchCount} von ${includedMatchLimit} inklusiven Matches genutzt. Danach kannst du dir für 3,99 € 8 weitere Matches kaufen.`
                             : "Nach den 8 inklusiven Matches kannst du dir für 3,99 € 8 weitere Matches kaufen."}
                 </Text>
               </View>
@@ -7069,27 +7286,31 @@ function OverviewScreen({
               onPress={() => {
                 void handleBuyMatchPack();
               }}
-              disabled={!canBuyMatchPack || purchasePending}
+              disabled={matchPackButtonDisabled}
               style={({ pressed }) => [
                 styles.unlockPurchaseButton,
-                (!canBuyMatchPack || purchasePending) && styles.unlockPurchaseButtonDisabled,
+                matchPackButtonDisabled && !previewPurchaseButtons && styles.unlockPurchaseButtonDisabled,
                 pressed && canBuyMatchPack && !purchasePending && styles.unlockPurchaseButtonPressed,
               ]}
             >
               <View style={styles.unlockPurchaseButtonContent}>
                 <View style={styles.unlockPurchaseButtonLabelRow}>
                   <Text style={styles.unlockPurchaseButtonTitle}>
-                    {purchasePending ? "Wird vorbereitet ..." : "8 Matches kaufen"}
+                    {purchaseAction === "pack" ? "Wird vorbereitet ..." : "8 Matches kaufen"}
                   </Text>
+                  <Text style={styles.unlockPurchaseButtonMeta}>Einmaliger Kauf</Text>
                 </View>
-                <View style={styles.unlockPurchasePricePill}>
+                <View style={styles.unlockPurchasePriceBlock}>
                   <Text style={styles.unlockPurchasePriceText}>{matchPackPriceLabel}</Text>
+                  <Text style={styles.unlockPurchasePriceUnit}>einmalig</Text>
                 </View>
               </View>
             </Pressable>
 
             <Text style={styles.unlockPurchaseHint}>
-              {canBuyMatchPack
+              {choicePlusActive
+                ? "Mit aktivem Choice Plus brauchst du kein zusätzliches Match-Paket. Bereits gekauftes Guthaben bleibt erhalten."
+                : canBuyMatchPack
                 ? "Die Abrechnung und eventuelle Rückerstattungen laufen über den jeweiligen Store. Das Paket bleibt an dein Choice-Konto gebunden und wird danach serverseitig gutgeschrieben."
                 : "Sobald RevenueCat und die Store-Keys gesetzt sind, kannst du den Kauf hier direkt testen."}
             </Text>
@@ -7169,6 +7390,16 @@ function OverviewScreen({
           <Text style={styles.accountActionsText}>Hier kannst du dein Profil pausieren oder dein Konto verlassen.</Text>
 
           <View style={styles.accountActionsList}>
+            {choicePlusActive && choicePlusStoreManaged ? (
+              <Pressable onPress={() => void handleManageChoicePlus()} style={styles.accountActionButton}>
+                <View style={styles.accountActionCopy}>
+                  <Text style={styles.accountActionTitle}>Choice Plus verwalten</Text>
+                  <Text style={styles.accountActionMeta}>Laufzeit oder Verlängerung direkt im Store ändern.</Text>
+                </View>
+                <Text style={styles.accountActionArrow}>›</Text>
+              </Pressable>
+            ) : null}
+
             <Pressable onPress={() => setPendingAccountAction("pause")} style={[styles.accountActionButton, styles.accountActionButtonWarning]}>
               <View style={styles.accountActionCopy}>
                 <Text style={styles.accountActionTitle}>Profil pausieren</Text>
@@ -7206,7 +7437,7 @@ function OverviewScreen({
       style={[
         styles.overviewShell,
         {
-          paddingBottom: Math.max(insets.bottom > 0 ? insets.bottom - 6 : 8, 6),
+          paddingBottom: 0,
         },
       ]}
       >
@@ -7225,7 +7456,12 @@ function OverviewScreen({
         {renderOverviewContent()}
       </ScrollView>
 
-      <View style={styles.overviewTabBar}>
+      <View
+        style={[
+          styles.overviewTabBar,
+          { bottom: Math.max(insets.bottom > 0 ? insets.bottom - 6 : 8, 8) },
+        ]}
+      >
         {overviewTabs.map((tab) => {
           const active = currentTab === tab.id;
           const showTabBadge = showFreshMatchNotice && (tab.id === "match" || tab.id === "chats");
@@ -9239,7 +9475,12 @@ export function ChoiceOnboarding() {
 
   if (!isSessionHydrated) {
     return (
-      <View style={styles.sessionRestoreShell}>
+      <View
+        style={[
+          styles.sessionRestoreShell,
+          { transform: [{ translateY: -insets.top / 2 }] },
+        ]}
+      >
         <Text style={styles.sessionRestoreText}>CHOICE</Text>
       </View>
     );
@@ -9724,7 +9965,7 @@ const styles = StyleSheet.create({
   },
   overviewScrollContent: {
     gap: 14,
-    paddingBottom: 8,
+    paddingBottom: 106,
   },
   overviewStatusCard: {
     padding: 18,
@@ -10269,6 +10510,231 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: "600",
   },
+  choicePlusCard: {
+    position: "relative",
+    overflow: "hidden",
+    padding: 18,
+    borderRadius: 26,
+    backgroundColor: "rgba(29, 14, 31, 0.98)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 94, 152, 0.34)",
+    gap: 14,
+    shadowColor: "#c92c68",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 22,
+    elevation: 5,
+  },
+  choicePlusCardActive: {
+    borderColor: "rgba(141, 255, 184, 0.4)",
+    shadowColor: "#4fc981",
+    shadowOpacity: 0.16,
+  },
+  choicePlusGlow: {
+    position: "absolute",
+    width: 190,
+    height: 190,
+    borderRadius: 999,
+    top: -105,
+    right: -65,
+    backgroundColor: "rgba(255, 71, 139, 0.13)",
+  },
+  choicePlusHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  choicePlusTitleWrap: {
+    flex: 1,
+    gap: 5,
+  },
+  choicePlusEyebrow: {
+    color: "#ff8bb6",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "800",
+    letterSpacing: 1.1,
+    textTransform: "uppercase",
+  },
+  choicePlusTitle: {
+    color: "#fff7fb",
+    fontSize: 22,
+    lineHeight: 28,
+    fontWeight: "800",
+    letterSpacing: -0.45,
+  },
+  choicePlusBadge: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255, 115, 167, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 115, 167, 0.26)",
+  },
+  choicePlusBadgeActive: {
+    backgroundColor: "rgba(141, 255, 184, 0.12)",
+    borderColor: "rgba(141, 255, 184, 0.28)",
+  },
+  choicePlusBadgeText: {
+    color: "#ffd5e5",
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "800",
+  },
+  choicePlusBadgeTextActive: {
+    color: "#caffdd",
+  },
+  choicePlusText: {
+    color: "#d3bfd0",
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  choicePlusFeatureList: {
+    gap: 9,
+    paddingVertical: 2,
+  },
+  choicePlusFeatureRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  choicePlusFeatureDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: "#ff73a7",
+  },
+  choicePlusFeatureText: {
+    flex: 1,
+    color: "#f1e6ee",
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: "600",
+  },
+  choicePlusActiveNotice: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 17,
+    backgroundColor: "rgba(141, 255, 184, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(141, 255, 184, 0.16)",
+    gap: 4,
+  },
+  choicePlusActiveNoticeTitle: {
+    color: "#ceffdf",
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: "800",
+  },
+  choicePlusActiveNoticeText: {
+    color: "#a9cdb6",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  choicePlusButton: {
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    backgroundColor: "#c62d68",
+    borderWidth: 1,
+    borderColor: "rgba(255, 177, 207, 0.46)",
+  },
+  choicePlusManageButton: {
+    justifyContent: "center",
+    backgroundColor: "rgba(141, 255, 184, 0.1)",
+    borderColor: "rgba(141, 255, 184, 0.28)",
+  },
+  choicePlusButtonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.995 }],
+  },
+  choicePlusButtonDisabled: {
+    opacity: 0.5,
+  },
+  choicePlusButtonCopy: {
+    flex: 1,
+    gap: 1,
+  },
+  choicePlusManageButtonCopy: {
+    flex: 0,
+    alignItems: "center",
+  },
+  choicePlusButtonTitle: {
+    color: "#fff9fc",
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "600",
+    letterSpacing: 0.1,
+  },
+  choicePlusButtonMeta: {
+    color: "rgba(255, 242, 248, 0.72)",
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "400",
+  },
+  choicePlusManageButtonTitle: {
+    color: "#d4ffe3",
+  },
+  choicePlusPriceBlock: {
+    minWidth: 78,
+    paddingLeft: 12,
+    alignItems: "flex-end",
+    borderLeftWidth: 1,
+    borderLeftColor: "rgba(255, 235, 243, 0.24)",
+  },
+  choicePlusPriceText: {
+    color: "#fff4f8",
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "600",
+  },
+  choicePlusPriceUnit: {
+    color: "rgba(255, 242, 248, 0.7)",
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "400",
+  },
+  choicePlusLegalText: {
+    color: "#a891a2",
+    fontSize: 11,
+    lineHeight: 17,
+  },
+  choicePlusLinkRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
+  choicePlusLinkButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  choicePlusLinkText: {
+    color: "#d8c8d5",
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "700",
+  },
+  choicePlusRestoreButton: {
+    paddingHorizontal: 4,
+    paddingVertical: 7,
+  },
+  choicePlusRestoreText: {
+    color: "#9adfff",
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "700",
+  },
   unlockCard: {
     padding: 18,
     borderRadius: 24,
@@ -10364,17 +10830,17 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   unlockPurchaseButton: {
-    minHeight: 50,
-    borderRadius: 16,
+    minHeight: 48,
+    borderRadius: 14,
     paddingHorizontal: 14,
     backgroundColor: "#1b1521",
     borderWidth: 1,
-    borderColor: "rgba(255, 223, 145, 0.52)",
+    borderColor: "rgba(255, 223, 145, 0.46)",
     shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.16,
-    shadowRadius: 14,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 2,
   },
   unlockPurchaseButtonPressed: {
     opacity: 0.92,
@@ -10383,43 +10849,49 @@ const styles = StyleSheet.create({
     opacity: 0.52,
   },
   unlockPurchaseButtonContent: {
-    minHeight: 50,
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: 12,
   },
   unlockPurchaseButtonLabelRow: {
     flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    alignItems: "flex-start",
+    gap: 1,
   },
   unlockPurchaseButtonTitle: {
-    flex: 1,
     color: "#f3edf9",
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: "700",
-    letterSpacing: 0,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: "600",
+    letterSpacing: 0.1,
   },
-  unlockPurchasePricePill: {
+  unlockPurchaseButtonMeta: {
+    color: "#bcaebf",
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "400",
+  },
+  unlockPurchasePriceBlock: {
     minWidth: 72,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(154, 223, 255, 0.10)",
-    borderWidth: 1,
-    borderColor: "rgba(154, 223, 255, 0.18)",
+    paddingLeft: 12,
+    alignItems: "flex-end",
+    borderLeftWidth: 1,
+    borderLeftColor: "rgba(255, 223, 145, 0.22)",
   },
   unlockPurchasePriceText: {
-    color: "#dff6ff",
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: "700",
-    letterSpacing: 0,
+    color: "#fff4df",
+    fontSize: 13,
+    lineHeight: 16,
+    fontWeight: "600",
+    letterSpacing: 0.1,
+  },
+  unlockPurchasePriceUnit: {
+    color: "#bcae9d",
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: "400",
   },
   unlockPurchaseHint: {
     color: "#ceb9ac",
@@ -10696,12 +11168,30 @@ const styles = StyleSheet.create({
     borderColor: "rgba(120, 214, 255, 0.12)",
     gap: 10,
   },
+  phaseTwoQuestionBackRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
   phaseTwoQuestionEyebrow: {
     color: "#ffb9d3",
     fontSize: 11,
     fontWeight: "800",
     letterSpacing: 1,
     textTransform: "uppercase",
+  },
+  phaseTwoQuestionBackButton: {
+    width: 40,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: -10,
+  },
+  phaseTwoQuestionBackButtonPressed: {
+    opacity: 0.5,
+  },
+  phaseTwoQuestionBackButtonDisabled: {
+    opacity: 0.46,
   },
   phaseTwoQuestionText: {
     color: "#fff7ff",
@@ -10735,6 +11225,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.10)",
     borderColor: "rgba(134, 227, 255, 0.28)",
   },
+  phaseTwoAnswerCardSelected: {
+    backgroundColor: "rgba(134, 227, 255, 0.11)",
+    borderColor: "rgba(134, 227, 255, 0.42)",
+  },
   phaseTwoAnswerScoreBubble: {
     width: 34,
     height: 34,
@@ -10743,10 +11237,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(134, 227, 255, 0.18)",
   },
+  phaseTwoAnswerScoreBubbleSelected: {
+    backgroundColor: "#86e3ff",
+  },
   phaseTwoAnswerScoreText: {
     color: "#d6f6ff",
     fontSize: 14,
     fontWeight: "800",
+  },
+  phaseTwoAnswerScoreTextSelected: {
+    color: "#0d294d",
   },
   phaseTwoAnswerText: {
     flex: 1,
@@ -10754,6 +11254,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     fontWeight: "600",
+  },
+  phaseTwoAnswerTextSelected: {
+    color: "#f4fbff",
+    fontWeight: "700",
+  },
+  phaseTwoAnswerSelectedMark: {
+    color: "#86e3ff",
+    fontSize: 16,
+    fontWeight: "900",
   },
   phaseTwoEntryCard: {
     padding: 18,
@@ -12546,6 +13055,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   overviewTabBar: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    zIndex: 20,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -12556,6 +13069,11 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(14, 10, 18, 0.98)",
     borderWidth: 1,
     borderColor: "rgba(120, 214, 255, 0.12)",
+    shadowColor: "#000000",
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.28,
+    shadowRadius: 22,
+    elevation: 12,
   },
   overviewTabButton: {
     flex: 1,

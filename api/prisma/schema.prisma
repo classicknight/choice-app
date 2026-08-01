@@ -93,6 +93,10 @@ model User {
   profileCompleted  Boolean                 @default(false)
   isPremium         Boolean                 @default(false)
   premiumActivatedAt DateTime?
+  premiumExpiresAt  DateTime?
+  premiumWillRenew  Boolean                 @default(false)
+  premiumProductId  String?
+  premiumLastEventAt DateTime?
   penaltyPoints     Int                     @default(0)
   suspendedAt       DateTime?
   penaltySuspendedAt DateTime?

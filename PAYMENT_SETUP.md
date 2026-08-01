@@ -24,7 +24,7 @@ Wichtig:
 
 - App Name: `Choice`
 - Primary Language: `German (Germany)` oder `English (U.S.)`
-- Bundle ID: `com.choice.app`
+- Bundle ID: `com.choice.dating`
 - SKU: `choice-ios-main`
 
 ### In-App Purchase anlegen
@@ -40,12 +40,33 @@ Wichtig:
 - Beschreibung:
   - `Schaltet 8 weitere Matches frei, sobald deine ersten 8 Matches aufgebraucht sind.`
 
+### Auto-Renewable Subscription anlegen
+
+- Subscription Group: `Choice Plus`
+- Reference Name: `Choice Plus monatlich`
+- Product ID: `choice_plus_monthly`
+- Laufzeit: `1 Monat`
+- Deutscher Preis: `9,99 €`
+- Display Name: `Choice Plus`
+- Beschreibung:
+  - `Bis zu ein bewusst ausgewähltes Match pro Tag, ohne Match-Guthaben.`
+
+Vor der ersten Einreichung:
+
+- Screenshot für die App-Review-Informationen hinterlegen.
+- Abo zusammen mit einer neuen App-Version zur Prüfung einreichen.
+- In den Review Notes erklären, wo `Choice Plus`, `Käufe wiederherstellen` und `Abo im Store verwalten` zu finden sind.
+- Datenschutz-URL: `https://choice-dating.app/datenschutz`
+- Nutzungsbedingungen: `https://choice-dating.app/agb`
+- In der App-Store-Beschreibung kenntlich machen, dass Choice Plus ein zusätzlicher In-App-Kauf ist.
+- Unter App-Datenschutz `Käufe > Kaufverlauf` als mit der Identität verknüpft und für App-Funktionalität verwendet angeben, sofern die endgültige Datenflussprüfung nichts Abweichendes ergibt.
+
 ## 3. Google Play Console
 
 ### App anlegen
 
 - App Name: `Choice`
-- Package Name: `com.choice.app`
+- Package Name: `com.choice.dating`
 
 ### In-App Product anlegen
 
@@ -55,6 +76,15 @@ Wichtig:
   - `Schaltet 8 weitere Matches frei, sobald deine ersten 8 Matches aufgebraucht sind.`
 - Preis: `3,99 €`
 
+### Subscription anlegen
+
+- Product ID: `choice_plus_monthly`
+- Base Plan: monatlich, automatisch verlängernd
+- Name: `Choice Plus`
+- Beschreibung:
+  - `Bis zu ein bewusst ausgewähltes Match pro Tag, ohne Match-Guthaben.`
+- Deutscher Preis: `9,99 €`
+
 ## 4. RevenueCat
 
 ### Projekt
@@ -63,14 +93,32 @@ Wichtig:
 
 ### Apps
 
-- iOS App Bundle ID: `com.choice.app`
-- Android Package: `com.choice.app`
+- iOS App Bundle ID: `com.choice.dating`
+- Android Package: `com.choice.dating`
 
 ### Product Mapping
 
 - Product ID: `match_pack_8`
 - Credits: `8`
 - Produkttyp: `Consumable / In-App Product`
+
+### Choice Plus Mapping
+
+- Product ID: `choice_plus_monthly`
+- Produkttyp: `Auto-renewable subscription`
+- Entitlement ID: `choice_plus`
+- Offering: `default`
+- Package: `$rc_monthly` oder ein eigenes Monthly-Package
+
+Der RevenueCat-Webhook muss mindestens diese Ereignisse senden:
+
+- `INITIAL_PURCHASE`
+- `RENEWAL`
+- `CANCELLATION`
+- `UNCANCELLATION`
+- `EXPIRATION`
+- `BILLING_ISSUE`
+- `SUBSCRIPTION_EXTENDED`
 
 ### Public SDK Keys
 
@@ -85,12 +133,20 @@ Dieses spaeter in die API-Umgebung setzen:
 
 - `REVENUECAT_WEBHOOK_AUTH`
 
+Webhook-URL:
+
+- `https://api.choice-dating.app/v1/purchases/revenuecat/webhook`
+- Authorization Header: `Bearer <REVENUECAT_WEBHOOK_AUTH>`
+
 ## 5. Code-Stand im Projekt
 
 Bereits vorbereitet:
 
 - Produkt-ID im App-Code: `match_pack_8`
 - Credit-Menge pro Kauf: `8`
+- Abo-Produkt-ID im App-Code: `choice_plus_monthly`
+- Abo-Entitlement: `choice_plus`
+- Ein aktives Abo entfernt nur das Match-Guthaben-Limit. Es bleibt bei maximal einem aktiven Match und bei bis zu einem neuen Match pro Tag.
 - RevenueCat-Client-Helfer in:
   - `/Users/alexandrgotfrid/Choice App/src/lib/purchases.ts`
 - Backend-Kaufmodell / Webhook in:
@@ -101,7 +157,16 @@ Bereits vorbereitet:
 
 Wenn Apple und RevenueCat stehen:
 
-1. RevenueCat API Keys in `.env`
-2. `REVENUECAT_WEBHOOK_AUTH` in Render fuer `choice-api`
-3. Build mit EAS
-4. Testkauf in Apple Sandbox / TestFlight
+1. Match-Paket und Choice-Plus-Abo in App Store Connect anlegen.
+2. Beide Produkte mit RevenueCat verbinden und das Entitlement `choice_plus` zuweisen.
+3. RevenueCat API Keys in `.env` setzen.
+4. `REVENUECAT_WEBHOOK_AUTH` in Render für `choice-api` setzen.
+5. RevenueCat-Webhook konfigurieren und einen Test-Webhook senden.
+6. Build mit EAS erstellen.
+7. Paketkauf, Abo-Abschluss, Kündigung, Ablauf und Wiederherstellung über Apple Sandbox bzw. TestFlight prüfen.
+
+Wichtig:
+
+- Expo Go kann native In-App-Käufe nicht zuverlässig testen. Dafür TestFlight oder einen Development Build verwenden.
+- Das Löschen eines Choice-Kontos kündigt ein Store-Abo nicht automatisch.
+- Gekaufte Match-Guthaben dürfen nicht ablaufen. Bei Pausen oder Sperren werden sie nur eingefroren.
