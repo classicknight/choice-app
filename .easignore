@@ -14,5 +14,5 @@ website/.env*
 *.log
 
 # App Store marketing sources are not runtime app assets.
-assets/
-src/assets/choice-background-v2.png
+/assets/
+/src/assets/choice-background-v2.png
