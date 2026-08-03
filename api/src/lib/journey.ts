@@ -7,6 +7,7 @@ import {
 } from "@prisma/client";
 import { env } from "../config/env.js";
 import { isAppReviewAccountEmail } from "./app-review.js";
+import { isSeedDemoAccountEmail } from "./synthetic-accounts.js";
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
@@ -73,8 +74,6 @@ export type JourneyPartnerProfile = {
   identity: string;
   lookingFor: string;
   datingIntent: string;
-  ageRangeMin: number;
-  ageRangeMax: number;
   interests: string[];
   greenFlags: string[];
   dealbreakers: string[];
@@ -106,6 +105,7 @@ export type JourneyState = {
   status: MatchStatus | null;
   partner: JourneyPartnerProfile | null;
   phaseThreeSuggestion: JourneyPartnerProfile | null;
+  agePreferenceCompatible: boolean;
   sharedChatMessages: JourneyMessage[];
   phaseOneStarterUserId: string | null;
   phaseOneStarterPenaltyAppliedAt: string | null;
@@ -382,7 +382,9 @@ async function getAvailableJourneyCandidateUsers(excludedUserIds: string[]) {
     },
   });
 
-  return candidates.filter((candidate) => !isAppReviewAccountEmail(candidate.email));
+  return candidates.filter(
+    (candidate) => !isAppReviewAccountEmail(candidate.email) && !isSeedDemoAccountEmail(candidate.email),
+  );
 }
 
 async function getBlockedUserIdsForUsers(userIds: string[]) {
@@ -1392,10 +1394,14 @@ function isMutuallyCompatible(viewer: CandidateProfile, candidate: CandidateProf
 
   const viewerAccepts = viewer.lookingFor === "Alle" || viewer.lookingFor === viewerTarget;
   const candidateAccepts = candidate.lookingFor === "Alle" || candidate.lookingFor === candidateTarget;
+  return viewerAccepts && candidateAccepts && areAgePreferencesMutuallyCompatible(viewer, candidate);
+}
+
+function areAgePreferencesMutuallyCompatible(viewer: CandidateProfile, candidate: CandidateProfile) {
   const viewerAgeOk = candidate.age >= viewer.ageRangeMin && candidate.age <= viewer.ageRangeMax;
   const candidateAgeOk = viewer.age >= candidate.ageRangeMin && viewer.age <= candidate.ageRangeMax;
 
-  return viewerAccepts && candidateAccepts && viewerAgeOk && candidateAgeOk;
+  return viewerAgeOk && candidateAgeOk;
 }
 
 function calculateCandidateScore(viewer: CandidateProfile, candidate: CandidateProfile) {
@@ -1529,6 +1535,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     || user.penaltySuspendedAt
     || user.bannedAt
     || isAppReviewAccountEmail(user.email)
+    || isSeedDemoAccountEmail(user.email)
   ) {
     return null;
   }
@@ -1993,8 +2000,6 @@ function mapJourneyPartnerProfile(user: JourneyCandidateUser): JourneyPartnerPro
     identity: user.profile.identity,
     lookingFor: user.profile.lookingFor,
     datingIntent: user.profile.datingIntent,
-    ageRangeMin: user.profile.ageRangeMin,
-    ageRangeMax: user.profile.ageRangeMax,
     interests: user.profile.interests,
     greenFlags: preferences.greenFlags,
     dealbreakers: preferences.dealbreakers,
@@ -2136,6 +2141,7 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
       status: null,
       partner: null,
       phaseThreeSuggestion: null,
+      agePreferenceCompatible: false,
       sharedChatMessages: [],
       phaseOneStarterUserId: null,
       phaseOneStarterPenaltyAppliedAt: null,
@@ -2185,6 +2191,13 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
   const messages = (match.chat?.messages ?? [])
     .map(mapMessage)
     .filter((entry): entry is JourneyMessage => Boolean(entry));
+  const userAProfile = mapUserToCandidateProfile(match.userA);
+  const userBProfile = mapUserToCandidateProfile(match.userB);
+  const agePreferenceCompatible = Boolean(
+    userAProfile
+    && userBProfile
+    && areAgePreferencesMutuallyCompatible(userAProfile, userBProfile),
+  );
 
   return {
     ownerUserId: userId,
@@ -2198,6 +2211,7 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
     status: match.status,
     partner,
     phaseThreeSuggestion: null,
+    agePreferenceCompatible,
     sharedChatMessages: partner ? messages.filter((entry) => entry.kind !== "system") : [],
     phaseOneStarterUserId: match.phaseOneStarterUserId,
     phaseOneStarterPenaltyAppliedAt: match.phaseOneStarterPenaltyAppliedAt?.toISOString() ?? null,

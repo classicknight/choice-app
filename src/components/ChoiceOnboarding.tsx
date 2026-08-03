@@ -455,12 +455,7 @@ function getChoiceMatchReasons(params: {
   partnerSelfDescription: string;
   viewerDatingIntent: string;
   partnerDatingIntent: string;
-  viewerAgeRangeMin: number;
-  viewerAgeRangeMax: number;
-  partnerAgeRangeMin: number;
-  partnerAgeRangeMax: number;
-  viewerAge: number | null;
-  partnerAge: number;
+  agePreferenceCompatible: boolean;
 }) {
   const reasons: ChoiceMatchReason[] = [];
 
@@ -487,20 +482,10 @@ function getChoiceMatchReasons(params: {
     }
   }
 
-  if (
-    params.viewerAgeRangeMin > 0
-    && params.viewerAgeRangeMax > 0
-    && params.partnerAgeRangeMin > 0
-    && params.partnerAgeRangeMax > 0
-    && params.partnerAge >= params.viewerAgeRangeMin
-    && params.partnerAge <= params.viewerAgeRangeMax
-    && params.viewerAge !== null
-    && params.viewerAge >= params.partnerAgeRangeMin
-    && params.viewerAge <= params.partnerAgeRangeMax
-  ) {
+  if (params.agePreferenceCompatible) {
     reasons.push({
-      label: "Wunschalter passt",
-      text: "Ihr liegt beide im Wunschalter des anderen, ohne dass Choice hier verbiegen musste.",
+      label: "Alter passt",
+      text: "Choice hat eure Altersvorstellungen berücksichtigt, ohne die private Einstellung der anderen Person zu zeigen.",
     });
   }
 
@@ -2007,8 +1992,8 @@ function mapRemoteJourneyPartnerToDemoProfile(partner: RemoteJourneyPartnerProfi
     identity: partner.identity,
     lookingFor: partner.lookingFor,
     datingIntent: partner.datingIntent,
-    ageRangeMin: partner.ageRangeMin,
-    ageRangeMax: partner.ageRangeMax,
+    ageRangeMin: 0,
+    ageRangeMax: 0,
     greenFlags: partner.greenFlags,
     dealbreakers: partner.dealbreakers,
     time: partner.matchTime || "Heute 21:00",
@@ -2439,6 +2424,7 @@ function ChatSurface({
   const composerInteractive = composerEditable;
   const composerBottomPadding = fullScreen ? 4 : 10;
   const canScrollThread = threadContentHeight > threadViewportHeight + 1;
+  const pinThreadToBottom = fullScreen && !canScrollThread && messages.length > 0;
   const shouldDockThreadSupplement = fullScreen && threadSupplementPlacement === "docked";
   const dockedThreadSupplement = threadSupplement && shouldDockThreadSupplement
     ? <View style={[styles.chatThreadSupplement, styles.chatThreadSupplementDock]}>{threadSupplement}</View>
@@ -2448,7 +2434,11 @@ function ChatSurface({
     : null;
 
   useEffect(() => {
-    threadRef.current?.scrollToEnd({ animated: true });
+    const frame = requestAnimationFrame(() => {
+      threadRef.current?.scrollToEnd({ animated: true });
+    });
+
+    return () => cancelAnimationFrame(frame);
   }, [messages.length]);
 
   useEffect(() => {
@@ -2531,19 +2521,25 @@ function ChatSurface({
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
-        scrollEnabled={canScrollThread}
+        bounces={canScrollThread}
+        alwaysBounceVertical={false}
         onLayout={(event) => {
           setThreadViewportHeight(event.nativeEvent.layout.height);
+          requestAnimationFrame(() => {
+            threadRef.current?.scrollToEnd({ animated: false });
+          });
         }}
         onContentSizeChange={(_, height) => {
           setThreadContentHeight(height);
-          threadRef.current?.scrollToEnd({ animated: true });
+          requestAnimationFrame(() => {
+            threadRef.current?.scrollToEnd({ animated: false });
+          });
         }}
       >
         <View
           style={[
             styles.chatThreadContent,
-            fullScreen && !canScrollThread && messages.length > 0 && styles.chatThreadContentPinned,
+            pinThreadToBottom && styles.chatThreadContentPinned,
           ]}
         >
           {messages.length ? (
@@ -2553,12 +2549,7 @@ function ChatSurface({
                 <Text style={styles.chatHistoryStartText}>Beginn eures Chats</Text>
                 <View style={styles.chatHistoryStartLine} />
               </View>
-              <View
-                style={[
-                  styles.chatThreadMessages,
-                  fullScreen && !canScrollThread && styles.chatThreadMessagesPinned,
-                ]}
-              >
+              <View style={styles.chatThreadMessages}>
                 {messages.map((message) => {
                   const right = message.side === "right";
                   const emojiOnly = message.kind === "text" && isEmojiOnlyMessage(message.text);
@@ -3232,10 +3223,6 @@ function OverviewScreen({
       ? getOptionLabel(pronounOptions, featuredProfile.pronouns)
       : "";
   const featuredProfileDistanceLabel = formatDistanceLabel(estimateDistanceKm(profile.city || "Berlin", featuredProfile.city));
-  const viewerAgeRangeMin = Number(profile.ageRangeMin || 0);
-  const viewerAgeRangeMax = Number(profile.ageRangeMax || 0);
-  const partnerAgeRangeMin = Number(featuredProfile.ageRangeMin || 0);
-  const partnerAgeRangeMax = Number(featuredProfile.ageRangeMax || 0);
   const sharedMatchInterests = profile.interests.filter((interest) => featuredProfile.interests.includes(interest));
   const choiceMatchReasons = getChoiceMatchReasons({
     viewerCity: profile.city || "Berlin",
@@ -3246,12 +3233,7 @@ function OverviewScreen({
     partnerSelfDescription: featuredProfile.selfDescription,
     viewerDatingIntent: profile.datingIntent,
     partnerDatingIntent: featuredProfile.datingIntent,
-    viewerAgeRangeMin,
-    viewerAgeRangeMax,
-    partnerAgeRangeMin,
-    partnerAgeRangeMax,
-    viewerAge: profileAge,
-    partnerAge: featuredProfile.age,
+    agePreferenceCompatible: remoteJourney?.agePreferenceCompatible ?? false,
   });
   const featuredProfileMeta = [featuredProfile.city, featuredProfileDistanceLabel, String(featuredProfile.age), featuredProfilePronouns].filter(Boolean).join(" • ");
   const featuredProfileFacts = [
@@ -3260,7 +3242,6 @@ function OverviewScreen({
     { label: "Identität", value: featuredProfileIdentity },
     { label: "Suche", value: featuredProfile.lookingFor },
     { label: "Daraus darf werden", value: featuredProfileIntent },
-    { label: "Wunschalter", value: `${featuredProfile.ageRangeMin}–${featuredProfile.ageRangeMax}` },
     { label: "Pronomen", value: featuredProfilePronouns },
   ].filter((entry) => entry.value);
   const penaltyReasons = [
@@ -7437,7 +7418,7 @@ function OverviewScreen({
       style={[
         styles.overviewShell,
         {
-          paddingBottom: 0,
+          paddingBottom: Math.max(insets.bottom > 0 ? insets.bottom - 6 : 8, 6),
         },
       ]}
       >
@@ -7456,12 +7437,7 @@ function OverviewScreen({
         {renderOverviewContent()}
       </ScrollView>
 
-      <View
-        style={[
-          styles.overviewTabBar,
-          { bottom: Math.max(insets.bottom > 0 ? insets.bottom - 6 : 8, 8) },
-        ]}
-      >
+      <View style={styles.overviewTabBar}>
         {overviewTabs.map((tab) => {
           const active = currentTab === tab.id;
           const showTabBadge = showFreshMatchNotice && (tab.id === "match" || tab.id === "chats");
@@ -9965,7 +9941,7 @@ const styles = StyleSheet.create({
   },
   overviewScrollContent: {
     gap: 14,
-    paddingBottom: 106,
+    paddingBottom: 8,
   },
   overviewStatusCard: {
     padding: 18,
@@ -11945,12 +11921,10 @@ const styles = StyleSheet.create({
   },
   chatThreadContentPinned: {
     flex: 1,
+    justifyContent: "flex-end",
   },
   chatThreadMessages: {
     gap: 10,
-  },
-  chatThreadMessagesPinned: {
-    marginTop: "auto",
   },
   chatHistoryStart: {
     flexDirection: "row",
@@ -13055,10 +13029,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   overviewTabBar: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    zIndex: 20,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",

@@ -201,8 +201,6 @@ export type RemoteJourneyPartnerProfile = {
   identity: string;
   lookingFor: string;
   datingIntent: string;
-  ageRangeMin: number;
-  ageRangeMax: number;
   interests: string[];
   greenFlags: string[];
   dealbreakers: string[];
@@ -225,6 +223,7 @@ export type RemoteJourneyState = {
   status: "PENDING" | "ACTIVE" | "DISCARDED" | "EXPIRED" | "KEPT" | null;
   partner: RemoteJourneyPartnerProfile | null;
   phaseThreeSuggestion: RemoteJourneyPartnerProfile | null;
+  agePreferenceCompatible: boolean;
   sharedChatMessages: RemoteJourneyMessage[];
   phaseOneStarterUserId: string | null;
   phaseOneStarterPenaltyAppliedAt: string | null;
