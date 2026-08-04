@@ -207,7 +207,7 @@ async function main() {
     contextKey: `private-qa-match-prepared:${match.id}:${owner.id}`,
     payload: {
       title: "Dein privates Test-Match ist vorbereitet",
-      body: `${privateQaFirstName} wird ${releaseDayLabel} um 09:00 Uhr für dich freigeschaltet.`,
+      body: `Dein Match wird ${releaseDayLabel} um 09:00 Uhr für dich freigeschaltet.`,
       channelId: "match-releases",
       data: {
         type: "private-qa-match-prepared",
