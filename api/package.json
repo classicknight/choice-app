@@ -13,6 +13,7 @@
     "prisma:push": "prisma db push",
     "prisma:seed": "tsx prisma/seed.ts",
     "prisma:cleanup-demo": "tsx prisma/cleanup-demo-users.ts",
+    "prisma:create-private-qa-match": "tsx prisma/create-private-qa-match.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "prisma": {

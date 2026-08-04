@@ -7,7 +7,10 @@ import {
 } from "@prisma/client";
 import { env } from "../config/env.js";
 import { isAppReviewAccountEmail } from "./app-review.js";
-import { isSeedDemoAccountEmail } from "./synthetic-accounts.js";
+import {
+  isPrivateQaAccountEmail,
+  isSyntheticMatchingAccountEmail,
+} from "./synthetic-accounts.js";
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
@@ -383,7 +386,7 @@ async function getAvailableJourneyCandidateUsers(excludedUserIds: string[]) {
   });
 
   return candidates.filter(
-    (candidate) => !isAppReviewAccountEmail(candidate.email) && !isSeedDemoAccountEmail(candidate.email),
+    (candidate) => !isAppReviewAccountEmail(candidate.email) && !isSyntheticMatchingAccountEmail(candidate.email),
   );
 }
 
@@ -1397,6 +1400,18 @@ function isMutuallyCompatible(viewer: CandidateProfile, candidate: CandidateProf
   return viewerAccepts && candidateAccepts && areAgePreferencesMutuallyCompatible(viewer, candidate);
 }
 
+function getPrivateQaUserId(match: MatchWithRelations) {
+  if (isPrivateQaAccountEmail(match.userA.email)) {
+    return match.userAId;
+  }
+
+  if (isPrivateQaAccountEmail(match.userB.email)) {
+    return match.userBId;
+  }
+
+  return null;
+}
+
 function areAgePreferencesMutuallyCompatible(viewer: CandidateProfile, candidate: CandidateProfile) {
   const viewerAgeOk = candidate.age >= viewer.ageRangeMin && candidate.age <= viewer.ageRangeMax;
   const candidateAgeOk = viewer.age >= candidate.ageRangeMin && viewer.age <= candidate.ageRangeMax;
@@ -1535,7 +1550,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     || user.penaltySuspendedAt
     || user.bannedAt
     || isAppReviewAccountEmail(user.email)
-    || isSeedDemoAccountEmail(user.email)
+    || isSyntheticMatchingAccountEmail(user.email)
   ) {
     return null;
   }
@@ -2430,7 +2445,10 @@ export async function startPhaseTwoForUser(userId: string) {
     };
   }
 
-  const starterUserId = chooseStableStarterUserId(match.userAId, match.userBId);
+  const privateQaUserId = getPrivateQaUserId(match);
+  const starterUserId = privateQaUserId
+    ? privateQaUserId === match.userAId ? match.userBId : match.userAId
+    : chooseStableStarterUserId(match.userAId, match.userBId);
   const partnerUserId = starterUserId === match.userAId ? match.userBId : match.userAId;
   const starterName = starterUserId === match.userAId ? match.userA.profile?.firstName ?? "Choice" : match.userB.profile?.firstName ?? "Choice";
   const partnerName = partnerUserId === match.userAId ? match.userA.profile?.firstName ?? "Choice" : match.userB.profile?.firstName ?? "Choice";
@@ -2572,16 +2590,65 @@ export async function submitPhaseTwoAnswer(input: {
     const nextRoundIndex = input.roundIndex >= rounds.length - 1 ? 0 : input.roundIndex + 1;
     const nextStage = input.roundIndex >= rounds.length - 1 ? PhaseTwoStage.PARTNER : PhaseTwoStage.STARTER;
 
-    await prisma.match.update({
-      where: { id: match.id },
-      data: {
-        phaseTwoResults: nextResults as Prisma.InputJsonValue,
-        phaseTwoRoundIndex: nextRoundIndex,
-        phaseTwoStage: nextStage,
-      },
-    });
+    const privateQaUserId = getPrivateQaUserId(match);
+    const shouldAutoCompletePrivateQaTurn =
+      nextStage === PhaseTwoStage.PARTNER
+      && privateQaUserId === phaseTwoPartnerUserId;
 
-    if (nextStage === PhaseTwoStage.PARTNER) {
+    if (shouldAutoCompletePrivateQaTurn) {
+      const automatedResults = nextResults.map((result) => {
+        const closestOption = result.followUpOptions.reduce((bestOption, option) => {
+          return Math.abs(option.score - result.personAScore) < Math.abs(bestOption.score - result.personAScore)
+            ? option
+            : bestOption;
+        }, result.followUpOptions[0]);
+
+        if (!closestOption) {
+          return result;
+        }
+
+        return {
+          ...result,
+          personBLabel: closestOption.label,
+          personBScore: closestOption.score,
+          compatibility: getCompatibilityPoints(result.personAScore, closestOption.score),
+        };
+      });
+
+      await prisma.match.update({
+        where: { id: match.id },
+        data: {
+          phaseTwoResults: automatedResults as Prisma.InputJsonValue,
+          phaseTwoRoundIndex: Math.max(rounds.length - 1, 0),
+          phaseTwoStage: PhaseTwoStage.RESULT,
+        },
+      });
+
+      await sendJourneyNotificationToUser({
+        userId: phaseTwoStarterUserId,
+        matchId: match.id,
+        kind: "phase-two-result-ready",
+        contextKey: `phase-two-result-ready:${match.id}:${phaseTwoStarterUserId}`,
+        title: "Eure Phase-2-Auswertung ist da",
+        body: `${getParticipantProfileName(match, phaseTwoPartnerUserId)} hat die Choice-Runde abgeschlossen. Die ausführliche Auswertung ist jetzt da.`,
+        channelId: "phase-updates",
+        data: {
+          type: "phase-two-result-ready",
+          matchId: match.id,
+        },
+      });
+    } else {
+      await prisma.match.update({
+        where: { id: match.id },
+        data: {
+          phaseTwoResults: nextResults as Prisma.InputJsonValue,
+          phaseTwoRoundIndex: nextRoundIndex,
+          phaseTwoStage: nextStage,
+        },
+      });
+    }
+
+    if (nextStage === PhaseTwoStage.PARTNER && !shouldAutoCompletePrivateQaTurn) {
       await Promise.allSettled([
         sendJourneyNotificationToUser({
           userId: phaseTwoPartnerUserId,
