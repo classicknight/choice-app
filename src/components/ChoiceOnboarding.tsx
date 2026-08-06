@@ -2681,6 +2681,7 @@ type OverviewScreenProps = {
   accountActionMessage?: string | null;
   displayName: string;
   currentUserId: string | null;
+  initialAccountState: RemoteAccountState | null;
   profile: RegistrationProfile;
   photoUris: string[];
   introVideoUri: string | null;
@@ -2700,6 +2701,7 @@ function OverviewScreen({
   accountActionMessage,
   displayName,
   currentUserId,
+  initialAccountState,
   profile,
   photoUris,
   introVideoUri,
@@ -2739,7 +2741,9 @@ function OverviewScreen({
   const [scheduledMatchNotificationReleaseAt, setScheduledMatchNotificationReleaseAt] = useState<string | null>(null);
   const [phaseOneStarterPenaltyAppliedAt, setPhaseOneStarterPenaltyAppliedAt] = useState<string | null>(null);
   const [phaseTwoPenaltyAppliedAt, setPhaseTwoPenaltyAppliedAt] = useState<string | null>(null);
-  const [accountState, setAccountState] = useState<RemoteAccountState | null>(null);
+  const [accountState, setAccountState] = useState<RemoteAccountState | null>(() => (
+    initialAccountState?.userId === currentUserId ? initialAccountState : null
+  ));
   const [purchasePending, setPurchasePending] = useState(false);
   const [purchaseAction, setPurchaseAction] = useState<"pack" | "plus" | "restore" | "manage" | null>(null);
   const [purchaseMessage, setPurchaseMessage] = useState<string | null>(null);
@@ -5048,15 +5052,20 @@ function OverviewScreen({
 
   useEffect(() => {
     if (!currentUserId) {
+      setAccountState(null);
+      setIsAccountStateHydrated(true);
       return;
     }
 
     const activeUserId = currentUserId;
+    const restoredAccount = initialAccountState?.userId === activeUserId
+      ? initialAccountState
+      : null;
     let cancelled = false;
 
     async function hydrateRemoteAccountState() {
       try {
-        const remoteAccount = await refreshAccountState(activeUserId);
+        const remoteAccount = await fetchRemoteAccountState(activeUserId);
 
         if (cancelled) {
           return;
@@ -5065,7 +5074,9 @@ function OverviewScreen({
         setAccountState(remoteAccount);
       } catch {
         if (!cancelled) {
-          setAccountState(null);
+          if (!restoredAccount) {
+            setAccountState(null);
+          }
         }
       } finally {
         if (!cancelled) {
@@ -5074,7 +5085,8 @@ function OverviewScreen({
       }
     }
 
-    setIsAccountStateHydrated(false);
+    setAccountState(restoredAccount);
+    setIsAccountStateHydrated(Boolean(restoredAccount));
     void hydrateRemoteAccountState();
 
     const intervalId = setInterval(() => {
@@ -5085,7 +5097,7 @@ function OverviewScreen({
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [currentUserId]);
+  }, [currentUserId, initialAccountState]);
 
   useEffect(() => {
     if (!currentUserId) {
@@ -7564,6 +7576,7 @@ export function ChoiceOnboarding() {
   const [verifiedPhone, setVerifiedPhone] = useState<string | null>(null);
   const [verifiedUserId, setVerifiedUserId] = useState<string | null>(null);
   const [verifiedAccessToken, setVerifiedAccessToken] = useState<string | null>(null);
+  const [restoredAccountState, setRestoredAccountState] = useState<RemoteAccountState | null>(null);
   const [signedInReturningUser, setSignedInReturningUser] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<{ profileId: string; summary: string } | null>(null);
@@ -7755,7 +7768,11 @@ export function ChoiceOnboarding() {
     setApiAccessToken(verifiedAccessToken);
   }, [verifiedAccessToken]);
 
-  function setSessionState(session: Omit<PersistedSession, "savedAt">, preferredTab: OverviewTabId = "today") {
+  function setSessionState(
+    session: Omit<PersistedSession, "savedAt">,
+    preferredTab: OverviewTabId = "today",
+    accountState: RemoteAccountState | null = null,
+  ) {
     setProfile(session.profile);
     setPhotoUris(session.photoUris);
     setIntroVideoUri(session.introVideoUri);
@@ -7763,6 +7780,7 @@ export function ChoiceOnboarding() {
     setVerifiedUserId(session.userId);
     setVerifiedAccessToken(session.accessToken);
     setVerifiedPhone(session.phoneNumber);
+    setRestoredAccountState(accountState?.userId === session.userId ? accountState : null);
     setCurrentSurface("overview");
     setOverviewTab(preferredTab);
     setSignedInReturningUser(true);
@@ -7777,16 +7795,15 @@ export function ChoiceOnboarding() {
     return savedSession;
   }
 
-  async function loadIsAccountPaused(userId: string, accessTokenOverride?: string | null) {
+  async function loadSessionAccountState(userId: string, accessTokenOverride?: string | null) {
     try {
-      const remoteAccount = await fetchRemoteAccountState(userId, accessTokenOverride);
-      return remoteAccount.accountPaused;
+      return await fetchRemoteAccountState(userId, accessTokenOverride);
     } catch (error) {
       if (isAuthRequestError(error)) {
         throw error;
       }
 
-      return false;
+      return null;
     }
   }
 
@@ -7815,7 +7832,7 @@ export function ChoiceOnboarding() {
     session: Omit<PersistedSession, "savedAt"> | PersistedSession,
     options?: { forceTokenRefresh?: boolean },
   ): Promise<
-    | { ok: true; session: PersistedSession }
+    | { ok: true; session: PersistedSession; accountState: RemoteAccountState | null }
     | { ok: false; reason: "account-paused" | "profile-not-found" | "reauth-required" | "request-failed" }
   > {
     try {
@@ -7823,7 +7840,12 @@ export function ChoiceOnboarding() {
         forceRefresh: options?.forceTokenRefresh,
       });
 
-      if (await loadIsAccountPaused(authenticatedSession.userId, authenticatedSession.accessToken)) {
+      const accountState = await loadSessionAccountState(
+        authenticatedSession.userId,
+        authenticatedSession.accessToken,
+      );
+
+      if (accountState?.accountPaused) {
         return {
           ok: false,
           reason: "account-paused",
@@ -7847,6 +7869,7 @@ export function ChoiceOnboarding() {
       return {
         ok: true,
         session: hydratedSession,
+        accountState,
       };
     } catch (requestError) {
       const message = requestError instanceof Error ? requestError.message : "REQUEST_FAILED";
@@ -7961,7 +7984,7 @@ export function ChoiceOnboarding() {
 
         if (restoredSessionResult.ok) {
           if (!cancelled) {
-            setSessionState(restoredSessionResult.session);
+            setSessionState(restoredSessionResult.session, "today", restoredSessionResult.accountState);
           }
           return;
         }
@@ -8423,7 +8446,11 @@ export function ChoiceOnboarding() {
       const restoredSessionResult = await restoreLiveSession(session);
 
       if (restoredSessionResult.ok) {
-        setSessionState(restoredSessionResult.session, options?.preferredTab ?? "today");
+        setSessionState(
+          restoredSessionResult.session,
+          options?.preferredTab ?? "today",
+          restoredSessionResult.accountState,
+        );
         return;
       }
 
@@ -8491,7 +8518,7 @@ export function ChoiceOnboarding() {
       });
 
       if (restoredPartnerSession.ok) {
-        setSessionState(restoredPartnerSession.session, "match");
+        setSessionState(restoredPartnerSession.session, "match", restoredPartnerSession.accountState);
         return;
       }
 
@@ -8609,7 +8636,9 @@ export function ChoiceOnboarding() {
       setVerifiedPhone(phoneNumber.trim());
 
       if (result.profileCompleted) {
-        if (await loadIsAccountPaused(result.userId, nextAccessToken)) {
+        const accountState = await loadSessionAccountState(result.userId, nextAccessToken);
+
+        if (accountState?.accountPaused) {
           setVerifiedAccessToken(null);
           setError("Dieses Konto ist pausiert.");
           return;
@@ -8624,7 +8653,7 @@ export function ChoiceOnboarding() {
           photoUris: restoredProfile.photoUrls,
           introVideoUri: restoredProfile.videoUrl,
           introVideoDurationMs: null,
-        });
+        }, "today", accountState);
         await persistLocalSession({
           userId: result.userId,
           accessToken: nextAccessToken,
@@ -9478,6 +9507,7 @@ export function ChoiceOnboarding() {
           accountActionMessage={accountActionMessage}
           displayName={overviewDisplayName}
           currentUserId={verifiedUserId}
+          initialAccountState={restoredAccountState}
           profile={profile}
           photoUris={photoUris}
           introVideoUri={introVideoUri}
