@@ -12,6 +12,31 @@ import { isPrivateQaAccountEmail } from "../src/lib/synthetic-accounts.js";
 const privateQaEmail = "alex-private.qa@choice.local";
 const privateQaFirstName = "Mara";
 
+function getRepeatUntilBerlinDate() {
+  const value = process.env.QA_REPEAT_UNTIL_BERLIN_DATE?.trim();
+
+  if (!value) {
+    return null;
+  }
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const parsed = match
+    ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+    : null;
+
+  if (
+    !match
+    || !parsed
+    || parsed.getUTCFullYear() !== Number(match[1])
+    || parsed.getUTCMonth() !== Number(match[2]) - 1
+    || parsed.getUTCDate() !== Number(match[3])
+  ) {
+    throw new Error("QA_REPEAT_UNTIL_BERLIN_DATE must use a valid YYYY-MM-DD date.");
+  }
+
+  return value;
+}
+
 function requireOwnerPhoneNumber() {
   const phoneNumber = process.env.QA_OWNER_PHONE_NUMBER?.trim();
 
@@ -35,6 +60,7 @@ function getParticipantDecisions(ownerUserId: string, userAId: string) {
 
 async function main() {
   const ownerPhoneNumber = requireOwnerPhoneNumber();
+  const repeatUntilBerlinDate = getRepeatUntilBerlinDate();
   const now = new Date();
   const scheduledFor = getNextBerlinDateAtTime(now, 9, 0);
   const owner = await prisma.user.findUnique({
@@ -190,6 +216,7 @@ async function main() {
         rationale: {
           generatedBy: "private-qa-match",
           ownerUserId: owner.id,
+          repeatUntilBerlinDate,
           sharedInterests: ownerProfile.interests.filter((interest) =>
             ["Musik", "Reisen", "Konzerte", "Cafes"].includes(interest),
           ),

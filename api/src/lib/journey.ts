@@ -8,9 +8,14 @@ import {
 import { env } from "../config/env.js";
 import { isAppReviewAccountEmail } from "./app-review.js";
 import {
+  PRIVATE_QA_EMAIL_SUFFIX,
   isPrivateQaAccountEmail,
   isSyntheticMatchingAccountEmail,
 } from "./synthetic-accounts.js";
+import {
+  canRepeatPrivateQaMatch,
+  parsePrivateQaRepeatConfig,
+} from "./private-qa-repeat.js";
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
@@ -1566,6 +1571,86 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
 
   if (existingUpcoming) {
     return existingUpcoming.id;
+  }
+
+  const previousPrivateQaMatch = await prisma.match.findFirst({
+    where: {
+      AND: [
+        { OR: [{ userAId: userId }, { userBId: userId }] },
+        { closedAt: { not: null } },
+        {
+          OR: [
+            { userA: { email: { endsWith: PRIVATE_QA_EMAIL_SUFFIX } } },
+            { userB: { email: { endsWith: PRIVATE_QA_EMAIL_SUFFIX } } },
+          ],
+        },
+      ],
+    },
+    orderBy: { scheduledFor: "desc" },
+    include: {
+      userA: { select: { email: true } },
+      userB: { select: { email: true } },
+    },
+  });
+  const repeatConfig = parsePrivateQaRepeatConfig(previousPrivateQaMatch?.rationale);
+
+  if (previousPrivateQaMatch && repeatConfig) {
+    const scheduledFor = getNextMatchReleaseAt(now);
+    const canRepeat = canRepeatPrivateQaMatch(
+      repeatConfig,
+      user.id,
+      getBerlinDateKey(scheduledFor),
+    );
+
+    if (canRepeat) {
+      const qaPartnerId = isPrivateQaAccountEmail(previousPrivateQaMatch.userA.email)
+        ? previousPrivateQaMatch.userAId
+        : previousPrivateQaMatch.userBId;
+      const [userAId, userBId] = [user.id, qaPartnerId].sort();
+      const ownerIsUserA = userAId === user.id;
+
+      try {
+        const repeatedMatch = await prisma.match.create({
+          data: {
+            scheduledFor,
+            status: MatchStatus.PENDING,
+            userAId,
+            userBId,
+            phaseOneStarterUserId: user.id,
+            userADecision: ownerIsUserA ? ParticipantDecision.UNDECIDED : ParticipantDecision.KEEP,
+            userBDecision: ownerIsUserA ? ParticipantDecision.KEEP : ParticipantDecision.UNDECIDED,
+            phaseThreeUserADecision: ownerIsUserA ? ParticipantDecision.UNDECIDED : ParticipantDecision.KEEP,
+            phaseThreeUserBDecision: ownerIsUserA ? ParticipantDecision.KEEP : ParticipantDecision.UNDECIDED,
+            compatibility: previousPrivateQaMatch.compatibility ?? 0.92,
+            rationale: {
+              generatedBy: "private-qa-match",
+              ownerUserId: user.id,
+              repeatUntilBerlinDate: repeatConfig.repeatUntilBerlinDate,
+              sharedInterests: repeatConfig.sharedInterests,
+            },
+          },
+        });
+
+        return repeatedMatch.id;
+      } catch (error) {
+        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+          throw error;
+        }
+
+        const repeatedMatch = await prisma.match.findFirst({
+          where: {
+            scheduledFor,
+            OR: [
+              { userAId, userBId },
+              { userAId: userBId, userBId: userAId },
+            ],
+          },
+          select: { id: true },
+        });
+
+        return repeatedMatch?.id ?? null;
+      }
+    }
   }
 
   const viewerTotalMatchCount = await getOrCreatePhoneMatchCountForUser({
