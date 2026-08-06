@@ -15,7 +15,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "light",
   newArchEnabled: true,
   scheme: "choice",
-  icon: "./src/assets/app-icon-heart-refined.png",
+  icon: "./src/assets/app-icon-heart-soft-gloss.png",
   splash: {
     image: "./src/assets/splash-choice.png",
     resizeMode: "contain",
@@ -33,7 +33,7 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: false,
     package: "com.choice.dating",
     adaptiveIcon: {
-      foregroundImage: "./src/assets/app-icon-heart-refined.png",
+      foregroundImage: "./src/assets/app-icon-heart-soft-gloss.png",
       backgroundColor: "#0f0b0d",
     },
   },
