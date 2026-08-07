@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canUserReceiveAnotherMatch } from "./match-access.js";
+import {
+  canUserReceiveAnotherMatch,
+  getReconciledTotalMatchCount,
+} from "./match-access.js";
+
+test("repairs a stale phone counter from durable match evidence", () => {
+  assert.equal(getReconciledTotalMatchCount(1, 2, 3), 3);
+});
+
+test("never lowers an existing lifetime match count", () => {
+  assert.equal(getReconciledTotalMatchCount(10, 2, 3), 10);
+});
 
 test("allows an active Choice Plus account after the included matches are used", () => {
   assert.equal(

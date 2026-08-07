@@ -100,6 +100,22 @@ async function countMatchesForUser(
   });
 }
 
+async function countReleasedMatchesForUser(
+  userId: string,
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  return client.notificationDispatch.count({
+    where: {
+      userId,
+      kind: "match-release",
+    },
+  });
+}
+
+export function getReconciledTotalMatchCount(...counts: number[]) {
+  return Math.max(0, ...counts.map((count) => Math.max(0, Math.trunc(count))));
+}
+
 export async function getOrCreatePhoneMatchCountForUser(
   user: { id: string; phoneNumber: string | null },
   client: Prisma.TransactionClient | typeof prisma = prisma,
@@ -110,18 +126,41 @@ export async function getOrCreatePhoneMatchCountForUser(
     return 0;
   }
 
-  const existing = await client.phoneMatchStats.findUnique({
-    where: { phoneNumber: normalizedPhoneNumber },
-    select: { totalMatchCount: true },
-  });
+  const [existing, currentMatchCount, releasedMatchCount] = await Promise.all([
+    client.phoneMatchStats.findUnique({
+      where: { phoneNumber: normalizedPhoneNumber },
+      select: { totalMatchCount: true },
+    }),
+    countMatchesForUser(user.id, client),
+    countReleasedMatchesForUser(user.id, client),
+  ]);
+
+  const reconciledMatchCount = getReconciledTotalMatchCount(
+    existing?.totalMatchCount ?? 0,
+    currentMatchCount,
+    releasedMatchCount,
+  );
 
   if (existing) {
-    return existing.totalMatchCount;
+    if (reconciledMatchCount === existing.totalMatchCount) {
+      return existing.totalMatchCount;
+    }
+
+    // Only move the durable counter forward so concurrent reservations cannot be lost.
+    await client.phoneMatchStats.updateMany({
+      where: {
+        phoneNumber: normalizedPhoneNumber,
+        totalMatchCount: { lt: reconciledMatchCount },
+      },
+      data: {
+        totalMatchCount: reconciledMatchCount,
+      },
+    });
+
+    return getPhoneMatchCount(normalizedPhoneNumber, client);
   }
 
-  const fallbackMatchCount = await countMatchesForUser(user.id, client);
-
-  await client.phoneMatchStats.upsert({
+  const persisted = await client.phoneMatchStats.upsert({
     where: { phoneNumber: normalizedPhoneNumber },
     update: {
       totalMatchCount: {
@@ -130,11 +169,12 @@ export async function getOrCreatePhoneMatchCountForUser(
     },
     create: {
       phoneNumber: normalizedPhoneNumber,
-      totalMatchCount: fallbackMatchCount,
+      totalMatchCount: reconciledMatchCount,
     },
+    select: { totalMatchCount: true },
   });
 
-  return fallbackMatchCount;
+  return persisted.totalMatchCount;
 }
 
 export async function createMatchAccessReservation(
