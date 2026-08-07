@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   getPurchaseCatalog,
   isChoicePlusEvent,
+  isMatchPackEvent,
   parseRevenueCatPlatform,
   recordChoicePlusEvent,
   recordMatchPackPurchase,
@@ -91,6 +92,14 @@ export const purchaseRoutes: FastifyPluginAsync = async (app) => {
         subscriptionActive: result.subscriptionActive,
         grantedCredits: false,
         purchaseId: result.purchase.id,
+      });
+    }
+
+    if (!isMatchPackEvent(event.product_id)) {
+      return reply.send({
+        ok: true,
+        ignored: true,
+        reason: "UNSUPPORTED_PRODUCT",
       });
     }
 

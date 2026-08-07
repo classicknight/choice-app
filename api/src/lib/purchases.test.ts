@@ -5,6 +5,7 @@ import {
   CHOICE_PLUS_MONTHLY_PRODUCT_ID,
   getPurchaseCatalog,
   isChoicePlusEvent,
+  isMatchPackEvent,
 } from "./purchases.js";
 
 test("publishes Choice Plus as a monthly subscription", () => {
@@ -19,4 +20,9 @@ test("recognizes Choice Plus by product or entitlement", () => {
   assert.equal(isChoicePlusEvent(CHOICE_PLUS_MONTHLY_PRODUCT_ID), true);
   assert.equal(isChoicePlusEvent("another_product", [CHOICE_PLUS_ENTITLEMENT_ID]), true);
   assert.equal(isChoicePlusEvent("match_pack_8"), false);
+});
+
+test("only accepts the configured match pack product", () => {
+  assert.equal(isMatchPackEvent("match_pack_8"), true);
+  assert.equal(isMatchPackEvent("test_product"), false);
 });

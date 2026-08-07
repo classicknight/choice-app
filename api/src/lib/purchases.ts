@@ -104,6 +104,10 @@ export function isChoicePlusEvent(productId: string, entitlementIds: string[] = 
   return productId === CHOICE_PLUS_MONTHLY_PRODUCT_ID || entitlementIds.includes(CHOICE_PLUS_ENTITLEMENT_ID);
 }
 
+export function isMatchPackEvent(productId: string) {
+  return productId === MATCH_PACK_8_PRODUCT_ID;
+}
+
 export async function recordMatchPackPurchase(params: {
   userId: string;
   productId: string;
