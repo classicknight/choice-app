@@ -23,10 +23,10 @@ const revenueCatWebhookSchema = z.object({
     purchased_at_ms: z.coerce.number().optional(),
     event_timestamp_ms: z.coerce.number().optional(),
     expiration_at_ms: z.coerce.number().nullable().optional(),
-    original_transaction_id: z.string().optional(),
-    transaction_id: z.string().optional(),
-    presented_offering_id: z.string().optional(),
-    entitlement_ids: z.array(z.string()).optional(),
+    original_transaction_id: z.string().nullable().optional(),
+    transaction_id: z.string().nullable().optional(),
+    presented_offering_id: z.string().nullable().optional(),
+    entitlement_ids: z.array(z.string()).nullable().optional(),
   }).passthrough(),
 }).passthrough();
 
@@ -69,7 +69,7 @@ export const purchaseRoutes: FastifyPluginAsync = async (app) => {
         ? new Date(event.event_timestamp_ms)
         : null;
 
-    if (isChoicePlusEvent(event.product_id, event.entitlement_ids)) {
+    if (isChoicePlusEvent(event.product_id, event.entitlement_ids ?? undefined)) {
       const result = await recordChoicePlusEvent({
         userId: event.app_user_id,
         productId: event.product_id,
