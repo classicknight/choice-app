@@ -2424,7 +2424,10 @@ function ChatSurface({
   const composerInteractive = composerEditable;
   const composerBottomPadding = fullScreen ? 4 : 10;
   const canScrollThread = threadContentHeight > threadViewportHeight + 1;
-  const pinThreadToBottom = fullScreen && !canScrollThread && messages.length > 0;
+  // Let the message stack fill the viewport so short conversations stay by the composer.
+  // The previous content-height check also counted ScrollView padding and incorrectly
+  // treated a one-message thread as scrollable.
+  const pinThreadToBottom = fullScreen && messages.length > 0;
   const shouldDockThreadSupplement = fullScreen && threadSupplementPlacement === "docked";
   const dockedThreadSupplement = threadSupplement && shouldDockThreadSupplement
     ? <View style={[styles.chatThreadSupplement, styles.chatThreadSupplementDock]}>{threadSupplement}</View>
