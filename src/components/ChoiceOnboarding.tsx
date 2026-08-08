@@ -40,6 +40,7 @@ import {
   fetchRemoteProfile,
   goBackRemotePhaseTwoQuestion,
   registerRemotePushToken,
+  unregisterRemotePushToken,
   setApiAccessToken,
   type RemoteJourneyPartnerProfile,
   type RemoteJourneyState,
@@ -96,6 +97,7 @@ import {
 import {
   clearJourneyLocalNotifications,
   getExpoPushToken,
+  isExpoGoRuntime,
   cancelScheduledLocalNotification,
   scheduleMatchReleaseNotification,
   syncJourneyLocalNotifications,
@@ -5181,6 +5183,18 @@ function OverviewScreen({
       }
 
       try {
+        if (isExpoGoRuntime()) {
+          await unregisterRemotePushToken({
+            userId: activeUserId,
+            token: expoPushToken,
+          });
+
+          if (!cancelled) {
+            pushRegistrationRef.current = nextRegistrationKey;
+          }
+          return;
+        }
+
         await registerRemotePushToken({
           userId: activeUserId,
           token: expoPushToken,
@@ -5325,8 +5339,18 @@ function OverviewScreen({
     let cancelled = false;
 
     async function syncMatchReleaseNotification() {
-      if (!journeyOwnerUserId || !journeyReleaseAt || !hasActiveChat || !phaseOneBeforeRelease) {
+      if (
+        isServerJourneyMode
+        || !journeyOwnerUserId
+        || !journeyReleaseAt
+        || !hasActiveChat
+        || !phaseOneBeforeRelease
+      ) {
         await cancelScheduledLocalNotification(scheduledMatchNotificationId);
+
+        if (journeyOwnerUserId) {
+          await clearJourneyLocalNotifications(journeyOwnerUserId);
+        }
 
         if (!cancelled && (scheduledMatchNotificationId || scheduledMatchNotificationReleaseAt)) {
           setScheduledMatchNotificationId(null);
@@ -5360,6 +5384,7 @@ function OverviewScreen({
   }, [
     featuredProfile.firstName,
     hasActiveChat,
+    isServerJourneyMode,
     journeyOwnerUserId,
     journeyReleaseAt,
     matchReleaseTime,
@@ -5377,7 +5402,7 @@ function OverviewScreen({
     let cancelled = false;
 
     async function syncPhaseNotifications() {
-      if (!journeyOwnerUserId || !journeyReleaseAt || !hasActiveChat) {
+      if (isServerJourneyMode || !journeyOwnerUserId || !journeyReleaseAt || !hasActiveChat) {
         await clearJourneyLocalNotifications(activeUserId);
         return;
       }
@@ -5528,6 +5553,7 @@ function OverviewScreen({
     decisionDeadline,
     featuredProfile.firstName,
     hasActiveChat,
+    isServerJourneyMode,
     journeyOwnerUserId,
     journeyReleaseAt,
     notificationSyncMinute,

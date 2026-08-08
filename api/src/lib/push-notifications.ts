@@ -68,6 +68,26 @@ async function disablePushToken(token: string) {
   });
 }
 
+export async function unregisterPushDevice(input: {
+  userId: string;
+  token: string;
+}) {
+  await prisma.pushDevice.updateMany({
+    where: {
+      userId: input.userId,
+      token: input.token.trim(),
+      disabledAt: null,
+    },
+    data: {
+      disabledAt: new Date(),
+    },
+  });
+
+  return {
+    ok: true as const,
+  };
+}
+
 export async function sendPushNotificationToUser(userId: string, payload: PushPayload) {
   const devices = await prisma.pushDevice.findMany({
     where: {

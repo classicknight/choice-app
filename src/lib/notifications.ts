@@ -17,6 +17,7 @@ Notifications.setNotificationHandler({
 });
 
 let notificationsPrepared = false;
+const journeyNotificationOperations = new Map<string, Promise<void>>();
 
 export type JourneyLocalNotificationPlan = {
   ownerUserId: string;
@@ -34,6 +35,19 @@ function normalizeNotificationData(data: Notifications.NotificationContentInput[
   }
 
   return data as Record<string, unknown>;
+}
+
+function enqueueJourneyNotificationOperation(ownerUserId: string, operation: () => Promise<void>) {
+  const previous = journeyNotificationOperations.get(ownerUserId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+
+  journeyNotificationOperations.set(ownerUserId, current);
+
+  return current.finally(() => {
+    if (journeyNotificationOperations.get(ownerUserId) === current) {
+      journeyNotificationOperations.delete(ownerUserId);
+    }
+  });
 }
 
 export async function prepareLocalNotifications() {
@@ -145,100 +159,99 @@ export async function syncJourneyLocalNotifications(
   ownerUserId: string,
   plans: readonly JourneyLocalNotificationPlan[],
 ) {
-  const hasPermission = await ensureLocalNotificationPermission();
+  return enqueueJourneyNotificationOperation(ownerUserId, async () => {
+    const hasPermission = await ensureLocalNotificationPermission();
 
-  if (!hasPermission) {
-    return;
-  }
+    if (!hasPermission) {
+      return;
+    }
 
-  const now = Date.now();
-  const nextPlans = plans
-    .filter((entry) => entry.ownerUserId === ownerUserId)
-    .filter((entry) => entry.date.getTime() > now);
+    const now = Date.now();
+    const nextPlansByKey = new Map(
+      plans
+        .filter((entry) => entry.ownerUserId === ownerUserId)
+        .filter((entry) => entry.date.getTime() > now)
+        .map((entry) => [entry.key, entry] as const),
+    );
 
-  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-  const relevant = scheduled.filter((entry) => {
-    const data = normalizeNotificationData(entry.content.data);
-    return data.scope === "choice-journey" && data.ownerUserId === ownerUserId;
-  });
-
-  const existingByKey = new Map(
-    relevant.map((entry) => {
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    const relevant = scheduled.filter((entry) => {
       const data = normalizeNotificationData(entry.content.data);
-      return [
-        String(data.notificationKey ?? ""),
-        {
-          id: entry.identifier,
-          scheduledAt: typeof data.scheduledAt === "string" ? data.scheduledAt : null,
-        },
-      ] as const;
-    }),
-  );
+      return data.scope === "choice-journey" && data.ownerUserId === ownerUserId;
+    });
 
-  const nextKeys = new Set(nextPlans.map((entry) => entry.key));
+    const retainedKeys = new Set<string>();
 
-  await Promise.all(
-    relevant.map(async (entry) => {
+    for (const entry of relevant) {
       const data = normalizeNotificationData(entry.content.data);
       const key = typeof data.notificationKey === "string" ? data.notificationKey : null;
+      const nextPlan = key ? nextPlansByKey.get(key) : null;
+      const scheduledAt = typeof data.scheduledAt === "string" ? data.scheduledAt : null;
+      const keepEntry = Boolean(
+        key
+        && nextPlan
+        && scheduledAt === nextPlan.date.toISOString()
+        && !retainedKeys.has(key),
+      );
 
-      if (!key || !nextKeys.has(key)) {
-        await Notifications.cancelScheduledNotificationAsync(entry.identifier);
+      if (keepEntry && key) {
+        retainedKeys.add(key);
+      } else {
+        await cancelScheduledLocalNotification(entry.identifier);
       }
-    }),
-  );
-
-  for (const plan of nextPlans) {
-    const scheduledAt = plan.date.toISOString();
-    const existing = existingByKey.get(plan.key);
-
-    if (existing?.scheduledAt === scheduledAt) {
-      continue;
     }
 
-    if (existing?.id) {
-      await Notifications.cancelScheduledNotificationAsync(existing.id);
-    }
+    for (const plan of nextPlansByKey.values()) {
+      if (retainedKeys.has(plan.key)) {
+        continue;
+      }
 
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: plan.title,
-        body: plan.body,
-        sound: "default",
-        data: {
-          scope: "choice-journey",
-          ownerUserId,
-          notificationKey: plan.key,
-          scheduledAt,
-          notificationKind: plan.kind,
-          ...(plan.data ?? {}),
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: plan.title,
+          body: plan.body,
+          sound: "default",
+          data: {
+            scope: "choice-journey",
+            ownerUserId,
+            notificationKey: plan.key,
+            scheduledAt: plan.date.toISOString(),
+            notificationKind: plan.kind,
+            ...(plan.data ?? {}),
+          },
+          ...(Platform.OS === "android"
+            ? {
+                channelId: plan.kind === "warning" ? fairPlayNotificationChannelId : phaseNotificationChannelId,
+              }
+            : {}),
         },
-        ...(Platform.OS === "android"
-          ? {
-              channelId: plan.kind === "warning" ? fairPlayNotificationChannelId : phaseNotificationChannelId,
-            }
-          : {}),
-      },
-      trigger: {
-        type: Notifications.SchedulableTriggerInputTypes.DATE,
-        date: plan.date,
-      },
-    });
-  }
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: plan.date,
+        },
+      });
+    }
+  });
 }
 
 export async function clearJourneyLocalNotifications(ownerUserId: string) {
-  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+  return enqueueJourneyNotificationOperation(ownerUserId, async () => {
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
 
-  await Promise.all(
-    scheduled.map(async (entry) => {
+    await Promise.all(scheduled.map(async (entry) => {
       const data = normalizeNotificationData(entry.content.data);
+      const belongsToJourney = data.scope === "choice-journey" && data.ownerUserId === ownerUserId;
+      const isLegacyMatchRelease = data.type === "match-release";
 
-      if (data.scope === "choice-journey" && data.ownerUserId === ownerUserId) {
-        await Notifications.cancelScheduledNotificationAsync(entry.identifier);
+      if (belongsToJourney || isLegacyMatchRelease) {
+        await cancelScheduledLocalNotification(entry.identifier);
       }
-    }),
-  );
+    }));
+  });
+}
+
+export function isExpoGoRuntime() {
+  return Constants.executionEnvironment === "storeClient";
 }
 
 export async function getExpoPushToken() {

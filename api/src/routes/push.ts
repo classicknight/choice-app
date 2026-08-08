@@ -1,12 +1,17 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { requireMatchingAuthenticatedUser } from "../lib/auth.js";
-import { registerPushDevice } from "../lib/push-notifications.js";
+import { registerPushDevice, unregisterPushDevice } from "../lib/push-notifications.js";
 
 const registerPushDeviceSchema = z.object({
   userId: z.string().trim().min(1),
   token: z.string().trim().min(1).max(300),
   platform: z.enum(["ios", "android", "web"]).optional(),
+});
+
+const unregisterPushDeviceSchema = registerPushDeviceSchema.pick({
+  userId: true,
+  token: true,
 });
 
 export const pushRoutes: FastifyPluginAsync = async (app) => {
@@ -31,6 +36,27 @@ export const pushRoutes: FastifyPluginAsync = async (app) => {
         error: result.reason,
       });
     }
+
+    return reply.send({
+      ok: true,
+    });
+  });
+
+  app.post("/push/unregister", async (request, reply) => {
+    const parsed = unregisterPushDeviceSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: "INVALID_PUSH_DEVICE",
+        details: parsed.error.flatten(),
+      });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsed.data.userId)) {
+      return;
+    }
+
+    await unregisterPushDevice(parsed.data);
 
     return reply.send({
       ok: true,

@@ -749,6 +749,20 @@ export async function registerRemotePushToken(input: {
   }, { auth: true });
 }
 
+export async function unregisterRemotePushToken(input: {
+  userId: string;
+  token: string;
+}) {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  return postJson<{ ok: true }>("/push/unregister", {
+    userId: input.userId,
+    token: input.token.trim(),
+  }, { auth: true });
+}
+
 export async function fetchRemoteJourney(userId: string, accessToken?: string | null): Promise<RemoteJourneyState> {
   if (!apiBaseUrl) {
     throw new Error("API_URL_MISSING");
