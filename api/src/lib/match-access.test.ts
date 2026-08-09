@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   canUserReceiveAnotherMatch,
+  getMeteredMatchCount,
   getReconciledTotalMatchCount,
 } from "./match-access.js";
 
@@ -11,6 +12,15 @@ test("repairs a stale phone counter from durable match evidence", () => {
 
 test("never lowers an existing lifetime match count", () => {
   assert.equal(getReconciledTotalMatchCount(10, 2, 3), 10);
+});
+
+test("does not count Choice Plus matches against the regular balance", () => {
+  assert.equal(getMeteredMatchCount(12, 4), 8);
+});
+
+test("keeps invalid Choice Plus counters inside the lifetime total", () => {
+  assert.equal(getMeteredMatchCount(3, 8), 0);
+  assert.equal(getMeteredMatchCount(3, -2), 3);
 });
 
 test("allows an active Choice Plus account after the included matches are used", () => {

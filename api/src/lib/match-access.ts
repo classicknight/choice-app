@@ -16,12 +16,22 @@ function normalizeTrackedPhoneNumber(phoneNumber: string | null | undefined) {
   return normalized ? normalized : null;
 }
 
-export function getConsumedIncludedMatches(totalMatchCount: number) {
-  return Math.min(Math.max(totalMatchCount, 0), INCLUDED_MATCH_LIMIT);
+export function getConsumedIncludedMatches(meteredMatchCount: number) {
+  return Math.min(Math.max(meteredMatchCount, 0), INCLUDED_MATCH_LIMIT);
 }
 
-export function getRemainingIncludedMatches(totalMatchCount: number) {
-  return Math.max(INCLUDED_MATCH_LIMIT - getConsumedIncludedMatches(totalMatchCount), 0);
+export function getRemainingIncludedMatches(meteredMatchCount: number) {
+  return Math.max(INCLUDED_MATCH_LIMIT - getConsumedIncludedMatches(meteredMatchCount), 0);
+}
+
+export function getMeteredMatchCount(totalMatchCount: number, choicePlusMatchCount: number) {
+  const normalizedTotal = Math.max(0, Math.trunc(totalMatchCount));
+  const normalizedChoicePlus = Math.min(
+    normalizedTotal,
+    Math.max(0, Math.trunc(choicePlusMatchCount)),
+  );
+
+  return normalizedTotal - normalizedChoicePlus;
 }
 
 export function hasActiveChoicePlus(
@@ -33,7 +43,7 @@ export function hasActiveChoicePlus(
 
 export function canUserReceiveAnotherMatch(
   user: Pick<MatchAccessUser, "phoneNumber" | "paidMatchCredits" | "isPremium" | "premiumExpiresAt">,
-  totalMatchCount: number,
+  meteredMatchCount: number,
 ) {
   const normalizedPhoneNumber = normalizeTrackedPhoneNumber(user.phoneNumber);
 
@@ -41,7 +51,7 @@ export function canUserReceiveAnotherMatch(
     return false;
   }
 
-  return hasActiveChoicePlus(user) || getRemainingIncludedMatches(totalMatchCount) > 0 || user.paidMatchCredits > 0;
+  return hasActiveChoicePlus(user) || getRemainingIncludedMatches(meteredMatchCount) > 0 || user.paidMatchCredits > 0;
 }
 
 export async function getPhoneMatchStatsMap(
@@ -65,6 +75,7 @@ export async function getPhoneMatchStatsMap(
     select: {
       phoneNumber: true,
       totalMatchCount: true,
+      choicePlusMatchCount: true,
     },
   });
 
@@ -87,6 +98,37 @@ export async function getPhoneMatchCount(
   });
 
   return existing?.totalMatchCount ?? 0;
+}
+
+export async function getPhoneMatchUsage(
+  phoneNumber: string | null | undefined,
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  const normalizedPhoneNumber = normalizeTrackedPhoneNumber(phoneNumber);
+
+  if (!normalizedPhoneNumber) {
+    return {
+      totalMatchCount: 0,
+      choicePlusMatchCount: 0,
+      meteredMatchCount: 0,
+    };
+  }
+
+  const existing = await client.phoneMatchStats.findUnique({
+    where: { phoneNumber: normalizedPhoneNumber },
+    select: {
+      totalMatchCount: true,
+      choicePlusMatchCount: true,
+    },
+  });
+  const totalMatchCount = existing?.totalMatchCount ?? 0;
+  const choicePlusMatchCount = existing?.choicePlusMatchCount ?? 0;
+
+  return {
+    totalMatchCount,
+    choicePlusMatchCount,
+    meteredMatchCount: getMeteredMatchCount(totalMatchCount, choicePlusMatchCount),
+  };
 }
 
 async function countMatchesForUser(
@@ -116,20 +158,27 @@ export function getReconciledTotalMatchCount(...counts: number[]) {
   return Math.max(0, ...counts.map((count) => Math.max(0, Math.trunc(count))));
 }
 
-export async function getOrCreatePhoneMatchCountForUser(
+export async function getOrCreatePhoneMatchUsageForUser(
   user: { id: string; phoneNumber: string | null },
   client: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
   const normalizedPhoneNumber = normalizeTrackedPhoneNumber(user.phoneNumber);
 
   if (!normalizedPhoneNumber) {
-    return 0;
+    return {
+      totalMatchCount: 0,
+      choicePlusMatchCount: 0,
+      meteredMatchCount: 0,
+    };
   }
 
   const [existing, currentMatchCount, releasedMatchCount] = await Promise.all([
     client.phoneMatchStats.findUnique({
       where: { phoneNumber: normalizedPhoneNumber },
-      select: { totalMatchCount: true },
+      select: {
+        totalMatchCount: true,
+        choicePlusMatchCount: true,
+      },
     }),
     countMatchesForUser(user.id, client),
     countReleasedMatchesForUser(user.id, client),
@@ -143,7 +192,11 @@ export async function getOrCreatePhoneMatchCountForUser(
 
   if (existing) {
     if (reconciledMatchCount === existing.totalMatchCount) {
-      return existing.totalMatchCount;
+      return {
+        totalMatchCount: existing.totalMatchCount,
+        choicePlusMatchCount: existing.choicePlusMatchCount,
+        meteredMatchCount: getMeteredMatchCount(existing.totalMatchCount, existing.choicePlusMatchCount),
+      };
     }
 
     // Only move the durable counter forward so concurrent reservations cannot be lost.
@@ -157,7 +210,7 @@ export async function getOrCreatePhoneMatchCountForUser(
       },
     });
 
-    return getPhoneMatchCount(normalizedPhoneNumber, client);
+    return getPhoneMatchUsage(normalizedPhoneNumber, client);
   }
 
   const persisted = await client.phoneMatchStats.upsert({
@@ -170,24 +223,40 @@ export async function getOrCreatePhoneMatchCountForUser(
     create: {
       phoneNumber: normalizedPhoneNumber,
       totalMatchCount: reconciledMatchCount,
+      choicePlusMatchCount: 0,
     },
-    select: { totalMatchCount: true },
+    select: {
+      totalMatchCount: true,
+      choicePlusMatchCount: true,
+    },
   });
 
-  return persisted.totalMatchCount;
+  return {
+    totalMatchCount: persisted.totalMatchCount,
+    choicePlusMatchCount: persisted.choicePlusMatchCount,
+    meteredMatchCount: getMeteredMatchCount(persisted.totalMatchCount, persisted.choicePlusMatchCount),
+  };
+}
+
+export async function getOrCreatePhoneMatchCountForUser(
+  user: { id: string; phoneNumber: string | null },
+  client: Prisma.TransactionClient | typeof prisma = prisma,
+) {
+  const usage = await getOrCreatePhoneMatchUsageForUser(user, client);
+  return usage.totalMatchCount;
 }
 
 export async function createMatchAccessReservation(
   transaction: Prisma.TransactionClient,
   users: MatchAccessUser[],
 ) {
-  const userMatchCounts = new Map<string, number>();
+  const userMatchUsages = new Map<string, Awaited<ReturnType<typeof getOrCreatePhoneMatchUsageForUser>>>();
 
   for (const user of users) {
-    const totalMatchCount = await getOrCreatePhoneMatchCountForUser(user, transaction);
-    userMatchCounts.set(user.id, totalMatchCount);
+    const usage = await getOrCreatePhoneMatchUsageForUser(user, transaction);
+    userMatchUsages.set(user.id, usage);
 
-    if (!canUserReceiveAnotherMatch(user, totalMatchCount)) {
+    if (!canUserReceiveAnotherMatch(user, usage.meteredMatchCount)) {
       return {
         ok: false as const,
         blockedUserId: user.id,
@@ -202,7 +271,12 @@ export async function createMatchAccessReservation(
       continue;
     }
 
-    const totalMatchCount = userMatchCounts.get(user.id) ?? 0;
+    const usage = userMatchUsages.get(user.id) ?? {
+      totalMatchCount: 0,
+      choicePlusMatchCount: 0,
+      meteredMatchCount: 0,
+    };
+    const choicePlusActive = hasActiveChoicePlus(user);
 
     await transaction.phoneMatchStats.upsert({
       where: { phoneNumber: normalizedPhoneNumber },
@@ -210,14 +284,22 @@ export async function createMatchAccessReservation(
         totalMatchCount: {
           increment: 1,
         },
+        ...(choicePlusActive
+          ? {
+              choicePlusMatchCount: {
+                increment: 1,
+              },
+            }
+          : {}),
       },
       create: {
         phoneNumber: normalizedPhoneNumber,
         totalMatchCount: 1,
+        choicePlusMatchCount: choicePlusActive ? 1 : 0,
       },
     });
 
-    if (!hasActiveChoicePlus(user) && totalMatchCount >= INCLUDED_MATCH_LIMIT) {
+    if (!choicePlusActive && usage.meteredMatchCount >= INCLUDED_MATCH_LIMIT) {
       await transaction.user.update({
         where: { id: user.id },
         data: {

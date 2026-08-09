@@ -125,6 +125,7 @@ type RemoteAccountStateResult = {
     lastPaidMatchPackageAt: string | null;
     hasPaidMatchAccess: boolean;
     totalMatchCount: number;
+    meteredMatchCount: number;
     includedMatchLimit: number;
     remainingIncludedMatches: number;
     penaltyRecoveryWindowDays: number;
@@ -217,7 +218,9 @@ export type RemoteJourneyState = {
   releaseAt: string | null;
   decisionDeadlineAt: string | null;
   phaseTwoStartAt: string | null;
+  phaseTwoDeadlineAt: string | null;
   phaseThreeStartAt: string | null;
+  phaseThreeDeadlineAt: string | null;
   phaseFourStartAt: string | null;
   phaseFiveStartAt: string | null;
   status: "PENDING" | "ACTIVE" | "DISCARDED" | "EXPIRED" | "KEPT" | null;

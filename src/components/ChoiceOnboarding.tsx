@@ -141,6 +141,24 @@ type PhaseTwoRoundResult = {
 
 type RemoteAccountState = Awaited<ReturnType<typeof fetchRemoteAccountState>>;
 
+function getMatchBalance(account: RemoteAccountState | null | undefined) {
+  const includedMatchLimit = account?.includedMatchLimit ?? 8;
+  const totalMatchCount = account?.totalMatchCount ?? 0;
+  const meteredMatchCount = account?.meteredMatchCount ?? totalMatchCount;
+  const consumedIncludedMatches = Math.min(meteredMatchCount, includedMatchLimit);
+  const remainingIncludedMatches = account?.remainingIncludedMatches
+    ?? Math.max(includedMatchLimit - consumedIncludedMatches, 0);
+  const remainingPurchasedMatches = account?.paidMatchCredits ?? 0;
+  const consumedPurchasedMatches = Math.max(meteredMatchCount - includedMatchLimit, 0);
+
+  return {
+    availableMatches: remainingIncludedMatches + remainingPurchasedMatches,
+    remainingIncludedMatches,
+    remainingPurchasedMatches,
+    unlockedMatches: includedMatchLimit + consumedPurchasedMatches + remainingPurchasedMatches,
+  };
+}
+
 type RememberedSessionMatchState = {
   hasMatch: boolean;
   badgeLabel: string | null;
@@ -564,7 +582,11 @@ function buildPhaseSchedule(now: Date) {
   const decisionDeadline = new Date(now);
   decisionDeadline.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
   const phaseTwoStart = addDaysAtSameTime(release, 1);
+  const phaseTwoDeadline = new Date(phaseTwoStart);
+  phaseTwoDeadline.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
   const phaseThreeStart = addDaysAtSameTime(release, 2);
+  const phaseThreeDeadline = new Date(phaseThreeStart);
+  phaseThreeDeadline.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
   const phaseFourStart = addDaysAtSameTime(release, 3);
   const phaseFiveStart = new Date(phaseFourStart);
   phaseFiveStart.setHours(MATCH_DECISION_HOUR, 0, 0, 0);
@@ -573,7 +595,9 @@ function buildPhaseSchedule(now: Date) {
     release,
     decisionDeadline,
     phaseTwoStart,
+    phaseTwoDeadline,
     phaseThreeStart,
+    phaseThreeDeadline,
     phaseFourStart,
     phaseFiveStart,
   };
@@ -587,7 +611,9 @@ function resolveJourneyPhaseSchedule(journey: RemoteJourneyState | null, fallbac
     release: journey?.releaseAt ? new Date(journey.releaseAt) : fallback.release,
     decisionDeadline: journey?.decisionDeadlineAt ? new Date(journey.decisionDeadlineAt) : fallback.decisionDeadline,
     phaseTwoStart: journey?.phaseTwoStartAt ? new Date(journey.phaseTwoStartAt) : fallback.phaseTwoStart,
+    phaseTwoDeadline: journey?.phaseTwoDeadlineAt ? new Date(journey.phaseTwoDeadlineAt) : fallback.phaseTwoDeadline,
     phaseThreeStart: journey?.phaseThreeStartAt ? new Date(journey.phaseThreeStartAt) : fallback.phaseThreeStart,
+    phaseThreeDeadline: journey?.phaseThreeDeadlineAt ? new Date(journey.phaseThreeDeadlineAt) : fallback.phaseThreeDeadline,
     phaseFourStart: journey?.phaseFourStartAt ? new Date(journey.phaseFourStartAt) : fallback.phaseFourStart,
     phaseFiveStart: journey?.phaseFiveStartAt ? new Date(journey.phaseFiveStartAt) : fallback.phaseFiveStart,
   };
@@ -2961,7 +2987,10 @@ function OverviewScreen({
 
       if (updatedAccount) {
         setAccountState(updatedAccount);
-        setPurchaseMessage("8 weitere Matches wurden freigeschaltet.");
+        const balance = getMatchBalance(updatedAccount);
+        setPurchaseMessage(
+          `8 weitere Matches wurden freigeschaltet. Insgesamt ${balance.unlockedMatches}, davon noch ${balance.availableMatches} verfügbar.`,
+        );
       } else {
         setPurchaseMessage("Der Kauf wurde erfasst. Choice schreibt die 8 Matches gleich gut, sobald der Webhook angekommen ist.");
       }
@@ -3021,7 +3050,9 @@ function OverviewScreen({
       const product = await getChoicePlusStoreProduct();
 
       if (!product) {
-        setPurchaseMessage("Choice Plus ist im Store noch nicht bereit. Lege zuerst `choice_plus_monthly` an.");
+        setPurchaseMessage(
+          "Choice Plus wird vom App Store noch nicht ausgeliefert. Prüfe dort bei `choice_plus_monthly`, ob Name, Beschreibung, Preis und Prüfungsangaben vollständig sind.",
+        );
         return;
       }
 
@@ -3036,7 +3067,16 @@ function OverviewScreen({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message.toLocaleLowerCase("de-DE") : "";
-      setPurchaseMessage(message.includes("cancel") ? "Abo-Abschluss abgebrochen." : "Choice Plus konnte gerade nicht abgeschlossen werden.");
+
+      if (message.includes("cancel")) {
+        setPurchaseMessage("Abo-Abschluss abgebrochen.");
+      } else if (message.includes("product") || message.includes("store") || message.includes("available")) {
+        setPurchaseMessage(
+          "Choice Plus ist im App Store noch nicht kaufbereit. Bitte vervollständige dort die Metadaten für `choice_plus_monthly` und versuche es danach erneut.",
+        );
+      } else {
+        setPurchaseMessage("Choice Plus konnte gerade nicht abgeschlossen werden. Bitte versuche es gleich noch einmal.");
+      }
     } finally {
       setPurchasePending(false);
       setPurchaseAction(null);
@@ -3139,7 +3179,8 @@ function OverviewScreen({
   const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
   const hasPaidMatchAccess = accountState?.hasPaidMatchAccess ?? false;
   const totalMatchCount = accountState?.totalMatchCount ?? 0;
-  const consumedIncludedMatchCount = Math.min(totalMatchCount, includedMatchLimit);
+  const meteredMatchCount = accountState?.meteredMatchCount ?? totalMatchCount;
+  const consumedIncludedMatchCount = Math.min(meteredMatchCount, includedMatchLimit);
   const totalMatchCountLabel = `${totalMatchCount} Match${totalMatchCount === 1 ? "" : "es"}`;
   const recentPenaltyEntries = accountState?.recentPenalties ?? [];
   const activePenaltyEntries = useMemo(() => {
@@ -3270,15 +3311,23 @@ function OverviewScreen({
   );
   const matchReleaseTime = phaseSchedule.release;
   const remainingIncludedMatches = accountState?.remainingIncludedMatches ?? Math.max(includedMatchLimit - consumedIncludedMatchCount, 0);
+  const matchBalance = getMatchBalance(accountState);
+  const availableMatchCount = matchBalance.availableMatches;
+  const unlockedMatchCount = matchBalance.unlockedMatches;
+  const preservedPurchasedMatchCount = paidMatchCredits + frozenPaidMatchCredits;
   const decisionDeadline = phaseSchedule.decisionDeadline;
   const phaseTwoStartTime = phaseSchedule.phaseTwoStart;
+  const phaseTwoDeadlineTime = phaseSchedule.phaseTwoDeadline;
   const phaseThreeStartTime = phaseSchedule.phaseThreeStart;
+  const phaseThreeDeadlineTime = phaseSchedule.phaseThreeDeadline;
   const phaseFourStartTime = phaseSchedule.phaseFourStart;
   const phaseFiveStartTime = phaseSchedule.phaseFiveStart;
   const releaseClockLabel = formatClockTime(matchReleaseTime);
   const decisionClockLabel = formatClockTime(decisionDeadline);
   const phaseTwoClockLabel = formatClockTime(phaseTwoStartTime);
+  const phaseTwoDeadlineClockLabel = formatClockTime(phaseTwoDeadlineTime);
   const phaseThreeClockLabel = formatClockTime(phaseThreeStartTime);
+  const phaseThreeDeadlineClockLabel = formatClockTime(phaseThreeDeadlineTime);
   const phaseFourClockLabel = formatClockTime(phaseFourStartTime);
   const phaseFiveClockLabel = formatClockTime(phaseFiveStartTime);
   const phaseOneViewerDecision: "continue" | "new-match" | "undecided" =
@@ -3442,7 +3491,7 @@ function OverviewScreen({
   const phaseTwoCurrentResponderName = phaseTwoHasStarted
     ? (phaseTwoStage === "starter" ? phaseTwoEffectiveStarterName : phaseTwoEffectivePartnerName)
     : phaseTwoEffectiveStarterName;
-  const phaseTwoDeadlinePassed = currentTime >= phaseThreeStartTime;
+  const phaseTwoDeadlinePassed = currentTime >= phaseTwoDeadlineTime;
   const phaseTwoViewerCanAnswer =
     phaseTwoStage !== "result"
     && Boolean(phaseTwoCurrentResponderUserId)
@@ -3464,7 +3513,8 @@ function OverviewScreen({
   const phaseThreeUnlocked =
     currentTime >= phaseThreeStartTime
     && phaseThreeQualified;
-  const phaseThreeWindowOpen = phaseThreeUnlocked && currentTime < phaseFourStartTime;
+  const phaseThreeWindowOpen = phaseThreeUnlocked && currentTime < phaseThreeDeadlineTime;
+  const phaseThreeChatWindowOpen = phaseThreeUnlocked && currentTime < phaseFourStartTime;
   const phaseThreeViewerDecisionRaw = phaseThreeDecisions[phaseOneViewerUserId];
   const phaseThreeViewerDecision: "stay" | "new-match" | "undecided" =
     phaseThreeViewerDecisionRaw ?? "undecided";
@@ -3479,6 +3529,13 @@ function OverviewScreen({
   const phaseThreeAnyLeave = phaseThreeViewerDecision === "new-match" || phaseThreePartnerDecision === "new-match";
   const phaseFourUnlocked = currentTime >= phaseFourStartTime && phaseThreeQualified;
   const phaseFourWindowLocked = phaseFourUnlocked && currentTime < phaseFiveStartTime;
+  const phaseFiveDailyRestartStart = setTimeOfDay(currentTime, MATCH_RELEASE_HOUR, 0);
+  const phaseFiveDailyRestartDeadline = setTimeOfDay(currentTime, MATCH_DECISION_HOUR, 0);
+  const phaseFiveRestartWindowOpen =
+    phaseThreeQualified
+    && currentTime >= phaseFiveStartTime
+    && currentTime >= phaseFiveDailyRestartStart
+    && currentTime < phaseFiveDailyRestartDeadline;
   const phaseFiveUnlocked =
     phaseThreeQualified
     && phaseThreeBothStay
@@ -3493,14 +3550,14 @@ function OverviewScreen({
   const phaseFivePartnerSelectedNewMatch =
     phaseFiveRestartSelected
     && phaseThreePartnerDecision === "new-match";
-  const phaseThreeDecisionOpen = phaseThreeUnlocked && currentTime < phaseFiveStartTime;
+  const phaseThreeDecisionOpen = phaseThreeWindowOpen || phaseFourWindowLocked;
   const phaseThreeDecisionPending =
     phaseThreeDecisionOpen
     && !phaseThreeAnyLeave
     && (!phaseThreeViewerStayedExplicitly || !phaseThreePartnerStayedExplicitly);
   const phaseThreeStartsLater = phaseThreeQualified && !phaseThreeDecisionOpen && currentTime < phaseThreeStartTime;
   const viewerSelectedNewMatch =
-    (phaseOneWindowOpen && phaseOneViewerDecision === "new-match")
+    phaseOneViewerDecision === "new-match"
     || (phaseThreeUnlocked && phaseThreeViewerDecision === "new-match");
   const phaseFourStartsInLabel = formatDurationLabel(phaseFourStartTime.getTime() - currentTime.getTime());
   const phaseThreeWindowFinished =
@@ -3517,8 +3574,13 @@ function OverviewScreen({
         && currentTime < phaseThreeStartTime
         && (!phaseThreeDecisionOpen || phaseThreeViewerKeepsChat)
       )
-      || (phaseThreeWindowOpen && phaseThreeViewerKeepsChat)
+      || (phaseThreeChatWindowOpen && phaseThreeViewerKeepsChat)
     );
+  const phaseOneOvernightChatUnlocked =
+    hasActiveChat
+    && currentTime >= decisionDeadline
+    && currentTime < phaseTwoStartTime
+    && phaseOneCanAdvanceToPhaseTwo;
   const chatHeaderActionState = hasActiveChat
     && (
       phaseTwoReady
@@ -3612,7 +3674,10 @@ function OverviewScreen({
       && (
         phaseFiveUnlocked
         || phaseTwoChatUnlocked
-        || (phaseOneWindowOpen && (phaseOneChatStarted || phaseOneViewerStarts))
+        || (
+          (phaseOneWindowOpen || phaseOneOvernightChatUnlocked)
+          && (phaseOneChatStarted || phaseOneViewerStarts)
+        )
       )
   );
   const chatComposerHidden = hasActiveChat && viewerSelectedNewMatch;
@@ -4031,7 +4096,7 @@ function OverviewScreen({
   }
 
   function setViewerPhaseThreeDecision(nextDecision: "stay" | "new-match") {
-    if (!phaseThreeDecisionOpen && !phaseFiveUnlocked) {
+    if (!phaseThreeDecisionOpen && !phaseFiveRestartWindowOpen) {
       return;
     }
 
@@ -4622,8 +4687,8 @@ function OverviewScreen({
           ? "Du warst für diese Runde dran. Dafür hast du einen Strafpunkt bekommen, und dieses Match endet jetzt."
           : `${phaseTwoCurrentResponderName} war für diese Runde dran. Dafür wurde ein Strafpunkt vergeben, und dieses Match endet jetzt.`
         : phaseTwoCurrentResponderUserId === phaseTwoViewerUserId
-          ? `Bis ${phaseThreeClockLabel} war deine Runde fällig. Dafür endet dieses Match jetzt.`
-          : `${phaseTwoCurrentResponderName} war bis ${phaseThreeClockLabel} mit der Runde dran. Deshalb endet dieses Match jetzt.`;
+          ? `Bis ${phaseTwoDeadlineClockLabel} war deine Runde fällig. Dafür endet dieses Match jetzt.`
+          : `${phaseTwoCurrentResponderName} war bis ${phaseTwoDeadlineClockLabel} mit der Runde dran. Deshalb endet dieses Match jetzt.`;
     }
 
     if (!phaseTwoOverdue && phaseTwoHasStarted && phaseTwoStage === "starter") {
@@ -4722,14 +4787,14 @@ function OverviewScreen({
       phaseThreeTitle = "Du bleibst bei diesem Match.";
       phaseThreeText = decisionWindowInPause
         ? `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFiveClockLabel} noch entscheiden, morgen neu zu starten.`
-        : `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseFourClockLabel} noch entscheiden, morgen neu zu starten.`;
+        : `Für dich ist alles gesetzt. ${featuredProfile.firstName} kann bis ${phaseThreeDeadlineClockLabel} noch entscheiden, morgen neu zu starten.`;
     }
 
     if (phaseThreeViewerDecision !== "stay" && phaseThreePartnerStayedExplicitly) {
       phaseThreeTitle = `${featuredProfile.firstName} bleibt bei euch.`;
       phaseThreeText = decisionWindowInPause
         ? `Wenn du nichts mehr änderst, geht euer Chat nach ${phaseFiveClockLabel} einfach weiter. Bis dahin kannst du dieses Match noch beenden.`
-        : `Wenn du nichts mehr änderst, bleibt ihr bei diesem Match. Bis ${phaseFourClockLabel} kannst du dich noch für einen Neustart entscheiden.`;
+        : `Wenn du nichts mehr änderst, bleibt ihr bei diesem Match. Bis ${phaseThreeDeadlineClockLabel} kannst du dich noch für einen Neustart entscheiden.`;
     }
 
     if (phaseThreeBothStayExplicit) {
@@ -4738,7 +4803,7 @@ function OverviewScreen({
         : "Ihr bleibt bei diesem Match.";
       phaseThreeText = decisionWindowInPause
         ? `Choice hält euren Chat noch bis ${phaseFiveClockLabel} geschlossen. Danach könnt ihr weiterschreiben.`
-        : `Choice lässt euren Chat offen. Bis ${phaseFourClockLabel} könnt ihr eure Wahl noch ändern, wenn ihr lieber neu starten wollt.`;
+        : `Choice lässt euren Chat offen. Bis ${phaseThreeDeadlineClockLabel} könnt ihr eure Wahl noch ändern, wenn ihr lieber neu starten wollt.`;
     }
 
     if (phaseThreeAnyLeave) {
@@ -5283,7 +5348,7 @@ function OverviewScreen({
       || !hasActiveChat
       || !phaseOneCanAdvanceToPhaseTwo
       || phaseTwoReady
-      || currentTime < phaseThreeStartTime
+      || currentTime < phaseTwoDeadlineTime
       || phaseTwoPenaltyAppliedAt === currentReleaseKey
       || !phaseTwoCurrentResponderUserId
     ) {
@@ -5329,7 +5394,7 @@ function OverviewScreen({
     journeyOwnerUserId,
     journeyReleaseAt,
     phaseOneCanAdvanceToPhaseTwo,
-    phaseThreeStartTime,
+    phaseTwoDeadlineTime,
     phaseTwoCurrentResponderUserId,
     phaseTwoPenaltyAppliedAt,
     phaseTwoReady,
@@ -5449,7 +5514,7 @@ function OverviewScreen({
         }
 
         if (!phaseTwoReady && phaseTwoCurrentResponderUserId === activeUserId) {
-          const warningAt = new Date(phaseThreeStartTime.getTime() - PHASE_WARNING_LEAD_MS);
+          const warningAt = new Date(phaseTwoDeadlineTime.getTime() - PHASE_WARNING_LEAD_MS);
 
           if (warningAt.getTime() > nowMs) {
             plans.push({
@@ -5458,7 +5523,7 @@ function OverviewScreen({
               date: warningAt,
               kind: "warning",
               title: "Es droht ein Strafpunkt",
-              body: `Du bist gerade mit Phase 2 dran. Wenn du bis ${phaseThreeClockLabel} nicht mitmachst, droht ein Strafpunkt.`,
+              body: `Du bist gerade mit Phase 2 dran. Wenn du bis ${phaseTwoDeadlineClockLabel} nicht mitmachst, droht ein Strafpunkt.`,
               data: {
                 type: "phase-two-warning",
                 matchId: remoteJourney?.matchId ?? currentReleaseKey,
@@ -5485,7 +5550,13 @@ function OverviewScreen({
         }
 
         if (phaseThreeDecisionOpen && phaseThreeViewerDecision === "undecided") {
-          const reminderAt = new Date(phaseFourStartTime.getTime() - PHASE_WARNING_LEAD_MS);
+          const activeDecisionDeadline = phaseFourWindowLocked
+            ? phaseFiveStartTime
+            : phaseThreeDeadlineTime;
+          const activeDecisionDeadlineLabel = phaseFourWindowLocked
+            ? phaseFiveClockLabel
+            : phaseThreeDeadlineClockLabel;
+          const reminderAt = new Date(activeDecisionDeadline.getTime() - PHASE_WARNING_LEAD_MS);
 
           if (reminderAt.getTime() > nowMs) {
             plans.push({
@@ -5494,7 +5565,7 @@ function OverviewScreen({
               date: reminderAt,
               kind: "warning",
               title: "Neues Match noch möglich",
-              body: `Wenn du lieber morgen neu starten willst, kannst du das bis ${phaseFourClockLabel} noch ändern. Sonst bleibt dieses Match bestehen.`,
+              body: `Wenn du lieber morgen neu starten willst, kannst du das bis ${activeDecisionDeadlineLabel} noch ändern. Sonst bleibt dieses Match bestehen.`,
               data: {
                 type: "phase-three-reminder",
                 matchId: remoteJourney?.matchId ?? currentReleaseKey,
@@ -5559,11 +5630,16 @@ function OverviewScreen({
     notificationSyncMinute,
     phaseFiveClockLabel,
     phaseFiveStartTime,
+    phaseFourWindowLocked,
     phaseOneCanAdvanceToPhaseTwo,
     phaseOneChatStarted,
     phaseOneViewerStarts,
     phaseOneWindowOpen,
+    phaseTwoDeadlineClockLabel,
+    phaseTwoDeadlineTime,
     phaseThreeClockLabel,
+    phaseThreeDeadlineClockLabel,
+    phaseThreeDeadlineTime,
     phaseThreeDecisionOpen,
     phaseThreeQualified,
     phaseThreeStartTime,
@@ -5760,8 +5836,8 @@ function OverviewScreen({
       return;
     }
 
-    if (!phaseTwoReady && phaseOneCanAdvanceToPhaseTwo && currentTime >= phaseThreeStartTime) {
-      resetJourneyState(journeyOwnerUserId, phaseThreeStartTime.toISOString());
+    if (!phaseTwoReady && phaseOneCanAdvanceToPhaseTwo && currentTime >= phaseTwoDeadlineTime) {
+      resetJourneyState(journeyOwnerUserId, phaseTwoDeadlineTime.toISOString());
       return;
     }
 
@@ -5782,6 +5858,7 @@ function OverviewScreen({
     phaseFiveStartTime,
     phaseOneCanAdvanceToPhaseTwo,
     phaseOneClosed,
+    phaseTwoDeadlineTime,
     phaseThreeBothStay,
     phaseThreeStartTime,
     phaseThreeUnlocked,
@@ -6173,7 +6250,7 @@ function OverviewScreen({
           } : undefined}
           onReportPress={hasActiveChat && !phaseOneBeforeRelease ? openReportModal : undefined}
           headerActionState={chatHeaderActionState}
-          onHeaderActionPress={hasActiveChat && (phaseOneWindowOpen || phaseThreeDecisionOpen) ? () => setShowChatDecisionModal(true) : undefined}
+          onHeaderActionPress={hasActiveChat && (phaseOneWindowOpen || phaseThreeDecisionOpen || phaseFiveRestartWindowOpen) ? () => setShowChatDecisionModal(true) : undefined}
           onComposerChangeText={setChatDraft}
           onSend={sendChatMessage}
           topInset={insets.top}
@@ -6759,8 +6836,8 @@ function OverviewScreen({
       text = phaseTwoViewerCanAnswer
         ? "Dein Teil der Choice-Runde wartet auf dich. Erst wenn die Antworten drin sind, geht es in die nächste Phase."
         : `Bevor es weitergeht, muss zuerst ${phaseTwoCurrentResponderName} die laufende Runde abschließen.`;
-      pills.push(`Noch ${formatDurationLabel(Math.max(0, phaseThreeStartTime.getTime() - currentTime.getTime()))}`);
-      pills.push(`bis ${phaseThreeClockLabel}`);
+      pills.push(`Noch ${formatDurationLabel(Math.max(0, phaseTwoDeadlineTime.getTime() - currentTime.getTime()))}`);
+      pills.push(`bis ${phaseTwoDeadlineClockLabel}`);
     } else if (phaseOneCanAdvanceToPhaseTwo) {
       eyebrow = "Phase 1";
       title = "Dieses Match läuft weiter.";
@@ -6808,7 +6885,7 @@ function OverviewScreen({
   }
 
   function renderHomePhaseFiveRestartCard() {
-    if (!hasActiveChat || !phaseFiveUnlocked || phaseFiveRestartSelected) {
+    if (!hasActiveChat || !phaseFiveRestartWindowOpen || phaseFiveRestartSelected) {
       return null;
     }
 
@@ -7255,6 +7332,45 @@ function OverviewScreen({
             </View>
           </View>
 
+          {choicePlusActive ? (
+            <View style={[styles.unlockCard, styles.unlockPausedCard]}>
+              <View style={styles.unlockHeaderRow}>
+                <View style={styles.unlockTitleWrap}>
+                  <Text style={styles.unlockPausedEyebrow}>Match-Guthaben</Text>
+                  <Text style={styles.unlockTitle}>Dein Stand bleibt erhalten.</Text>
+                </View>
+                <View style={styles.unlockPausedBadge}>
+                  <Text style={styles.unlockPausedBadgeText}>Pausiert</Text>
+                </View>
+              </View>
+
+              <Text style={styles.unlockPausedText}>
+                Choice Plus übernimmt deine täglichen Matches. Deine inklusiven und gekauften Matches werden währenddessen nicht verbraucht.
+              </Text>
+
+              <View style={styles.unlockPausedSummary}>
+                <View style={styles.unlockPausedStat}>
+                  <Text style={styles.unlockPausedValue}>{remainingIncludedMatches}</Text>
+                  <Text style={styles.unlockPausedLabel}>inklusive übrig</Text>
+                </View>
+                <View style={styles.unlockPausedDivider} />
+                <View style={styles.unlockPausedStat}>
+                  <Text style={styles.unlockPausedValue}>{preservedPurchasedMatchCount}</Text>
+                  <Text style={styles.unlockPausedLabel}>gekauft übrig</Text>
+                </View>
+              </View>
+
+              <Text style={styles.unlockPausedNote}>
+                Nach Ende von Choice Plus wird genau dieser Stand wieder aktiv. Bis dahin bleibt dein Guthaben unverändert.
+              </Text>
+
+              {purchaseMessage ? (
+                <View style={styles.unlockPurchaseFeedbackCard}>
+                  <Text style={styles.unlockPurchaseFeedbackText}>{purchaseMessage}</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : (
           <View style={styles.unlockCard}>
             <View style={styles.unlockHeaderRow}>
               <View style={styles.unlockTitleWrap}>
@@ -7263,7 +7379,7 @@ function OverviewScreen({
               </View>
               <View style={styles.unlockBadge}>
                 <Text style={styles.unlockBadgeText}>
-                  {paidMatchCredits > 0 ? `${paidMatchCredits} übrig` : "Inklusive"}
+                  {paidMatchCredits > 0 ? `${availableMatchCount} verfügbar` : "Inklusive"}
                 </Text>
               </View>
             </View>
@@ -7283,7 +7399,7 @@ function OverviewScreen({
               <View style={styles.unlockProgressCopy}>
                 <Text style={styles.unlockProgressTitle}>
                   {hasPaidMatchAccess
-                    ? `${paidMatchCredits} gekaufte Matches übrig`
+                    ? `${availableMatchCount} Matches noch verfügbar`
                     : remainingIncludedMatches <= 0
                       ? "Inklusive-Paket aufgebraucht"
                       : `${consumedIncludedMatchCount} von ${includedMatchLimit} genutzt`}
@@ -7294,10 +7410,10 @@ function OverviewScreen({
                     : accountPaused && frozenPaidMatchCredits > 0
                       ? `${frozenPaidMatchCredits} gekaufte Matches sind aktuell eingefroren.`
                       : hasPaidMatchAccess
-                        ? "Wenn dein Konto pausiert wird, friert Choice das restliche Paket ein."
+                        ? `${remainingIncludedMatches} inklusive + ${paidMatchCredits} gekauft. Insgesamt wurden ${unlockedMatchCount} Matches freigeschaltet.`
                         : remainingIncludedMatches <= 0
                           ? `Du hast alle ${includedMatchLimit} inklusiven Matches genutzt. Insgesamt wurden für diese Telefonnummer bisher ${totalMatchCountLabel} freigeschaltet.`
-                          : totalMatchCount > 0
+                          : meteredMatchCount > 0
                             ? `Du hast ${consumedIncludedMatchCount} von ${includedMatchLimit} inklusiven Matches genutzt. Danach kannst du dir für 3,99 € 8 weitere Matches kaufen.`
                             : "Nach den 8 inklusiven Matches kannst du dir für 3,99 € 8 weitere Matches kaufen."}
                 </Text>
@@ -7343,6 +7459,7 @@ function OverviewScreen({
               </View>
             ) : null}
           </View>
+          )}
 
           {renderPenaltyCard()}
 
@@ -10777,6 +10894,73 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255, 182, 95, 0.22)",
     gap: 12,
+  },
+  unlockPausedCard: {
+    backgroundColor: "rgba(14, 28, 31, 0.97)",
+    borderColor: "rgba(141, 255, 184, 0.24)",
+  },
+  unlockPausedEyebrow: {
+    color: "#9adfff",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+  },
+  unlockPausedBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(141, 255, 184, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(141, 255, 184, 0.24)",
+  },
+  unlockPausedBadgeText: {
+    color: "#caffdd",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  unlockPausedText: {
+    color: "#c4d9d0",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  unlockPausedSummary: {
+    minHeight: 82,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderRadius: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(154, 223, 255, 0.07)",
+    borderWidth: 1,
+    borderColor: "rgba(154, 223, 255, 0.14)",
+  },
+  unlockPausedStat: {
+    flex: 1,
+    alignItems: "center",
+    gap: 3,
+  },
+  unlockPausedValue: {
+    color: "#f6fbff",
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: "800",
+  },
+  unlockPausedLabel: {
+    color: "#a9c5c9",
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "600",
+  },
+  unlockPausedDivider: {
+    width: 1,
+    height: 42,
+    backgroundColor: "rgba(154, 223, 255, 0.16)",
+  },
+  unlockPausedNote: {
+    color: "#94ada4",
+    fontSize: 12,
+    lineHeight: 18,
   },
   unlockHeaderRow: {
     flexDirection: "row",

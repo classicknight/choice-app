@@ -1,5 +1,5 @@
 import {
-  getOrCreatePhoneMatchCountForUser,
+  getOrCreatePhoneMatchUsageForUser,
   getRemainingIncludedMatches,
   hasActiveChoicePlus,
   INCLUDED_MATCH_LIMIT,
@@ -55,16 +55,17 @@ export function mapAccountState(user: AccountStateShape) {
 export async function buildAccountStatePayload(
   user: AccountStateShape & { id: string; phoneNumber?: string | null },
 ) {
-  const totalMatchCount = await getOrCreatePhoneMatchCountForUser({
+  const matchUsage = await getOrCreatePhoneMatchUsageForUser({
     id: user.id,
     phoneNumber: user.phoneNumber ?? null,
   });
 
   return {
     ...mapAccountState(user),
-    totalMatchCount,
+    totalMatchCount: matchUsage.totalMatchCount,
+    meteredMatchCount: matchUsage.meteredMatchCount,
     includedMatchLimit: INCLUDED_MATCH_LIMIT,
-    remainingIncludedMatches: getRemainingIncludedMatches(totalMatchCount),
+    remainingIncludedMatches: getRemainingIncludedMatches(matchUsage.meteredMatchCount),
   };
 }
 

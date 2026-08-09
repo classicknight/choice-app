@@ -19,7 +19,7 @@ import {
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
-  getOrCreatePhoneMatchCountForUser,
+  getOrCreatePhoneMatchUsageForUser,
 } from "./match-access.js";
 import {
   addBerlinCalendarDaysAtTime,
@@ -107,7 +107,9 @@ export type JourneyState = {
   releaseAt: string | null;
   decisionDeadlineAt: string | null;
   phaseTwoStartAt: string | null;
+  phaseTwoDeadlineAt: string | null;
   phaseThreeStartAt: string | null;
+  phaseThreeDeadlineAt: string | null;
   phaseFourStartAt: string | null;
   phaseFiveStartAt: string | null;
   status: MatchStatus | null;
@@ -269,7 +271,9 @@ function buildPhaseSchedule(releaseAt: Date) {
       release,
       decisionDeadline: phaseTwoStart,
       phaseTwoStart,
+      phaseTwoDeadline: phaseThreeStart,
       phaseThreeStart,
+      phaseThreeDeadline: phaseFourStart,
       phaseFourStart,
       phaseFiveStart,
     };
@@ -279,10 +283,108 @@ function buildPhaseSchedule(releaseAt: Date) {
     release: releaseAt,
     decisionDeadline: getBerlinDateAtTime(releaseAt, MATCH_DECISION_HOUR, 0),
     phaseTwoStart: addBerlinCalendarDaysAtTime(releaseAt, 1, MATCH_RELEASE_HOUR, 0),
+    phaseTwoDeadline: addBerlinCalendarDaysAtTime(releaseAt, 1, MATCH_DECISION_HOUR, 0),
     phaseThreeStart: addBerlinCalendarDaysAtTime(releaseAt, 2, MATCH_RELEASE_HOUR, 0),
+    phaseThreeDeadline: addBerlinCalendarDaysAtTime(releaseAt, 2, MATCH_DECISION_HOUR, 0),
     phaseFourStart: addBerlinCalendarDaysAtTime(releaseAt, 3, MATCH_RELEASE_HOUR, 0),
     phaseFiveStart: addBerlinCalendarDaysAtTime(releaseAt, 3, MATCH_DECISION_HOUR, 0),
   };
+}
+
+function getDailyNewMatchWindow(date: Date) {
+  return {
+    start: getBerlinDateAtTime(date, MATCH_RELEASE_HOUR, 0),
+    deadline: getBerlinDateAtTime(date, MATCH_DECISION_HOUR, 0),
+  };
+}
+
+function isPostGameDecisionWindowOpen(
+  match: Pick<MatchWithRelations, "status">,
+  schedule: ReturnType<typeof buildPhaseSchedule>,
+  now: Date,
+) {
+  if (
+    match.status === MatchStatus.ACTIVE
+    && now >= schedule.phaseThreeStart
+    && now < schedule.phaseThreeDeadline
+  ) {
+    return true;
+  }
+
+  if (
+    match.status === MatchStatus.ACTIVE
+    && now >= schedule.phaseFourStart
+    && now < schedule.phaseFiveStart
+  ) {
+    return true;
+  }
+
+  if (match.status !== MatchStatus.KEPT || now < schedule.phaseFiveStart) {
+    return false;
+  }
+
+  const dailyWindow = getDailyNewMatchWindow(now);
+  return now >= dailyWindow.start && now < dailyWindow.deadline;
+}
+
+function getPostGameDecisionDeadline(
+  requestedAt: Date,
+  schedule: ReturnType<typeof buildPhaseSchedule>,
+) {
+  if (requestedAt >= schedule.phaseThreeStart && requestedAt < schedule.phaseThreeDeadline) {
+    return schedule.phaseThreeDeadline;
+  }
+
+  if (requestedAt >= schedule.phaseFourStart && requestedAt < schedule.phaseFiveStart) {
+    return schedule.phaseFiveStart;
+  }
+
+  if (requestedAt < schedule.phaseFiveStart) {
+    return null;
+  }
+
+  const dailyWindow = getDailyNewMatchWindow(requestedAt);
+
+  if (requestedAt < dailyWindow.start) {
+    return dailyWindow.start;
+  }
+
+  return dailyWindow.deadline;
+}
+
+function getPendingPostGameDecisionDeadline(
+  match: Pick<
+    MatchWithRelations,
+    | "phaseThreeUserADecision"
+    | "phaseThreeUserBDecision"
+    | "phaseThreeUserADecisionUpdatedAt"
+    | "phaseThreeUserBDecisionUpdatedAt"
+    | "updatedAt"
+  >,
+  schedule: ReturnType<typeof buildPhaseSchedule>,
+) {
+  const deadlines = [
+    match.phaseThreeUserADecision === ParticipantDecision.DISCARD
+      ? getPostGameDecisionDeadline(
+          match.phaseThreeUserADecisionUpdatedAt ?? match.updatedAt,
+          schedule,
+        )
+      : null,
+    match.phaseThreeUserBDecision === ParticipantDecision.DISCARD
+      ? getPostGameDecisionDeadline(
+          match.phaseThreeUserBDecisionUpdatedAt ?? match.updatedAt,
+          schedule,
+        )
+      : null,
+  ].filter((deadline): deadline is Date => Boolean(deadline));
+
+  if (!deadlines.length) {
+    return null;
+  }
+
+  return deadlines.reduce((earliest, deadline) => (
+    deadline < earliest ? deadline : earliest
+  ));
 }
 
 function getCompatibilityPoints(scoreA: number, scoreB: number) {
@@ -607,7 +709,7 @@ async function syncJourneyPhaseNotifications(
     });
   }
 
-  if (phaseOneBothContinue && now >= schedule.phaseTwoStart && now < schedule.phaseThreeStart) {
+  if (phaseOneBothContinue && now >= schedule.phaseTwoStart && now < schedule.phaseTwoDeadline) {
     const phaseTwoStarterUserId = getPhaseTwoStarterUserId(match);
     const phaseTwoPartnerUserId = getPhaseTwoPartnerUserId(match);
 
@@ -645,9 +747,9 @@ async function syncJourneyPhaseNotifications(
         match.phaseTwoStage === PhaseTwoStage.PARTNER
           ? getPhaseTwoPartnerUserId(match)
           : phaseTwoStarterUserId;
-      const phaseTwoWarningAt = new Date(schedule.phaseThreeStart.getTime() - PHASE_WARNING_LEAD_MS);
+      const phaseTwoWarningAt = new Date(schedule.phaseTwoDeadline.getTime() - PHASE_WARNING_LEAD_MS);
 
-      if (now >= phaseTwoWarningAt && now < schedule.phaseThreeStart) {
+      if (now >= phaseTwoWarningAt && now < schedule.phaseTwoDeadline) {
         await sendJourneyNotificationToUser({
           userId: currentResponderUserId,
           matchId: match.id,
@@ -665,7 +767,7 @@ async function syncJourneyPhaseNotifications(
     }
   }
 
-  if (phaseTwoReady && phaseThreeQualified && now >= schedule.phaseThreeStart && now < schedule.phaseFourStart) {
+  if (phaseTwoReady && phaseThreeQualified && now >= schedule.phaseThreeStart && now < schedule.phaseThreeDeadline) {
     await Promise.allSettled([
       sendJourneyNotificationToUser({
         userId: match.userAId,
@@ -695,8 +797,8 @@ async function syncJourneyPhaseNotifications(
       }),
     ]);
 
-    const phaseThreeReminderAt = new Date(schedule.phaseFourStart.getTime() - PHASE_WARNING_LEAD_MS);
-    if (now >= phaseThreeReminderAt && now < schedule.phaseFourStart) {
+    const phaseThreeReminderAt = new Date(schedule.phaseThreeDeadline.getTime() - PHASE_WARNING_LEAD_MS);
+    if (now >= phaseThreeReminderAt && now < schedule.phaseThreeDeadline) {
       if (match.phaseThreeUserADecision === ParticipantDecision.UNDECIDED) {
         await sendJourneyNotificationToUser({
           userId: match.userAId,
@@ -731,7 +833,7 @@ async function syncJourneyPhaseNotifications(
     }
   }
 
-  if (phaseThreeQualified && now >= schedule.phaseFourStart && now < schedule.phaseFiveStart) {
+  if (phaseThreeQualified && !phaseThreeAnyLeave && now >= schedule.phaseFourStart && now < schedule.phaseFiveStart) {
     await Promise.allSettled([
       sendJourneyNotificationToUser({
         userId: match.userAId,
@@ -1540,6 +1642,29 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
   return hydratedMatch;
 }
 
+async function getNextJourneyReleaseAtForUser(userId: string, now: Date) {
+  const latestClosedMatch = await prisma.match.findFirst({
+    where: {
+      OR: [{ userAId: userId }, { userBId: userId }],
+      closedAt: { not: null },
+    },
+    orderBy: { closedAt: "desc" },
+    select: { closedAt: true },
+  });
+  const currentCycleRelease = getCurrentCycleReleaseAt(now);
+  const currentCycleSchedule = buildPhaseSchedule(currentCycleRelease);
+  const earliestUsableRelease = now < currentCycleSchedule.decisionDeadline
+    ? currentCycleRelease
+    : getNextMatchReleaseAt(now);
+  const requestedRelease = latestClosedMatch?.closedAt
+    ? addBerlinCalendarDaysAtTime(latestClosedMatch.closedAt, 1, MATCH_RELEASE_HOUR, 0)
+    : null;
+
+  return requestedRelease && requestedRelease > earliestUsableRelease
+    ? requestedRelease
+    : earliestUsableRelease;
+}
+
 async function maybeCreateUpcomingMatch(userId: string, now: Date) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -1573,6 +1698,8 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     return existingUpcoming.id;
   }
 
+  const nextRelease = await getNextJourneyReleaseAtForUser(userId, now);
+
   const previousPrivateQaMatch = await prisma.match.findFirst({
     where: {
       AND: [
@@ -1595,7 +1722,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
   const repeatConfig = parsePrivateQaRepeatConfig(previousPrivateQaMatch?.rationale);
 
   if (previousPrivateQaMatch && repeatConfig) {
-    const scheduledFor = getNextMatchReleaseAt(now);
+    const scheduledFor = nextRelease;
     const canRepeat = canRepeatPrivateQaMatch(
       repeatConfig,
       user.id,
@@ -1653,25 +1780,25 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     }
   }
 
-  const viewerTotalMatchCount = await getOrCreatePhoneMatchCountForUser({
+  const viewerMatchUsage = await getOrCreatePhoneMatchUsageForUser({
     id: user.id,
     phoneNumber: user.phoneNumber,
   });
 
-  if (!canUserReceiveAnotherMatch(user, viewerTotalMatchCount)) {
+  if (!canUserReceiveAnotherMatch(user, viewerMatchUsage.meteredMatchCount)) {
     return null;
   }
 
   const candidateUsers = await getAvailableJourneyCandidateUsers([userId]);
   const candidateUsageEntries = await Promise.all(candidateUsers.map(async (candidate) => ({
     candidate,
-    totalMatchCount: await getOrCreatePhoneMatchCountForUser({
+    usage: await getOrCreatePhoneMatchUsageForUser({
       id: candidate.id,
       phoneNumber: candidate.phoneNumber,
     }),
   })));
   const eligibleCandidateUsers = candidateUsageEntries
-    .filter(({ candidate, totalMatchCount }) => canUserReceiveAnotherMatch(candidate, totalMatchCount))
+    .filter(({ candidate, usage }) => canUserReceiveAnotherMatch(candidate, usage.meteredMatchCount))
     .map(({ candidate }) => candidate);
   const candidateHistory = await getJourneyCandidateHistoryMap(userId);
   const bestCandidate = rankJourneyCandidatesForViewer(user, eligibleCandidateUsers, candidateHistory)[0] ?? null;
@@ -1680,7 +1807,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     return null;
   }
 
-  const scheduledFor = getNextMatchReleaseAt(now);
+  const scheduledFor = nextRelease;
   const compatibility = Math.max(0.55, Math.min(0.99, 0.55 + bestCandidate.score / 100));
   const [userAId, userBId] = [userId, bestCandidate.user.id].sort();
 
@@ -1788,7 +1915,13 @@ async function findJourneyMatchForUser(userId: string, now: Date): Promise<Match
     return null;
   }
 
-  return getMatchById(createdMatchId);
+  const createdMatch = await getMatchById(createdMatchId);
+
+  if (createdMatch && createdMatch.scheduledFor <= now) {
+    return activatePendingMatch(createdMatch, now);
+  }
+
+  return createdMatch;
 }
 
 async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
@@ -1850,13 +1983,13 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
         where: { id: match.id },
         data: {
           status: MatchStatus.DISCARDED,
-          closedAt: now,
+          closedAt: schedule.decisionDeadline,
         },
       }),
       prisma.chat.updateMany({
         where: { matchId: match.id },
         data: {
-          archivedAt: now,
+          archivedAt: schedule.decisionDeadline,
         },
       }),
     ]);
@@ -1872,14 +2005,13 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
       )
     : 0;
   const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
-  const phaseThreeAnyLeave = phaseThreeHasLeave(match);
   const phaseThreeBothStay = phaseThreeStaysOpen(match);
 
   if (
     match.status === MatchStatus.ACTIVE
     && phaseOneCanAdvanceToPhaseTwo(match, userMessages.length > 0)
     && !phaseTwoReady
-    && now >= schedule.phaseThreeStart
+    && now >= schedule.phaseTwoDeadline
     && !match.phaseTwoPenaltyAppliedAt
   ) {
     const currentResponderUserId =
@@ -1901,7 +2033,7 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
           data: {
             phaseTwoPenaltyAppliedAt: now,
             status: MatchStatus.DISCARDED,
-            closedAt: now,
+            closedAt: schedule.phaseTwoDeadline,
           },
         }),
         prisma.chat.updateMany({
@@ -1921,13 +2053,23 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
     && now >= schedule.decisionDeadline
     && phaseOneHasDiscard(match)
   ) {
-    await prisma.match.update({
-      where: { id: match.id },
-      data: {
-        status: MatchStatus.DISCARDED,
-        closedAt: now,
-      },
-    });
+    await prisma.$transaction([
+      prisma.match.update({
+        where: { id: match.id },
+        data: {
+          status: MatchStatus.DISCARDED,
+          closedAt: schedule.decisionDeadline,
+        },
+      }),
+      prisma.chat.updateMany({
+        where: { matchId: match.id },
+        data: {
+          archivedAt: schedule.decisionDeadline,
+        },
+      }),
+    ]);
+
+    return getMatchById(match.id);
   }
 
   if (
@@ -1936,43 +2078,50 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
     && !phaseThreeQualified
     && now >= schedule.phaseThreeStart
   ) {
-    await prisma.match.update({
-      where: { id: match.id },
-      data: {
-        status: MatchStatus.DISCARDED,
-        closedAt: now,
-      },
-    });
+    await prisma.$transaction([
+      prisma.match.update({
+        where: { id: match.id },
+        data: {
+          status: MatchStatus.DISCARDED,
+          closedAt: schedule.phaseThreeStart,
+        },
+      }),
+      prisma.chat.updateMany({
+        where: { matchId: match.id },
+        data: {
+          archivedAt: schedule.phaseThreeStart,
+        },
+      }),
+    ]);
+
+    return getMatchById(match.id);
   }
 
-  if (
-    match.status === MatchStatus.ACTIVE
-    && phaseThreeQualified
-    && now >= schedule.phaseFiveStart
-    && !phaseThreeBothStay
-  ) {
-    await prisma.match.update({
-      where: { id: match.id },
-      data: {
-        status: phaseThreeAnyLeave ? MatchStatus.DISCARDED : MatchStatus.EXPIRED,
-        closedAt: now,
-      },
-    });
-  }
+  const pendingPostGameDecisionDeadline = getPendingPostGameDecisionDeadline(match, schedule);
 
   if (
-    match.status === MatchStatus.KEPT
+    (match.status === MatchStatus.ACTIVE || match.status === MatchStatus.KEPT)
     && phaseThreeQualified
-    && phaseThreeAnyLeave
-    && now >= schedule.phaseFiveStart
+    && pendingPostGameDecisionDeadline
+    && now >= pendingPostGameDecisionDeadline
   ) {
-    await prisma.match.update({
-      where: { id: match.id },
-      data: {
-        status: MatchStatus.DISCARDED,
-        closedAt: now,
-      },
-    });
+    await prisma.$transaction([
+      prisma.match.update({
+        where: { id: match.id },
+        data: {
+          status: MatchStatus.DISCARDED,
+          closedAt: pendingPostGameDecisionDeadline,
+        },
+      }),
+      prisma.chat.updateMany({
+        where: { matchId: match.id },
+        data: {
+          archivedAt: pendingPostGameDecisionDeadline,
+        },
+      }),
+    ]);
+
+    return getMatchById(match.id);
   }
 
   if (
@@ -2229,13 +2378,17 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
   const match = await resolveJourneyMatchForUser(userId, now);
 
   if (!match) {
+    const nextReleaseAt = await getNextJourneyReleaseAtForUser(userId, now);
+
     return {
       ownerUserId: userId,
       matchId: null,
-      releaseAt: getNextMatchReleaseAt(now).toISOString(),
+      releaseAt: nextReleaseAt.toISOString(),
       decisionDeadlineAt: null,
       phaseTwoStartAt: null,
+      phaseTwoDeadlineAt: null,
       phaseThreeStartAt: null,
+      phaseThreeDeadlineAt: null,
       phaseFourStartAt: null,
       phaseFiveStartAt: null,
       status: null,
@@ -2305,7 +2458,9 @@ export async function getCurrentJourneyForUser(userId: string): Promise<JourneyS
     releaseAt: match.scheduledFor.toISOString(),
     decisionDeadlineAt: schedule.decisionDeadline.toISOString(),
     phaseTwoStartAt: schedule.phaseTwoStart.toISOString(),
+    phaseTwoDeadlineAt: schedule.phaseTwoDeadline.toISOString(),
     phaseThreeStartAt: schedule.phaseThreeStart.toISOString(),
+    phaseThreeDeadlineAt: schedule.phaseThreeDeadline.toISOString(),
     phaseFourStartAt: schedule.phaseFourStart.toISOString(),
     phaseFiveStartAt: schedule.phaseFiveStart.toISOString(),
     status: match.status,
@@ -2386,11 +2541,15 @@ export async function createJourneyMessage(input: {
     ? Math.round(phaseTwoResults.reduce((sum, entry) => sum + entry.compatibility, 0) / phaseTwoResults.length)
     : 0;
   const phaseThreeQualified = phaseTwoReady && phaseTwoCompatibility > PHASE_THREE_THRESHOLD;
+  const viewerPhaseOneDecision =
+    input.userId === match.userAId ? match.userADecision : match.userBDecision;
   const viewerPhaseThreeDecision =
     input.userId === match.userAId ? match.phaseThreeUserADecision : match.phaseThreeUserBDecision;
   const partnerPhaseThreeDecision =
     input.userId === match.userAId ? match.phaseThreeUserBDecision : match.phaseThreeUserADecision;
-  const viewerSelectedNewMatch = viewerPhaseThreeDecision === ParticipantDecision.DISCARD;
+  const viewerSelectedNewMatch =
+    viewerPhaseOneDecision === ParticipantDecision.DISCARD
+    || viewerPhaseThreeDecision === ParticipantDecision.DISCARD;
   const phaseThreeViewerKeepsChat = phaseThreeQualified && viewerPhaseThreeDecision !== ParticipantDecision.DISCARD;
   const phaseFiveChatUnlocked =
     phaseThreeQualified
@@ -2405,12 +2564,22 @@ export async function createJourneyMessage(input: {
       && viewerPhaseThreeDecision !== ParticipantDecision.DISCARD
     )
     || (phaseThreeQualified && phaseThreeViewerKeepsChat && now >= schedule.phaseThreeStart && now < schedule.phaseFourStart);
+  const phaseOneChatUnlocked =
+    now >= match.scheduledFor
+    && (
+      (now < schedule.decisionDeadline && (phaseOneChatStarted || viewerStarts))
+      || (
+        now >= schedule.decisionDeadline
+        && now < schedule.phaseTwoStart
+        && phaseOneCanAdvanceToPhaseTwo(match, phaseOneChatStarted)
+      )
+    );
   const canWrite =
     !viewerSelectedNewMatch
     && (
       phaseFiveChatUnlocked
       || phaseTwoChatUnlocked
-      || (now >= match.scheduledFor && now < schedule.decisionDeadline && (phaseOneChatStarted || viewerStarts))
+      || phaseOneChatUnlocked
     );
 
   if (!canWrite) {
@@ -2829,19 +2998,25 @@ export async function setPhaseThreeDecision(input: {
   if (
     !phaseTwoReady
     || phaseTwoCompatibility <= PHASE_THREE_THRESHOLD
-    || now < schedule.phaseThreeStart
-    || (now >= schedule.phaseFiveStart && match.status !== MatchStatus.KEPT)
+    || !isPostGameDecisionWindowOpen(match, schedule, now)
   ) {
     return { ok: false as const, reason: "PHASE_THREE_NOT_AVAILABLE" as const };
   }
 
-  const field = input.userId === match.userAId ? "phaseThreeUserADecision" : "phaseThreeUserBDecision";
+  const decision = input.decision === "stay" ? ParticipantDecision.KEEP : ParticipantDecision.DISCARD;
+  const decisionUpdatedAt = input.decision === "new-match" ? now : null;
 
   await prisma.match.update({
     where: { id: match.id },
-    data: {
-      [field]: input.decision === "stay" ? ParticipantDecision.KEEP : ParticipantDecision.DISCARD,
-    },
+    data: input.userId === match.userAId
+      ? {
+          phaseThreeUserADecision: decision,
+          phaseThreeUserADecisionUpdatedAt: decisionUpdatedAt,
+        }
+      : {
+          phaseThreeUserBDecision: decision,
+          phaseThreeUserBDecisionUpdatedAt: decisionUpdatedAt,
+        },
   });
 
   return {

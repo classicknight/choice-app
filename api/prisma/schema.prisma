@@ -181,6 +181,8 @@ model Match {
   userBDecision    ParticipantDecision @default(UNDECIDED)
   phaseThreeUserADecision ParticipantDecision @default(UNDECIDED)
   phaseThreeUserBDecision ParticipantDecision @default(UNDECIDED)
+  phaseThreeUserADecisionUpdatedAt DateTime?
+  phaseThreeUserBDecisionUpdatedAt DateTime?
   phaseTwoStarterUserId String?
   phaseTwoPartnerUserId String?
   phaseTwoStage    PhaseTwoStage?
@@ -351,4 +353,5 @@ model PhoneMatchStats {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   totalMatchCount Int      @default(0)
+  choicePlusMatchCount Int      @default(0)
 }
