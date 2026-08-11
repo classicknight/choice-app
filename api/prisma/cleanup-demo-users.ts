@@ -2,15 +2,21 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 const seedDemoEmailSuffix = ".demo@choice.local";
+const privateQaEmailSuffix = ".qa@choice.local";
 
 async function main() {
   const demoUsers = await prisma.user.findMany({
-    where: { email: { endsWith: seedDemoEmailSuffix } },
+    where: {
+      OR: [
+        { email: { endsWith: seedDemoEmailSuffix } },
+        { email: { endsWith: privateQaEmailSuffix } },
+      ],
+    },
     select: { id: true },
   });
 
   if (!demoUsers.length) {
-    console.log("No Choice seed demo accounts found.");
+    console.log("No Choice demo or private QA accounts found.");
     return;
   }
 
@@ -18,7 +24,7 @@ async function main() {
     where: { id: { in: demoUsers.map((user) => user.id) } },
   });
 
-  console.log(`Removed ${result.count} Choice seed demo account(s).`);
+  console.log(`Removed ${result.count} Choice demo or private QA account(s).`);
 }
 
 main()

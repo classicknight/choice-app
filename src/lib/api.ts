@@ -128,6 +128,13 @@ type RemoteAccountStateResult = {
     meteredMatchCount: number;
     includedMatchLimit: number;
     remainingIncludedMatches: number;
+    monthlyFreeMatchLimit: number;
+    monthlyFreeMatchCount: number;
+    monthlyFreeMatchesUsed: number;
+    remainingMonthlyFreeMatches: number;
+    monthlyFreeMatchesEligible: boolean;
+    monthlyFreeMatchesEligibleFrom: string | null;
+    nextMonthlyFreeMatchesAt: string | null;
     penaltyRecoveryWindowDays: number;
     recentPenalties: Array<{
       id: string;
@@ -246,6 +253,14 @@ export type RemoteJourneyState = {
 type JourneyResponse = {
   ok: true;
   journey: RemoteJourneyState;
+};
+
+type PrivateQaPartnerSessionResult = {
+  ok: true;
+  userId: string;
+  phoneNumber: null;
+  profileCompleted: boolean;
+  accessToken: string;
 };
 
 type HydratedProfileResult = {
@@ -776,6 +791,18 @@ export async function fetchRemoteJourney(userId: string, accessToken?: string | 
     accessToken,
   });
   return response.journey;
+}
+
+export async function openRemotePrivateQaPartnerSession(input: {
+  ownerUserId: string;
+  partnerUserId: string;
+  accessToken?: string | null;
+}): Promise<PrivateQaPartnerSessionResult> {
+  return postJson<PrivateQaPartnerSessionResult>(
+    `/journey/${encodeURIComponent(input.ownerUserId)}/private-qa-partner-session`,
+    { partnerUserId: input.partnerUserId },
+    { auth: true, accessToken: input.accessToken },
+  );
 }
 
 export async function sendRemoteJourneyMessage(input: {

@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
+import { MatchStatus } from "@prisma/client";
 import { z } from "zod";
-import { requireMatchingAuthenticatedUser } from "../lib/auth.js";
+import { issueAccessToken, requireMatchingAuthenticatedUser } from "../lib/auth.js";
 import {
   blockJourneyPartner,
   createJourneyMessage,
@@ -11,6 +12,8 @@ import {
   startPhaseTwoForUser,
   submitPhaseTwoAnswer,
 } from "../lib/journey.js";
+import { prisma } from "../lib/prisma.js";
+import { isPrivateQaAccountEmail } from "../lib/synthetic-accounts.js";
 
 const paramsSchema = z.object({
   userId: z.string().trim().min(1),
@@ -39,6 +42,22 @@ const phaseThreeDecisionSchema = z.object({
 const blockPartnerSchema = z.object({
   blockedUserId: z.string().trim().min(1),
 });
+
+const privateQaPartnerSessionSchema = z.object({
+  partnerUserId: z.string().trim().min(1),
+});
+
+function getPrivateQaOwnerUserId(rationale: unknown) {
+  if (!rationale || typeof rationale !== "object" || Array.isArray(rationale)) {
+    return null;
+  }
+
+  const record = rationale as Record<string, unknown>;
+
+  return record.generatedBy === "private-qa-match" && typeof record.ownerUserId === "string"
+    ? record.ownerUserId
+    : null;
+}
 
 function sendJourneyError(reply: FastifyReply, reason: string) {
   const status =
@@ -78,6 +97,61 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
 
     const journey = await getCurrentJourneyForUser(parsedParams.data.userId);
     return reply.send({ ok: true, journey });
+  });
+
+  app.post("/journey/:userId/private-qa-partner-session", async (request, reply) => {
+    const parsedParams = paramsSchema.safeParse(request.params);
+    const parsedBody = privateQaPartnerSessionSchema.safeParse(request.body);
+
+    if (!parsedParams.success || !parsedBody.success) {
+      return reply.status(400).send({
+        error: "INVALID_PRIVATE_QA_PARTNER_SESSION",
+        details: {
+          params: parsedParams.success ? undefined : parsedParams.error.flatten(),
+          body: parsedBody.success ? undefined : parsedBody.error.flatten(),
+        },
+      });
+    }
+
+    const ownerUserId = parsedParams.data.userId;
+
+    if (!requireMatchingAuthenticatedUser(request, reply, ownerUserId)) {
+      return;
+    }
+
+    const partnerUserId = parsedBody.data.partnerUserId;
+    const match = await prisma.match.findFirst({
+      where: {
+        OR: [
+          { userAId: ownerUserId, userBId: partnerUserId },
+          { userAId: partnerUserId, userBId: ownerUserId },
+        ],
+        status: { in: [MatchStatus.PENDING, MatchStatus.ACTIVE, MatchStatus.KEPT] },
+        closedAt: null,
+      },
+      include: {
+        userA: { select: { email: true, profileCompleted: true } },
+        userB: { select: { email: true, profileCompleted: true } },
+      },
+    });
+
+    if (!match || getPrivateQaOwnerUserId(match.rationale) !== ownerUserId) {
+      return reply.status(404).send({ error: "PRIVATE_QA_MATCH_NOT_FOUND" });
+    }
+
+    const partner = match.userAId === partnerUserId ? match.userA : match.userB;
+
+    if (!isPrivateQaAccountEmail(partner.email)) {
+      return reply.status(403).send({ error: "PRIVATE_QA_PARTNER_REQUIRED" });
+    }
+
+    return reply.send({
+      ok: true,
+      userId: partnerUserId,
+      phoneNumber: null,
+      profileCompleted: partner.profileCompleted,
+      accessToken: issueAccessToken(partnerUserId, app.config.JWT_ACCESS_SECRET),
+    });
   });
 
   app.post("/journey/:userId/messages", async (request, reply) => {

@@ -16,6 +16,7 @@ import {
   canRepeatPrivateQaMatch,
   parsePrivateQaRepeatConfig,
 } from "./private-qa-repeat.js";
+import { getOrCreatePrivateQaPartner } from "./private-qa-match.js";
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
@@ -462,6 +463,13 @@ function compareRankedJourneyCandidates(candidateA: RankedJourneyCandidate, cand
   return candidateA.user.id.localeCompare(candidateB.user.id, "en");
 }
 
+export function filterUnseenJourneyCandidates<T extends { id: string }>(
+  candidateUsers: T[],
+  previouslyMatchedUserIds: ReadonlySet<string>,
+) {
+  return candidateUsers.filter((candidate) => !previouslyMatchedUserIds.has(candidate.id));
+}
+
 async function getAvailableJourneyCandidateUsers(excludedUserIds: string[]) {
   const blockedUserIds = await getBlockedUserIdsForUsers(excludedUserIds);
   const idsToExclude = Array.from(new Set([...excludedUserIds, ...blockedUserIds]));
@@ -659,6 +667,51 @@ async function sendJourneyNotificationToUser(input: {
       data: input.data,
     },
   });
+}
+
+export type JourneyClosureReason =
+  | "phase-one-not-started"
+  | "phase-one-new-match"
+  | "phase-two-not-completed"
+  | "phase-two-not-compatible"
+  | "post-game-new-match";
+
+export function getJourneyClosureNotificationBody(reason: JourneyClosureReason) {
+  const reasonText = {
+    "phase-one-not-started": "Euer Chat wurde bis 21:00 Uhr nicht eröffnet.",
+    "phase-one-new-match": "In Phase 1 wurde ein neues Match gewählt.",
+    "phase-two-not-completed": "Die Choice-Runde wurde bis 21:00 Uhr nicht abgeschlossen.",
+    "phase-two-not-compatible": "Eure Antworten in der Choice-Runde haben für die nächsten Phasen nicht ausreichend zusammengepasst.",
+    "post-game-new-match": "Nach der Choice-Runde wurde ein neues Match gewählt.",
+  }[reason];
+
+  return `${reasonText} Choice sucht jetzt für morgen ab 09:00 Uhr wieder passend für dich.`;
+}
+
+async function sendJourneyClosureNotifications(
+  match: MatchWithRelations,
+  reason: JourneyClosureReason,
+  excludedUserIds: string[] = [],
+) {
+  const excluded = new Set(excludedUserIds);
+  const recipientUserIds = [match.userAId, match.userBId].filter((userId) => !excluded.has(userId));
+
+  await Promise.allSettled(
+    recipientUserIds.map((userId) => sendJourneyNotificationToUser({
+      userId,
+      matchId: match.id,
+      kind: "match-closed",
+      contextKey: `match-closed:${reason}:${match.id}:${userId}`,
+      title: "Dieses Match wurde beendet",
+      body: getJourneyClosureNotificationBody(reason),
+      channelId: "match-releases",
+      data: {
+        type: "match-closed",
+        matchId: match.id,
+        reason,
+      },
+    })),
+  );
 }
 
 async function syncJourneyPhaseNotifications(
@@ -1607,6 +1660,8 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
   const hydratedMatch = await getMatchById(activated.id);
 
   if (hydratedMatch) {
+    const privateQaMatch = Boolean(getPrivateQaUserId(hydratedMatch));
+    const notificationKind = privateQaMatch ? "private-qa-match-release" : "match-release";
     const participantNotifications = [
       {
         recipientUserId: hydratedMatch.userAId,
@@ -1623,8 +1678,8 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
         sendJourneyNotificationToUser({
           userId: recipientUserId,
           matchId: hydratedMatch.id,
-          kind: "match-release",
-          contextKey: `match-release:${hydratedMatch.id}:${recipientUserId}`,
+          kind: notificationKind,
+          contextKey: `${notificationKind}:${hydratedMatch.id}:${recipientUserId}`,
           title: "Dein neues Match ist da",
           body:
             hydratedMatch.phaseOneStarterUserId === recipientUserId
@@ -1642,6 +1697,21 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
   return hydratedMatch;
 }
 
+export function resolveNextJourneyReleaseAt(now: Date, latestClosedAt: Date | null) {
+  const currentCycleRelease = getCurrentCycleReleaseAt(now);
+  const currentCycleSchedule = buildPhaseSchedule(currentCycleRelease);
+  const earliestUsableRelease = now < currentCycleSchedule.decisionDeadline
+    ? currentCycleRelease
+    : getNextMatchReleaseAt(now);
+  const requestedRelease = latestClosedAt
+    ? addBerlinCalendarDaysAtTime(latestClosedAt, 1, MATCH_RELEASE_HOUR, 0)
+    : null;
+
+  return requestedRelease && requestedRelease > earliestUsableRelease
+    ? requestedRelease
+    : earliestUsableRelease;
+}
+
 async function getNextJourneyReleaseAtForUser(userId: string, now: Date) {
   const latestClosedMatch = await prisma.match.findFirst({
     where: {
@@ -1651,18 +1721,8 @@ async function getNextJourneyReleaseAtForUser(userId: string, now: Date) {
     orderBy: { closedAt: "desc" },
     select: { closedAt: true },
   });
-  const currentCycleRelease = getCurrentCycleReleaseAt(now);
-  const currentCycleSchedule = buildPhaseSchedule(currentCycleRelease);
-  const earliestUsableRelease = now < currentCycleSchedule.decisionDeadline
-    ? currentCycleRelease
-    : getNextMatchReleaseAt(now);
-  const requestedRelease = latestClosedMatch?.closedAt
-    ? addBerlinCalendarDaysAtTime(latestClosedMatch.closedAt, 1, MATCH_RELEASE_HOUR, 0)
-    : null;
 
-  return requestedRelease && requestedRelease > earliestUsableRelease
-    ? requestedRelease
-    : earliestUsableRelease;
+  return resolveNextJourneyReleaseAt(now, latestClosedMatch?.closedAt ?? null);
 }
 
 async function maybeCreateUpcomingMatch(userId: string, now: Date) {
@@ -1730,9 +1790,12 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     );
 
     if (canRepeat) {
-      const qaPartnerId = isPrivateQaAccountEmail(previousPrivateQaMatch.userA.email)
-        ? previousPrivateQaMatch.userAId
-        : previousPrivateQaMatch.userBId;
+      const qaProfile = await getOrCreatePrivateQaPartner({
+        ownerUserId: user.id,
+        rotationKey: getBerlinDateKey(scheduledFor),
+        now,
+      });
+      const qaPartnerId = qaProfile.partner.id;
       const [userAId, userBId] = [user.id, qaPartnerId].sort();
       const ownerIsUserA = userAId === user.id;
 
@@ -1753,7 +1816,9 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
               generatedBy: "private-qa-match",
               ownerUserId: user.id,
               repeatUntilBerlinDate: repeatConfig.repeatUntilBerlinDate,
-              sharedInterests: repeatConfig.sharedInterests,
+              profileTemplateId: qaProfile.template.id,
+              testProfile: true,
+              sharedInterests: qaProfile.sharedInterests,
             },
           },
         });
@@ -1785,7 +1850,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     phoneNumber: user.phoneNumber,
   });
 
-  if (!canUserReceiveAnotherMatch(user, viewerMatchUsage.meteredMatchCount)) {
+  if (!canUserReceiveAnotherMatch(user, viewerMatchUsage, now)) {
     return null;
   }
 
@@ -1798,10 +1863,14 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     }),
   })));
   const eligibleCandidateUsers = candidateUsageEntries
-    .filter(({ candidate, usage }) => canUserReceiveAnotherMatch(candidate, usage.meteredMatchCount))
+    .filter(({ candidate, usage }) => canUserReceiveAnotherMatch(candidate, usage, now))
     .map(({ candidate }) => candidate);
   const candidateHistory = await getJourneyCandidateHistoryMap(userId);
-  const bestCandidate = rankJourneyCandidatesForViewer(user, eligibleCandidateUsers, candidateHistory)[0] ?? null;
+  const unseenCandidateUsers = filterUnseenJourneyCandidates(
+    eligibleCandidateUsers,
+    new Set(candidateHistory.keys()),
+  );
+  const bestCandidate = rankJourneyCandidatesForViewer(user, unseenCandidateUsers, candidateHistory)[0] ?? null;
 
   if (!bestCandidate) {
     return null;
@@ -1839,7 +1908,7 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
       return null;
     }
 
-    const reservation = await createMatchAccessReservation(transaction, [currentUser, partnerUser]);
+    const reservation = await createMatchAccessReservation(transaction, [currentUser, partnerUser], now);
 
     if (!reservation.ok) {
       return null;
@@ -1994,6 +2063,12 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
       }),
     ]);
 
+    await sendJourneyClosureNotifications(
+      match,
+      "phase-one-not-started",
+      match.phaseOneStarterUserId ? [match.phaseOneStarterUserId] : [],
+    );
+
     return getMatchById(match.id);
   }
 
@@ -2044,6 +2119,12 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
         }),
       ]);
 
+      await sendJourneyClosureNotifications(
+        match,
+        "phase-two-not-completed",
+        [currentResponderUserId],
+      );
+
       return getMatchById(match.id);
     }
   }
@@ -2069,6 +2150,8 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
       }),
     ]);
 
+    await sendJourneyClosureNotifications(match, "phase-one-new-match");
+
     return getMatchById(match.id);
   }
 
@@ -2093,6 +2176,8 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
         },
       }),
     ]);
+
+    await sendJourneyClosureNotifications(match, "phase-two-not-compatible");
 
     return getMatchById(match.id);
   }
@@ -2120,6 +2205,8 @@ async function applyJourneyLifecycle(match: MatchWithRelations, now: Date) {
         },
       }),
     ]);
+
+    await sendJourneyClosureNotifications(match, "post-game-new-match");
 
     return getMatchById(match.id);
   }

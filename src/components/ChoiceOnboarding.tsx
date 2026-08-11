@@ -39,6 +39,7 @@ import {
   fetchRemoteJourney,
   fetchRemoteProfile,
   goBackRemotePhaseTwoQuestion,
+  openRemotePrivateQaPartnerSession,
   registerRemotePushToken,
   unregisterRemotePushToken,
   setApiAccessToken,
@@ -148,14 +149,24 @@ function getMatchBalance(account: RemoteAccountState | null | undefined) {
   const consumedIncludedMatches = Math.min(meteredMatchCount, includedMatchLimit);
   const remainingIncludedMatches = account?.remainingIncludedMatches
     ?? Math.max(includedMatchLimit - consumedIncludedMatches, 0);
+  const monthlyFreeMatchCount = account?.monthlyFreeMatchCount ?? 0;
+  const remainingMonthlyFreeMatches = account?.remainingMonthlyFreeMatches ?? 0;
   const remainingPurchasedMatches = account?.paidMatchCredits ?? 0;
-  const consumedPurchasedMatches = Math.max(meteredMatchCount - includedMatchLimit, 0);
+  const consumedPurchasedMatches = Math.max(
+    meteredMatchCount - includedMatchLimit - monthlyFreeMatchCount,
+    0,
+  );
+  const purchasedUnlockedMatches = consumedPurchasedMatches + remainingPurchasedMatches;
+  const monthlyUnlockedMatches = monthlyFreeMatchCount + remainingMonthlyFreeMatches;
 
   return {
-    availableMatches: remainingIncludedMatches + remainingPurchasedMatches,
+    availableMatches: remainingIncludedMatches + remainingMonthlyFreeMatches + remainingPurchasedMatches,
     remainingIncludedMatches,
+    remainingMonthlyFreeMatches,
     remainingPurchasedMatches,
-    unlockedMatches: includedMatchLimit + consumedPurchasedMatches + remainingPurchasedMatches,
+    purchasedUnlockedMatches,
+    monthlyUnlockedMatches,
+    unlockedMatches: includedMatchLimit + monthlyUnlockedMatches + purchasedUnlockedMatches,
   };
 }
 
@@ -178,6 +189,7 @@ const LEGAL_URLS = {
   datenschutz: "https://choice-dating.app/datenschutz",
   rechtliches: "https://choice-dating.app/rechtliches",
   agb: "https://choice-dating.app/agb",
+  support: "mailto:kontakt@autovisa.de?subject=Choice%20Supportanfrage",
   supportModeration: "mailto:kontakt@autovisa.de?subject=Choice%20Moderationspr%C3%BCfung",
 } as const;
 const authRequestErrors = new Set(["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_FORBIDDEN"]);
@@ -2708,6 +2720,7 @@ type OverviewScreenProps = {
   onPauseAccount: () => Promise<void> | void;
   onSignOut: () => Promise<void> | void;
   onDeleteAccount: () => Promise<void> | void;
+  onSetAccountActionMessage: (message: string | null) => void;
   accountActionPending: boolean;
   accountActionMessage?: string | null;
   displayName: string;
@@ -2728,6 +2741,7 @@ function OverviewScreen({
   onPauseAccount,
   onSignOut,
   onDeleteAccount,
+  onSetAccountActionMessage,
   accountActionPending,
   accountActionMessage,
   displayName,
@@ -3174,6 +3188,7 @@ function OverviewScreen({
   const matchPackButtonDisabled = !canBuyMatchPack || purchasePending;
   const activePartnerUserId = remoteJourney?.partner?.userId ?? null;
   const hasActiveChat = Boolean(currentUserId && remoteJourney?.partner);
+  const hasScheduledMatch = Boolean(remoteJourney?.matchId);
   const includedMatchLimit = accountState?.includedMatchLimit ?? 8;
   const paidMatchCredits = accountState?.paidMatchCredits ?? 0;
   const frozenPaidMatchCredits = accountState?.frozenPaidMatchCredits ?? 0;
@@ -3181,6 +3196,11 @@ function OverviewScreen({
   const totalMatchCount = accountState?.totalMatchCount ?? 0;
   const meteredMatchCount = accountState?.meteredMatchCount ?? totalMatchCount;
   const consumedIncludedMatchCount = Math.min(meteredMatchCount, includedMatchLimit);
+  const monthlyFreeMatchLimit = accountState?.monthlyFreeMatchLimit ?? 2;
+  const monthlyFreeMatchesUsed = accountState?.monthlyFreeMatchesUsed ?? 0;
+  const remainingMonthlyFreeMatches = accountState?.remainingMonthlyFreeMatches ?? 0;
+  const monthlyFreeMatchesEligible = accountState?.monthlyFreeMatchesEligible ?? false;
+  const nextMonthlyFreeMatchesAt = accountState?.nextMonthlyFreeMatchesAt ?? null;
   const totalMatchCountLabel = `${totalMatchCount} Match${totalMatchCount === 1 ? "" : "es"}`;
   const recentPenaltyEntries = accountState?.recentPenalties ?? [];
   const activePenaltyEntries = useMemo(() => {
@@ -3314,7 +3334,11 @@ function OverviewScreen({
   const matchBalance = getMatchBalance(accountState);
   const availableMatchCount = matchBalance.availableMatches;
   const unlockedMatchCount = matchBalance.unlockedMatches;
+  const purchasedMatchUnlockCount = matchBalance.purchasedUnlockedMatches;
   const preservedPurchasedMatchCount = paidMatchCredits + frozenPaidMatchCredits;
+  const nextMonthlyFreeMatchesLabel = nextMonthlyFreeMatchesAt
+    ? new Intl.DateTimeFormat("de-DE", { day: "numeric", month: "long" }).format(new Date(nextMonthlyFreeMatchesAt))
+    : null;
   const decisionDeadline = phaseSchedule.decisionDeadline;
   const phaseTwoStartTime = phaseSchedule.phaseTwoStart;
   const phaseTwoDeadlineTime = phaseSchedule.phaseTwoDeadline;
@@ -3382,16 +3406,30 @@ function OverviewScreen({
       ? `heute um ${releaseClockLabel}`
       : `morgen um ${releaseClockLabel}`
     : null;
-  const nextScheduledMatchReleaseTime = createInitialReleaseAt(currentTime);
+  const remoteWaitingReleaseTime = journeyReleaseAt ? new Date(journeyReleaseAt) : null;
+  const hasValidRemoteWaitingRelease = Boolean(
+    remoteWaitingReleaseTime
+    && Number.isFinite(remoteWaitingReleaseTime.getTime()),
+  );
+  const nextScheduledMatchReleaseTime = !hasActiveChat && hasValidRemoteWaitingRelease
+    ? remoteWaitingReleaseTime as Date
+    : createInitialReleaseAt(currentTime);
   const nextScheduledMatchDecisionDeadline = getDecisionDeadline(nextScheduledMatchReleaseTime);
   const nextScheduledMatchReleaseClockLabel = formatClockTime(nextScheduledMatchReleaseTime);
   const nextScheduledMatchDecisionClockLabel = formatClockTime(nextScheduledMatchDecisionDeadline);
-  const nextScheduledMatchCountdownMs = nextScheduledMatchReleaseTime.getTime() - currentTime.getTime();
+  const nextScheduledMatchCountdownMs = Math.max(nextScheduledMatchReleaseTime.getTime() - currentTime.getTime(), 0);
   const nextScheduledMatchCountdownLabel = formatDurationLabel(nextScheduledMatchCountdownMs);
   const nextScheduledMatchReleaseLabel =
     nextScheduledMatchReleaseTime.toDateString() === currentTime.toDateString()
       ? `heute um ${nextScheduledMatchReleaseClockLabel}`
       : `morgen um ${nextScheduledMatchReleaseClockLabel}`;
+  const dailySearchDeadline = setTimeOfDay(currentTime, MATCH_DECISION_HOUR, 0);
+  const searchingForMatchToday =
+    !hasActiveChat
+    && !hasScheduledMatch
+    && nextScheduledMatchReleaseTime.toDateString() === currentTime.toDateString()
+    && currentTime < dailySearchDeadline;
+  const searchingBeforeMorningRelease = searchingForMatchToday && currentTime < nextScheduledMatchReleaseTime;
   const phaseTwoStartsInLabel = formatDurationLabel(phaseTwoStartTime.getTime() - currentTime.getTime());
   const decisionDeadlineLabel = formatRelativeDateTimeLabel(decisionDeadline, currentTime);
   const phaseOneEndPhrase = currentTime >= decisionDeadline
@@ -6921,17 +6959,37 @@ function OverviewScreen({
           {renderFreshMatchNotice()}
           {!hasActiveChat || phaseOneBeforeRelease ? (
             <View style={styles.matchReleaseNoticeCard}>
-              <Text style={styles.matchReleaseNoticeEyebrow}>Nächstes Match</Text>
-              <Text style={styles.matchReleaseNoticeTitle}>Noch {nextScheduledMatchCountdownLabel} bis zu deinem nächsten Match.</Text>
+              <Text style={styles.matchReleaseNoticeEyebrow}>
+                {searchingForMatchToday ? "Choice sucht heute" : hasScheduledMatch ? "Match vorgemerkt" : "Nächstes Match"}
+              </Text>
+              <Text style={styles.matchReleaseNoticeTitle}>
+                {searchingForMatchToday
+                  ? searchingBeforeMorningRelease
+                    ? `Choice sucht bis ${nextScheduledMatchReleaseClockLabel} nach deinem ersten Match.`
+                    : "Choice sucht heute weiter für dich."
+                  : hasScheduledMatch
+                    ? `Noch ${nextScheduledMatchCountdownLabel} bis zu deiner Freigabe.`
+                    : `Choice sucht für ${nextScheduledMatchReleaseLabel} weiter.`}
+              </Text>
               <Text style={styles.matchReleaseNoticeText}>
-                Choice gibt neue Matches gesammelt um {nextScheduledMatchReleaseClockLabel} frei. Deine nächste Freigabe ist {nextScheduledMatchReleaseLabel}. Bis dahin zeigt dir Home nur das, was gerade wirklich wichtig ist.
+                {searchingForMatchToday
+                  ? searchingBeforeMorningRelease
+                    ? `Findet Choice rechtzeitig jemanden, der wirklich passt, startet euer Match heute um ${nextScheduledMatchReleaseClockLabel}. Danach sucht Choice bis ${nextScheduledMatchDecisionClockLabel} weiter und kann eine neue Passung direkt freischalten.`
+                    : `Sobald heute jemand wirklich passt, wird das Match direkt freigeschaltet. Findet Choice bis ${nextScheduledMatchDecisionClockLabel} niemanden, geht die Suche morgen weiter.`
+                  : hasScheduledMatch
+                    ? `Choice hat bereits eine passende Person vorgemerkt. Wer es ist, siehst du erst ${nextScheduledMatchReleaseLabel}.`
+                    : `Das heutige Suchfenster ist vorbei. Choice sucht weiter und gibt die nächste passende Person frühestens ${nextScheduledMatchReleaseLabel} frei.`}
               </Text>
               <View style={styles.overviewStatusPills}>
                 <View style={styles.overviewPill}>
-                  <Text style={styles.overviewPillText}>Freigabe {nextScheduledMatchReleaseLabel}</Text>
+                  <Text style={styles.overviewPillText}>
+                    {searchingForMatchToday ? `Suche bis ${nextScheduledMatchDecisionClockLabel}` : `Freigabe ${nextScheduledMatchReleaseLabel}`}
+                  </Text>
                 </View>
                 <View style={styles.overviewPill}>
-                  <Text style={styles.overviewPillText}>Phase 1 bis {nextScheduledMatchDecisionClockLabel}</Text>
+                  <Text style={styles.overviewPillText}>
+                    {searchingForMatchToday ? "Bei Passung direkt" : `Phase 1 bis ${nextScheduledMatchDecisionClockLabel}`}
+                  </Text>
                 </View>
               </View>
             </View>
@@ -7013,19 +7071,35 @@ function OverviewScreen({
         return (
           <>
             <View style={styles.overviewStatusCard}>
-              <Text style={styles.overviewStatusEyebrow}>Noch kein Match</Text>
-              <Text style={styles.overviewStatusTitle}>Choice hat gerade noch niemanden für dich freigegeben.</Text>
+              <Text style={styles.overviewStatusEyebrow}>
+                {hasScheduledMatch ? "Match vorgemerkt" : searchingForMatchToday ? "Choice sucht heute" : "Noch kein Match"}
+              </Text>
+              <Text style={styles.overviewStatusTitle}>
+                {hasScheduledMatch
+                  ? `Dein Match wird ${nextScheduledMatchReleaseLabel} freigeschaltet.`
+                  : searchingForMatchToday
+                    ? "Choice sucht heute weiter für dich."
+                    : "Choice sucht die nächste passende Person für dich."}
+              </Text>
               <Text style={styles.overviewStatusText}>
-                Gerade am Anfang kann es sein, dass noch nicht genug passende Nutzer da sind. Mit der Zeit kommen mehr dazu, also hab bitte etwas Geduld.
+                {hasScheduledMatch
+                  ? "Bis dahin bleibt die Person verborgen. So startet ihr beide gleichzeitig und ohne Vorsprung in Phase 1."
+                  : searchingForMatchToday
+                    ? `Sobald heute jemand wirklich passt, erscheint das Match direkt hier. Die heutige Suche läuft bis ${nextScheduledMatchDecisionClockLabel}.`
+                    : `Für heute ist das Suchfenster beendet. Die nächste passende Person kann frühestens ${nextScheduledMatchReleaseLabel} erscheinen.`}
               </Text>
             </View>
 
-            <View style={styles.overviewRuleCard}>
-              <Text style={styles.overviewRuleTitle}>Sobald jemand passt</Text>
-              <Text style={styles.overviewRuleText}>
-                Sobald Choice ein passendes Match für dich hat, erscheint die Person hier und euer erster gemeinsamer Tag startet wie gewohnt um {releaseClockLabel}.
-              </Text>
-            </View>
+            {!hasScheduledMatch ? (
+              <View style={styles.overviewRuleCard}>
+                <Text style={styles.overviewRuleTitle}>Sobald jemand passt</Text>
+                <Text style={styles.overviewRuleText}>
+                  {searchingForMatchToday
+                    ? "Choice wartet nicht unnötig bis morgen: Eine neue Passung wird während des heutigen Suchfensters direkt freigeschaltet."
+                    : `Nach Ende des heutigen Fensters startet ein neues Match frühestens morgen um ${nextScheduledMatchReleaseClockLabel}.`}
+                </Text>
+              </View>
+            ) : null}
           </>
         );
       }
@@ -7345,7 +7419,7 @@ function OverviewScreen({
               </View>
 
               <Text style={styles.unlockPausedText}>
-                Choice Plus übernimmt deine täglichen Matches. Deine inklusiven und gekauften Matches werden währenddessen nicht verbraucht.
+                Choice Plus übernimmt deine täglichen Matches. Deine Start- und gekauften Matches werden währenddessen nicht verbraucht.
               </Text>
 
               <View style={styles.unlockPausedSummary}>
@@ -7361,7 +7435,7 @@ function OverviewScreen({
               </View>
 
               <Text style={styles.unlockPausedNote}>
-                Nach Ende von Choice Plus wird genau dieser Stand wieder aktiv. Bis dahin bleibt dein Guthaben unverändert.
+                Nach Ende von Choice Plus wird genau dieser Stand wieder aktiv. Monatliche Gratis-Matches werden während Plus nicht benötigt und nicht angesammelt.
               </Text>
 
               {purchaseMessage ? (
@@ -7375,34 +7449,36 @@ function OverviewScreen({
             <View style={styles.unlockHeaderRow}>
               <View style={styles.unlockTitleWrap}>
                 <Text style={styles.unlockEyebrow}>Ohne Abo</Text>
-                <Text style={styles.unlockTitle}>8 Matches inklusive</Text>
+                <Text style={styles.unlockTitle}>8 zum Start. Danach jeden Monat 2.</Text>
               </View>
               <View style={styles.unlockBadge}>
                 <Text style={styles.unlockBadgeText}>
-                  {paidMatchCredits > 0 ? `${availableMatchCount} verfügbar` : "Inklusive"}
+                  {availableMatchCount > 0 ? `${availableMatchCount} verfügbar` : "Monatlich"}
                 </Text>
               </View>
             </View>
 
             <Text style={styles.unlockText}>
-              Deine ersten 8 Matches sind inklusive. Danach kannst du flexibel ein weiteres 8er-Paket kaufen, ohne Abo und ohne automatische Verlängerung.
+              Deine ersten 8 Matches sind einmalig inklusive. Danach erhältst du jeden Kalendermonat 2 weitere kostenlose Matches. Wenn du nicht warten möchtest, bleibt das 8er-Paket als freiwillige Ergänzung.
             </Text>
 
             <View style={styles.unlockProgressRow}>
               <ProgressRing
-                current={consumedIncludedMatchCount}
-                total={includedMatchLimit}
+                current={meteredMatchCount}
+                total={unlockedMatchCount}
                 activeColor="#ffb65f"
                 label="genutzt"
-                displayValue={`${consumedIncludedMatchCount}/${includedMatchLimit}`}
+                displayValue={`${meteredMatchCount}/${unlockedMatchCount}`}
               />
               <View style={styles.unlockProgressCopy}>
                 <Text style={styles.unlockProgressTitle}>
                   {hasPaidMatchAccess
-                    ? `${availableMatchCount} Matches noch verfügbar`
+                    ? `${meteredMatchCount} von ${unlockedMatchCount} genutzt`
                     : remainingIncludedMatches <= 0
-                      ? "Inklusive-Paket aufgebraucht"
-                      : `${consumedIncludedMatchCount} von ${includedMatchLimit} genutzt`}
+                      ? monthlyFreeMatchesEligible
+                        ? `${monthlyFreeMatchesUsed} von ${monthlyFreeMatchLimit} Monatsmatches genutzt`
+                        : "Startkontingent genutzt"
+                      : `${consumedIncludedMatchCount} von ${includedMatchLimit} Start-Matches genutzt`}
                 </Text>
                 <Text style={styles.unlockFootnote}>
                   {accountBanned
@@ -7410,13 +7486,37 @@ function OverviewScreen({
                     : accountPaused && frozenPaidMatchCredits > 0
                       ? `${frozenPaidMatchCredits} gekaufte Matches sind aktuell eingefroren.`
                       : hasPaidMatchAccess
-                        ? `${remainingIncludedMatches} inklusive + ${paidMatchCredits} gekauft. Insgesamt wurden ${unlockedMatchCount} Matches freigeschaltet.`
+                        ? `${availableMatchCount} noch verfügbar: ${remainingIncludedMatches} Start + ${remainingMonthlyFreeMatches} monatlich + ${paidMatchCredits} gekauft. Insgesamt wurden ${purchasedMatchUnlockCount} Matches über Pakete freigeschaltet.`
                         : remainingIncludedMatches <= 0
-                          ? `Du hast alle ${includedMatchLimit} inklusiven Matches genutzt. Insgesamt wurden für diese Telefonnummer bisher ${totalMatchCountLabel} freigeschaltet.`
+                          ? monthlyFreeMatchesEligible
+                            ? `Diesen Monat sind noch ${remainingMonthlyFreeMatches} kostenlose Matches verfügbar. Insgesamt wurden für diese Telefonnummer bisher ${totalMatchCountLabel} freigeschaltet.`
+                            : `Deine monatlichen Gratis-Matches starten${nextMonthlyFreeMatchesLabel ? ` am ${nextMonthlyFreeMatchesLabel}` : " am folgenden Monatsersten"}.`
                           : meteredMatchCount > 0
-                            ? `Du hast ${consumedIncludedMatchCount} von ${includedMatchLimit} inklusiven Matches genutzt. Danach kannst du dir für 3,99 € 8 weitere Matches kaufen.`
-                            : "Nach den 8 inklusiven Matches kannst du dir für 3,99 € 8 weitere Matches kaufen."}
+                            ? `Du hast ${consumedIncludedMatchCount} von ${includedMatchLimit} Start-Matches genutzt. Danach folgen automatisch 2 kostenlose Matches pro Monat.`
+                            : "Nach den 8 Start-Matches folgen automatisch 2 kostenlose Matches pro Monat."}
                 </Text>
+              </View>
+            </View>
+
+            <View style={styles.monthlyMatchCard}>
+              <View style={styles.monthlyMatchCopy}>
+                <Text style={styles.monthlyMatchEyebrow}>Jeden Kalendermonat</Text>
+                <Text style={styles.monthlyMatchTitle}>
+                  {monthlyFreeMatchesEligible
+                    ? `${remainingMonthlyFreeMatches} von ${monthlyFreeMatchLimit} noch frei`
+                    : `${monthlyFreeMatchLimit} neue Gratis-Matches`}
+                </Text>
+                <Text style={styles.monthlyMatchText}>
+                  {monthlyFreeMatchesEligible
+                    ? `Am ${nextMonthlyFreeMatchesLabel ?? "nächsten Monatsersten"} wird dein Monatskontingent wieder auf ${monthlyFreeMatchLimit} gesetzt.`
+                    : `Sobald deine ${includedMatchLimit} Start-Matches genutzt sind, beginnt das Monatskontingent am folgenden Monatsersten.`}
+                </Text>
+              </View>
+              <View style={styles.monthlyMatchBadge}>
+                <Text style={styles.monthlyMatchBadgeValue}>
+                  {monthlyFreeMatchesEligible ? remainingMonthlyFreeMatches : monthlyFreeMatchLimit}
+                </Text>
+                <Text style={styles.monthlyMatchBadgeLabel}>gratis</Text>
               </View>
             </View>
 
@@ -7526,7 +7626,7 @@ function OverviewScreen({
 
         <View style={styles.accountActionsCard}>
           <Text style={styles.overviewListTitle}>Konto</Text>
-          <Text style={styles.accountActionsText}>Hier kannst du dein Profil pausieren oder dein Konto verlassen.</Text>
+          <Text style={styles.accountActionsText}>Hier erreichst du den Support und verwaltest dein Konto.</Text>
 
           <View style={styles.accountActionsList}>
             {choicePlusActive && choicePlusStoreManaged ? (
@@ -7538,6 +7638,21 @@ function OverviewScreen({
                 <Text style={styles.accountActionArrow}>›</Text>
               </Pressable>
             ) : null}
+
+            <Pressable
+              onPress={() => {
+                void openExternalUrl(LEGAL_URLS.support).catch(() => {
+                  onSetAccountActionMessage("Der Support konnte gerade nicht geöffnet werden.");
+                });
+              }}
+              style={styles.accountActionButton}
+            >
+              <View style={styles.accountActionCopy}>
+                <Text style={styles.accountActionTitle}>Hilfe & Support</Text>
+                <Text style={styles.accountActionMeta}>Fragen oder technische Probleme direkt an Choice senden.</Text>
+              </View>
+              <Text style={styles.accountActionArrow}>›</Text>
+            </Pressable>
 
             <Pressable onPress={() => setPendingAccountAction("pause")} style={[styles.accountActionButton, styles.accountActionButtonWarning]}>
               <View style={styles.accountActionCopy}>
@@ -8647,9 +8762,31 @@ export function ChoiceOnboarding() {
 
     try {
       if (!partner.phoneNumber) {
-        setAccountActionMessage(
-          `Zu ${partner.firstName} kannst du wechseln, sobald du dich einmal mit dieser Nummer angemeldet hast.`,
-        );
+        if (!verifiedUserId || !verifiedAccessToken) {
+          setAccountActionMessage(`Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`);
+          return;
+        }
+
+        const qaSession = await openRemotePrivateQaPartnerSession({
+          ownerUserId: verifiedUserId,
+          partnerUserId: partner.userId,
+          accessToken: verifiedAccessToken,
+        });
+        const [restoredProfile, accountState] = await Promise.all([
+          fetchRemoteProfile(qaSession.userId, qaSession.accessToken),
+          fetchRemoteAccountState(qaSession.userId, qaSession.accessToken),
+        ]);
+        const savedSession = await persistLocalSession({
+          userId: qaSession.userId,
+          accessToken: qaSession.accessToken,
+          phoneNumber: qaSession.phoneNumber,
+          profile: restoredProfile.profile,
+          photoUris: restoredProfile.photoUrls,
+          introVideoUri: restoredProfile.videoUrl,
+          introVideoDurationMs: null,
+        });
+
+        setSessionState(savedSession, "match", accountState);
         return;
       }
 
@@ -8683,6 +8820,8 @@ export function ChoiceOnboarding() {
           ? `Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`
           : `Zu ${partner.firstName} kannst du wechseln, sobald du dich einmal mit dieser Nummer angemeldet hast.`,
       );
+    } catch {
+      setAccountActionMessage(`Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`);
     } finally {
       setIsSubmitting(false);
     }
@@ -9280,6 +9419,9 @@ export function ChoiceOnboarding() {
               autoFocus
               style={styles.input}
             />
+            <Text style={styles.inlineHint}>
+              Dein Wohnort beeinflusst kommende Matches. Ein laufendes Match bleibt unverändert.
+            </Text>
 
             {citySuggestions.length ? (
               <View style={styles.citySuggestionsCard}>
@@ -9649,6 +9791,7 @@ export function ChoiceOnboarding() {
           onPauseAccount={handlePauseAccount}
           onSignOut={handleSignOut}
           onDeleteAccount={handleDeleteAccount}
+          onSetAccountActionMessage={setAccountActionMessage}
           accountActionPending={accountActionPending}
           accountActionMessage={accountActionMessage}
           displayName={overviewDisplayName}
@@ -11047,6 +11190,62 @@ const styles = StyleSheet.create({
     color: "#b8a79d",
     fontSize: 12,
     lineHeight: 18,
+  },
+  monthlyMatchCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    paddingHorizontal: 15,
+    paddingVertical: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(120, 214, 255, 0.07)",
+    borderWidth: 1,
+    borderColor: "rgba(120, 214, 255, 0.20)",
+  },
+  monthlyMatchCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  monthlyMatchEyebrow: {
+    color: "#8bdcff",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+  },
+  monthlyMatchTitle: {
+    color: "#f2f8ff",
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: "700",
+  },
+  monthlyMatchText: {
+    color: "#aeb9c8",
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  monthlyMatchBadge: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(120, 214, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(139, 220, 255, 0.34)",
+  },
+  monthlyMatchBadgeValue: {
+    color: "#dff7ff",
+    fontSize: 20,
+    lineHeight: 22,
+    fontWeight: "800",
+  },
+  monthlyMatchBadgeLabel: {
+    color: "#93cde5",
+    fontSize: 9,
+    lineHeight: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
   },
   unlockPurchaseButton: {
     minHeight: 48,

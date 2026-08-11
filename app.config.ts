@@ -22,7 +22,7 @@ const config: ExpoConfig = {
     backgroundColor: "#0f0b0d",
   },
   ios: {
-    supportsTablet: true,
+    supportsTablet: false,
     bundleIdentifier: "com.choice.dating",
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,

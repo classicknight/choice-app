@@ -17,7 +17,7 @@ export default function AgbPage() {
         <h1 className={styles.title}>AGB</h1>
         <p className={styles.intro}>
           Diese Allgemeinen Geschäftsbedingungen regeln die Nutzung von Choice auf der Website und in der App. Sie gelten für
-          Account, Matching, Chat, Moderation, kostenpflichtige Match-Pakete und Choice Plus. Stand: 27. Juli 2026.
+          Account, Matching, Chat, Moderation, kostenpflichtige Match-Pakete und Choice Plus. Stand: 9. August 2026.
         </p>
 
         <section className={styles.section}>
@@ -76,6 +76,12 @@ export default function AgbPage() {
             Choice kann kostenlose und kostenpflichtige Funktionen anbieten. Umfang, Preis, Abrechnungszeitraum und
             Produktbeschreibung ergeben sich aus der Darstellung unmittelbar vor dem Kauf und aus dem jeweiligen App Store.
             Der dort angezeigte Preis ist maßgeblich.
+          </p>
+          <p className={styles.text}>
+            Die ersten acht Match-Freischaltungen sind einmalig kostenlos enthalten. Nach ihrem Verbrauch erhalten aktive
+            Konten pro Kalendermonat bis zu zwei weitere kostenlose Match-Freischaltungen. Das erste Monatskontingent beginnt
+            am Monatsersten nach Verbrauch des Startkontingents. Nicht genutzte Monatsfreigaben werden nicht in Folgemonate
+            übertragen oder angesammelt.
           </p>
           <p className={styles.text}>
             Match-Pakete sind Einmalkäufe und verlängern sich nicht automatisch. Gekaufte, noch nicht genutzte Match-Guthaben

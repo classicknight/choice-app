@@ -1,7 +1,11 @@
 import type { Prisma } from "@prisma/client";
+import { isAppReviewAccountEmail } from "./app-review.js";
 import { prisma } from "./prisma.js";
+import { isSyntheticMatchingAccountEmail } from "./synthetic-accounts.js";
 
 export const INCLUDED_MATCH_LIMIT = 8;
+export const MONTHLY_FREE_MATCH_LIMIT = 2;
+export const MONTHLY_FREE_MATCH_TIME_ZONE = "Europe/Berlin";
 
 type MatchAccessUser = {
   id: string;
@@ -10,6 +14,27 @@ type MatchAccessUser = {
   isPremium: boolean;
   premiumExpiresAt?: Date | null;
 };
+
+export type PhoneMatchUsage = {
+  totalMatchCount: number;
+  choicePlusMatchCount: number;
+  meteredMatchCount: number;
+  monthlyFreeMatchCount: number;
+  monthlyFreeMatchEligibleFrom: string | null;
+  monthlyFreeMatchPeriod: string | null;
+  monthlyFreeMatchUsed: number;
+};
+
+export type MonthlyFreeMatchState = {
+  currentPeriod: string;
+  eligible: boolean;
+  eligibleFrom: string | null;
+  used: number;
+  remaining: number;
+  nextRefreshAt: Date | null;
+};
+
+export type MatchAccessSource = "choice-plus" | "starter" | "monthly-free" | "paid";
 
 function normalizeTrackedPhoneNumber(phoneNumber: string | null | undefined) {
   const normalized = phoneNumber?.trim();
@@ -34,6 +59,68 @@ export function getMeteredMatchCount(totalMatchCount: number, choicePlusMatchCou
   return normalizedTotal - normalizedChoicePlus;
 }
 
+export function getMonthlyFreeMatchPeriod(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: MONTHLY_FREE_MATCH_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(now);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+
+  if (!year || !month) {
+    throw new Error("MONTHLY_FREE_MATCH_PERIOD_UNAVAILABLE");
+  }
+
+  return `${year}-${month}`;
+}
+
+export function getNextMonthlyFreeMatchPeriod(period: string) {
+  const match = /^(\d{4})-(\d{2})$/.exec(period);
+
+  if (!match) {
+    throw new Error("INVALID_MONTHLY_FREE_MATCH_PERIOD");
+  }
+
+  const nextMonth = new Date(Date.UTC(Number(match[1]), Number(match[2]), 1));
+  return `${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function getMonthlyFreeMatchPeriodStart(period: string) {
+  const match = /^(\d{4})-(\d{2})$/.exec(period);
+
+  if (!match) {
+    return null;
+  }
+
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+}
+
+export function getMonthlyFreeMatchState(
+  usage: Pick<
+    PhoneMatchUsage,
+    "monthlyFreeMatchEligibleFrom" | "monthlyFreeMatchPeriod" | "monthlyFreeMatchUsed"
+  >,
+  now = new Date(),
+): MonthlyFreeMatchState {
+  const currentPeriod = getMonthlyFreeMatchPeriod(now);
+  const eligibleFrom = usage.monthlyFreeMatchEligibleFrom;
+  const eligible = Boolean(eligibleFrom && eligibleFrom <= currentPeriod);
+  const used = eligible && usage.monthlyFreeMatchPeriod === currentPeriod
+    ? Math.min(MONTHLY_FREE_MATCH_LIMIT, Math.max(0, Math.trunc(usage.monthlyFreeMatchUsed)))
+    : 0;
+  const nextPeriod = eligible ? getNextMonthlyFreeMatchPeriod(currentPeriod) : eligibleFrom;
+
+  return {
+    currentPeriod,
+    eligible,
+    eligibleFrom,
+    used,
+    remaining: eligible ? Math.max(MONTHLY_FREE_MATCH_LIMIT - used, 0) : 0,
+    nextRefreshAt: nextPeriod ? getMonthlyFreeMatchPeriodStart(nextPeriod) : null,
+  };
+}
+
 export function hasActiveChoicePlus(
   user: Pick<MatchAccessUser, "isPremium" | "premiumExpiresAt">,
   now = new Date(),
@@ -41,17 +128,38 @@ export function hasActiveChoicePlus(
   return user.isPremium && (!user.premiumExpiresAt || user.premiumExpiresAt.getTime() > now.getTime());
 }
 
-export function canUserReceiveAnotherMatch(
+export function getNextMatchAccessSource(
   user: Pick<MatchAccessUser, "phoneNumber" | "paidMatchCredits" | "isPremium" | "premiumExpiresAt">,
-  meteredMatchCount: number,
-) {
+  usage: PhoneMatchUsage,
+  now = new Date(),
+): MatchAccessSource | null {
   const normalizedPhoneNumber = normalizeTrackedPhoneNumber(user.phoneNumber);
 
   if (!normalizedPhoneNumber) {
-    return false;
+    return null;
   }
 
-  return hasActiveChoicePlus(user) || getRemainingIncludedMatches(meteredMatchCount) > 0 || user.paidMatchCredits > 0;
+  if (hasActiveChoicePlus(user, now)) {
+    return "choice-plus";
+  }
+
+  if (getRemainingIncludedMatches(usage.meteredMatchCount) > 0) {
+    return "starter";
+  }
+
+  if (getMonthlyFreeMatchState(usage, now).remaining > 0) {
+    return "monthly-free";
+  }
+
+  return user.paidMatchCredits > 0 ? "paid" : null;
+}
+
+export function canUserReceiveAnotherMatch(
+  user: Pick<MatchAccessUser, "phoneNumber" | "paidMatchCredits" | "isPremium" | "premiumExpiresAt">,
+  usage: PhoneMatchUsage,
+  now = new Date(),
+) {
+  return getNextMatchAccessSource(user, usage, now) !== null;
 }
 
 export async function getPhoneMatchStatsMap(
@@ -111,6 +219,10 @@ export async function getPhoneMatchUsage(
       totalMatchCount: 0,
       choicePlusMatchCount: 0,
       meteredMatchCount: 0,
+      monthlyFreeMatchCount: 0,
+      monthlyFreeMatchEligibleFrom: null,
+      monthlyFreeMatchPeriod: null,
+      monthlyFreeMatchUsed: 0,
     };
   }
 
@@ -119,6 +231,10 @@ export async function getPhoneMatchUsage(
     select: {
       totalMatchCount: true,
       choicePlusMatchCount: true,
+      monthlyFreeMatchCount: true,
+      monthlyFreeMatchEligibleFrom: true,
+      monthlyFreeMatchPeriod: true,
+      monthlyFreeMatchUsed: true,
     },
   });
   const totalMatchCount = existing?.totalMatchCount ?? 0;
@@ -128,18 +244,49 @@ export async function getPhoneMatchUsage(
     totalMatchCount,
     choicePlusMatchCount,
     meteredMatchCount: getMeteredMatchCount(totalMatchCount, choicePlusMatchCount),
+    monthlyFreeMatchCount: existing?.monthlyFreeMatchCount ?? 0,
+    monthlyFreeMatchEligibleFrom: existing?.monthlyFreeMatchEligibleFrom ?? null,
+    monthlyFreeMatchPeriod: existing?.monthlyFreeMatchPeriod ?? null,
+    monthlyFreeMatchUsed: existing?.monthlyFreeMatchUsed ?? 0,
   };
+}
+
+type MatchParticipantPair = {
+  userAId: string;
+  userBId: string;
+  userA: { email: string | null };
+  userB: { email: string | null };
+};
+
+export function shouldCountMatchForUser(userId: string, match: MatchParticipantPair) {
+  const partnerEmail = match.userAId === userId
+    ? match.userB.email
+    : match.userBId === userId
+      ? match.userA.email
+      : null;
+
+  return (match.userAId === userId || match.userBId === userId)
+    && !isSyntheticMatchingAccountEmail(partnerEmail)
+    && !isAppReviewAccountEmail(partnerEmail);
 }
 
 async function countMatchesForUser(
   userId: string,
   client: Prisma.TransactionClient | typeof prisma = prisma,
 ) {
-  return client.match.count({
+  const matches = await client.match.findMany({
     where: {
       OR: [{ userAId: userId }, { userBId: userId }],
     },
+    select: {
+      userAId: true,
+      userBId: true,
+      userA: { select: { email: true } },
+      userB: { select: { email: true } },
+    },
   });
+
+  return matches.filter((match) => shouldCountMatchForUser(userId, match)).length;
 }
 
 async function countReleasedMatchesForUser(
@@ -161,6 +308,7 @@ export function getReconciledTotalMatchCount(...counts: number[]) {
 export async function getOrCreatePhoneMatchUsageForUser(
   user: { id: string; phoneNumber: string | null },
   client: Prisma.TransactionClient | typeof prisma = prisma,
+  now = new Date(),
 ) {
   const normalizedPhoneNumber = normalizeTrackedPhoneNumber(user.phoneNumber);
 
@@ -169,6 +317,10 @@ export async function getOrCreatePhoneMatchUsageForUser(
       totalMatchCount: 0,
       choicePlusMatchCount: 0,
       meteredMatchCount: 0,
+      monthlyFreeMatchCount: 0,
+      monthlyFreeMatchEligibleFrom: null,
+      monthlyFreeMatchPeriod: null,
+      monthlyFreeMatchUsed: 0,
     };
   }
 
@@ -178,6 +330,10 @@ export async function getOrCreatePhoneMatchUsageForUser(
       select: {
         totalMatchCount: true,
         choicePlusMatchCount: true,
+        monthlyFreeMatchCount: true,
+        monthlyFreeMatchEligibleFrom: true,
+        monthlyFreeMatchPeriod: true,
+        monthlyFreeMatchUsed: true,
       },
     }),
     countMatchesForUser(user.id, client),
@@ -191,13 +347,7 @@ export async function getOrCreatePhoneMatchUsageForUser(
   );
 
   if (existing) {
-    if (reconciledMatchCount === existing.totalMatchCount) {
-      return {
-        totalMatchCount: existing.totalMatchCount,
-        choicePlusMatchCount: existing.choicePlusMatchCount,
-        meteredMatchCount: getMeteredMatchCount(existing.totalMatchCount, existing.choicePlusMatchCount),
-      };
-    }
+    const meteredMatchCount = getMeteredMatchCount(reconciledMatchCount, existing.choicePlusMatchCount);
 
     // Only move the durable counter forward so concurrent reservations cannot be lost.
     await client.phoneMatchStats.updateMany({
@@ -210,8 +360,23 @@ export async function getOrCreatePhoneMatchUsageForUser(
       },
     });
 
+    if (meteredMatchCount >= INCLUDED_MATCH_LIMIT && !existing.monthlyFreeMatchEligibleFrom) {
+      // Existing accounts that already passed the starter allowance join the current month immediately.
+      await client.phoneMatchStats.updateMany({
+        where: {
+          phoneNumber: normalizedPhoneNumber,
+          monthlyFreeMatchEligibleFrom: null,
+        },
+        data: {
+          monthlyFreeMatchEligibleFrom: getMonthlyFreeMatchPeriod(now),
+        },
+      });
+    }
+
     return getPhoneMatchUsage(normalizedPhoneNumber, client);
   }
+
+  const meteredMatchCount = getMeteredMatchCount(reconciledMatchCount, 0);
 
   const persisted = await client.phoneMatchStats.upsert({
     where: { phoneNumber: normalizedPhoneNumber },
@@ -224,10 +389,16 @@ export async function getOrCreatePhoneMatchUsageForUser(
       phoneNumber: normalizedPhoneNumber,
       totalMatchCount: reconciledMatchCount,
       choicePlusMatchCount: 0,
+      monthlyFreeMatchEligibleFrom:
+        meteredMatchCount >= INCLUDED_MATCH_LIMIT ? getMonthlyFreeMatchPeriod(now) : null,
     },
     select: {
       totalMatchCount: true,
       choicePlusMatchCount: true,
+      monthlyFreeMatchCount: true,
+      monthlyFreeMatchEligibleFrom: true,
+      monthlyFreeMatchPeriod: true,
+      monthlyFreeMatchUsed: true,
     },
   });
 
@@ -235,6 +406,10 @@ export async function getOrCreatePhoneMatchUsageForUser(
     totalMatchCount: persisted.totalMatchCount,
     choicePlusMatchCount: persisted.choicePlusMatchCount,
     meteredMatchCount: getMeteredMatchCount(persisted.totalMatchCount, persisted.choicePlusMatchCount),
+    monthlyFreeMatchCount: persisted.monthlyFreeMatchCount,
+    monthlyFreeMatchEligibleFrom: persisted.monthlyFreeMatchEligibleFrom,
+    monthlyFreeMatchPeriod: persisted.monthlyFreeMatchPeriod,
+    monthlyFreeMatchUsed: persisted.monthlyFreeMatchUsed,
   };
 }
 
@@ -249,14 +424,15 @@ export async function getOrCreatePhoneMatchCountForUser(
 export async function createMatchAccessReservation(
   transaction: Prisma.TransactionClient,
   users: MatchAccessUser[],
+  now = new Date(),
 ) {
   const userMatchUsages = new Map<string, Awaited<ReturnType<typeof getOrCreatePhoneMatchUsageForUser>>>();
 
   for (const user of users) {
-    const usage = await getOrCreatePhoneMatchUsageForUser(user, transaction);
+    const usage = await getOrCreatePhoneMatchUsageForUser(user, transaction, now);
     userMatchUsages.set(user.id, usage);
 
-    if (!canUserReceiveAnotherMatch(user, usage.meteredMatchCount)) {
+    if (!canUserReceiveAnotherMatch(user, usage, now)) {
       return {
         ok: false as const,
         blockedUserId: user.id,
@@ -275,8 +451,22 @@ export async function createMatchAccessReservation(
       totalMatchCount: 0,
       choicePlusMatchCount: 0,
       meteredMatchCount: 0,
+      monthlyFreeMatchCount: 0,
+      monthlyFreeMatchEligibleFrom: null,
+      monthlyFreeMatchPeriod: null,
+      monthlyFreeMatchUsed: 0,
     };
-    const choicePlusActive = hasActiveChoicePlus(user);
+    const accessSource = getNextMatchAccessSource(user, usage, now);
+    const choicePlusActive = accessSource === "choice-plus";
+    const consumesIncludedMatch = accessSource === "starter";
+    const monthlyFreeMatchState = getMonthlyFreeMatchState(usage, now);
+    const consumesMonthlyFreeMatch = accessSource === "monthly-free";
+    const consumesPaidMatch = accessSource === "paid";
+    const monthlyFreeMatchEligibleFrom = consumesIncludedMatch
+      && usage.meteredMatchCount + 1 >= INCLUDED_MATCH_LIMIT
+      && !usage.monthlyFreeMatchEligibleFrom
+        ? getNextMonthlyFreeMatchPeriod(getMonthlyFreeMatchPeriod(now))
+        : null;
 
     await transaction.phoneMatchStats.upsert({
       where: { phoneNumber: normalizedPhoneNumber },
@@ -291,15 +481,29 @@ export async function createMatchAccessReservation(
               },
             }
           : {}),
+        ...(monthlyFreeMatchEligibleFrom ? { monthlyFreeMatchEligibleFrom } : {}),
+        ...(consumesMonthlyFreeMatch
+          ? {
+              monthlyFreeMatchCount: {
+                increment: 1,
+              },
+              monthlyFreeMatchPeriod: monthlyFreeMatchState.currentPeriod,
+              monthlyFreeMatchUsed: monthlyFreeMatchState.used + 1,
+            }
+          : {}),
       },
       create: {
         phoneNumber: normalizedPhoneNumber,
         totalMatchCount: 1,
         choicePlusMatchCount: choicePlusActive ? 1 : 0,
+        monthlyFreeMatchCount: consumesMonthlyFreeMatch ? 1 : 0,
+        monthlyFreeMatchEligibleFrom,
+        monthlyFreeMatchPeriod: consumesMonthlyFreeMatch ? monthlyFreeMatchState.currentPeriod : null,
+        monthlyFreeMatchUsed: consumesMonthlyFreeMatch ? monthlyFreeMatchState.used + 1 : 0,
       },
     });
 
-    if (!choicePlusActive && usage.meteredMatchCount >= INCLUDED_MATCH_LIMIT) {
+    if (consumesPaidMatch) {
       await transaction.user.update({
         where: { id: user.id },
         data: {

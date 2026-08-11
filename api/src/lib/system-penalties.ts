@@ -84,19 +84,19 @@ export async function applySystemPenalty(input: ApplySystemPenaltyInput) {
       ? updatedUser.penaltyPoints >= 3
         ? "Du hast den Chat nicht rechtzeitig eröffnet. Dein Konto ist jetzt pausiert."
         : penaltyPointsChanged
-          ? "Du hast den Chat nicht rechtzeitig eröffnet. Dafür wurde dir ein Strafpunkt gegeben."
-          : "Du hast den Chat nicht rechtzeitig eröffnet. Der bestehende Strafpunkt für diesen Verstoß bleibt weiter aktiv."
+          ? "Du hast den Chat nicht rechtzeitig eröffnet. Dafür wurde dir ein Strafpunkt gegeben. Choice sucht für morgen ab 09:00 Uhr wieder passend für dich."
+          : "Du hast den Chat nicht rechtzeitig eröffnet. Der bestehende Strafpunkt für diesen Verstoß bleibt weiter aktiv. Choice sucht für morgen ab 09:00 Uhr wieder passend für dich."
       : input.reason === "PHASE_TWO_NOT_PLAYED"
         ? updatedUser.penaltyPoints >= 3
           ? "Du hast Phase 2 nicht rechtzeitig gespielt. Dein Konto ist jetzt pausiert."
           : penaltyPointsChanged
-            ? "Du hast Phase 2 nicht rechtzeitig gespielt. Dafür wurde dir ein Strafpunkt gegeben."
-            : "Du hast Phase 2 nicht rechtzeitig gespielt. Der bestehende Strafpunkt für diesen Verstoß bleibt weiter aktiv."
+            ? "Du hast Phase 2 nicht rechtzeitig gespielt. Dafür wurde dir ein Strafpunkt gegeben. Choice sucht für morgen ab 09:00 Uhr wieder passend für dich."
+            : "Du hast Phase 2 nicht rechtzeitig gespielt. Der bestehende Strafpunkt für diesen Verstoß bleibt weiter aktiv. Choice sucht für morgen ab 09:00 Uhr wieder passend für dich."
         : updatedUser.penaltyPoints >= 3
           ? "Dein Konto ist jetzt pausiert."
           : "Bitte prüfe dein Konto in Choice.";
 
-  void sendPushNotificationToUser(input.userId, {
+  await sendPushNotificationToUser(input.userId, {
     title: penaltyTitle,
     body: penaltyBody,
     channelId: "fair-play",

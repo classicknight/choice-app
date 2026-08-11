@@ -3,8 +3,14 @@ import { z } from "zod";
 import { buildBanAccountData, buildPauseAccountData, buildRestorePausedAccountData, isAccountPaused, mapAccountState } from "../lib/account-state.js";
 import { getAuthenticatedAdminPhone, requireAdminAccess } from "../lib/admin-auth.js";
 import { reconcileAllPenaltyStates, reconcileUserPenaltyState } from "../lib/penalty-state.js";
+import {
+  getPrivateQaRepeatUntilDate,
+  preparePrivateQaMatch,
+  PrivateQaMatchError,
+} from "../lib/private-qa-match.js";
 import { sendPushNotificationToUser } from "../lib/push-notifications.js";
 import { prisma } from "../lib/prisma.js";
+import { isSyntheticMatchingAccountEmail } from "../lib/synthetic-accounts.js";
 
 const updateUserSchema = z.object({
   isPremium: z.boolean().optional(),
@@ -15,6 +21,10 @@ const updateUserSchema = z.object({
 
 const manageMatchAccessSchema = z.object({
   action: z.enum(["grant_pack", "freeze_paid", "restore_frozen", "ban_account"]),
+});
+
+const preparePrivateQaMatchSchema = z.object({
+  repeatDays: z.number().int().min(1).max(30).default(14),
 });
 
 const resolveReportSchema = z.object({
@@ -62,6 +72,7 @@ function mapUserSummary(user: UserSummaryRow) {
     city: user.profile?.city ?? null,
     phoneNumber: user.phoneNumber,
     email: user.email,
+    isSynthetic: isSyntheticMatchingAccountEmail(user.email),
     profileCompleted: user.profileCompleted,
     isPremium: user.isPremium,
     premiumActivatedAt: user.premiumActivatedAt,
@@ -488,6 +499,52 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       ok: true,
       user: mapUserSummary(updatedUser),
     });
+  });
+
+  app.post("/admin/users/:userId/private-qa-match", async (request, reply) => {
+    if (!requireAdminAccess(request, reply)) {
+      return;
+    }
+
+    const params = z.object({ userId: z.string().min(1) }).safeParse(request.params);
+    const parsed = preparePrivateQaMatchSchema.safeParse(request.body ?? {});
+
+    if (!params.success || !parsed.success) {
+      return reply.status(400).send({
+        error: "INVALID_PRIVATE_QA_MATCH_REQUEST",
+        details: {
+          params: params.success ? undefined : params.error.flatten(),
+          body: parsed.success ? undefined : parsed.error.flatten(),
+        },
+      });
+    }
+
+    const now = new Date();
+
+    try {
+      const result = await preparePrivateQaMatch({
+        ownerUserId: params.data.userId,
+        repeatUntilBerlinDate: getPrivateQaRepeatUntilDate(now, parsed.data.repeatDays),
+        now,
+      });
+
+      return reply.send({
+        ok: true,
+        ...result,
+      });
+    } catch (error) {
+      if (!(error instanceof PrivateQaMatchError)) {
+        throw error;
+      }
+
+      const statusCode = error.code === "USER_NOT_FOUND"
+        ? 404
+        : error.code === "REAL_OPEN_MATCH_EXISTS"
+          ? 409
+          : 400;
+
+      return reply.status(statusCode).send({ error: error.code });
+    }
   });
 
   app.post("/admin/reports/:reportId/start-review", async (request, reply) => {

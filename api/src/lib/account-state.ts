@@ -1,8 +1,10 @@
 import {
   getOrCreatePhoneMatchUsageForUser,
+  getMonthlyFreeMatchState,
   getRemainingIncludedMatches,
   hasActiveChoicePlus,
   INCLUDED_MATCH_LIMIT,
+  MONTHLY_FREE_MATCH_LIMIT,
 } from "./match-access.js";
 
 export type AccountStateShape = {
@@ -59,6 +61,7 @@ export async function buildAccountStatePayload(
     id: user.id,
     phoneNumber: user.phoneNumber ?? null,
   });
+  const monthlyFreeMatchState = getMonthlyFreeMatchState(matchUsage);
 
   return {
     ...mapAccountState(user),
@@ -66,6 +69,13 @@ export async function buildAccountStatePayload(
     meteredMatchCount: matchUsage.meteredMatchCount,
     includedMatchLimit: INCLUDED_MATCH_LIMIT,
     remainingIncludedMatches: getRemainingIncludedMatches(matchUsage.meteredMatchCount),
+    monthlyFreeMatchLimit: MONTHLY_FREE_MATCH_LIMIT,
+    monthlyFreeMatchCount: matchUsage.monthlyFreeMatchCount,
+    monthlyFreeMatchesUsed: monthlyFreeMatchState.used,
+    remainingMonthlyFreeMatches: monthlyFreeMatchState.remaining,
+    monthlyFreeMatchesEligible: monthlyFreeMatchState.eligible,
+    monthlyFreeMatchesEligibleFrom: monthlyFreeMatchState.eligibleFrom,
+    nextMonthlyFreeMatchesAt: monthlyFreeMatchState.nextRefreshAt,
   };
 }
 

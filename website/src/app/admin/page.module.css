@@ -414,6 +414,7 @@
 
 .primaryButton,
 .secondaryButton,
+.testMatchButton,
 .dangerButton {
   border: none;
   border-radius: 999px;
@@ -430,6 +431,7 @@
 
 .primaryButton:disabled,
 .secondaryButton:disabled,
+.testMatchButton:disabled,
 .dangerButton:disabled {
   opacity: 0.55;
   cursor: wait;
@@ -440,6 +442,13 @@
   color: #f3ecfb;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.testMatchButton {
+  padding: 11px 16px;
+  color: #dff6ff;
+  background: rgba(67, 184, 234, 0.14);
+  border: 1px solid rgba(112, 211, 255, 0.34);
 }
 
 .dangerButton {

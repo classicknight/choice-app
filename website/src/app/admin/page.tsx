@@ -26,6 +26,7 @@ type AdminUser = {
   city: string | null;
   phoneNumber: string | null;
   email: string | null;
+  isSynthetic: boolean;
   profileCompleted: boolean;
   isPremium: boolean;
   premiumActivatedAt: string | null;
@@ -363,6 +364,41 @@ export default function AdminPage() {
       await loadDashboard();
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Match-Paket-Aktion fehlgeschlagen.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function preparePrivateQaMatch(userId: string, label: string) {
+    setIsSaving(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await adminFetch<{
+        ok: true;
+        partnerName: string;
+        scheduledFor: string;
+        repeatUntilBerlinDate: string;
+      }>(`/admin/users/${userId}/private-qa-match`, {
+        method: "POST",
+        body: JSON.stringify({ repeatDays: 14 }),
+      });
+      setNotice(
+        `${label} bekommt ${result.partnerName} als Test-Match am ${formatDate(result.scheduledFor)}. Wiederholung ist bis ${result.repeatUntilBerlinDate} vorbereitet.`,
+      );
+      await loadDashboard();
+    } catch (nextError) {
+      const code = nextError instanceof Error ? nextError.message : "";
+      const message = code === "REAL_OPEN_MATCH_EXISTS"
+        ? `${label} hat bereits ein echtes offenes Match. Dieses wurde nicht verändert.`
+        : code === "PROFILE_NOT_COMPLETED"
+          ? `${label} muss zuerst das Profil vollständig abschließen.`
+          : code === "ACCOUNT_NOT_ACTIVE"
+            ? `${label} ist pausiert oder gesperrt und kann gerade kein Test-Match erhalten.`
+            : "Test-Match konnte nicht vorbereitet werden.";
+
+      setError(message);
     } finally {
       setIsSaving(false);
     }
@@ -922,13 +958,15 @@ export default function AdminPage() {
                         <tr key={user.id}>
                           <td>
                             <strong>{label}</strong>
-                            <div className={styles.cellSubline}>{user.city || "Ohne Stadt"}</div>
+                            <div className={styles.cellSubline}>
+                              {user.city || "Ohne Stadt"}{user.isSynthetic ? " · Testprofil" : ""}
+                            </div>
                           </td>
                           <td>
                             {user.phoneNumber || "—"}
                             <div className={styles.cellSubline}>{user.email || "Keine E-Mail"}</div>
                           </td>
-                          <td>{user.accountBanned ? "Gesperrt" : user.accountPaused ? "Pausiert" : "Aktiv"}</td>
+                          <td>{user.isSynthetic ? "Testprofil" : user.accountBanned ? "Gesperrt" : user.accountPaused ? "Pausiert" : "Aktiv"}</td>
                           <td>{user.isPremium ? "Ja" : "Nein"}</td>
                           <td>{user.penaltyPoints}/3</td>
                           <td>
@@ -940,6 +978,16 @@ export default function AdminPage() {
                           <td>{user.matchCount}</td>
                           <td>
                             <div className={styles.inlineActions}>
+                              {!user.isSynthetic ? (
+                                <button
+                                  type="button"
+                                  className={styles.testMatchButton}
+                                  onClick={() => void preparePrivateQaMatch(user.id, label)}
+                                  disabled={isSaving || !user.profileCompleted || user.accountPaused || user.accountBanned}
+                                >
+                                  Test-Match vorbereiten
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
                                 className={styles.secondaryButton}

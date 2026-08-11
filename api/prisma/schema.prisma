@@ -349,9 +349,13 @@ model Purchase {
 }
 
 model PhoneMatchStats {
-  phoneNumber     String   @id
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  totalMatchCount Int      @default(0)
-  choicePlusMatchCount Int      @default(0)
+  phoneNumber                  String   @id
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
+  totalMatchCount              Int      @default(0)
+  choicePlusMatchCount         Int      @default(0)
+  monthlyFreeMatchCount        Int      @default(0)
+  monthlyFreeMatchEligibleFrom String?
+  monthlyFreeMatchPeriod       String?
+  monthlyFreeMatchUsed         Int      @default(0)
 }
