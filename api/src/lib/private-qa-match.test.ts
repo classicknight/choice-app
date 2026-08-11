@@ -4,6 +4,7 @@ import {
   getPrivateQaPartnerEmail,
   getPrivateQaProfileForOwner,
   getPrivateQaRepeatUntilDate,
+  getUnseenPrivateQaProfileForOwner,
 } from "./private-qa-match.js";
 import { shouldCountMatchForUser } from "./match-access.js";
 
@@ -28,6 +29,32 @@ test("creates a Berlin repeat date for the configured test window", () => {
   const now = new Date("2026-08-10T10:00:00.000Z");
 
   assert.equal(getPrivateQaRepeatUntilDate(now, 14), "2026-08-24");
+});
+
+test("never returns a private QA profile that the owner has already matched", () => {
+  const firstProfile = getPrivateQaProfileForOwner("tester-1", "2026-08-11");
+  const nextProfile = getUnseenPrivateQaProfileForOwner(
+    "tester-1",
+    "2026-08-11",
+    new Set([firstProfile.id]),
+  );
+
+  assert.ok(nextProfile);
+  assert.notEqual(nextProfile.id, firstProfile.id);
+});
+
+test("returns no private QA profile after the complete pool was used", () => {
+  const seenProfileIds = new Set<string>();
+
+  for (let day = 11; day <= 22; day += 1) {
+    const profile = getPrivateQaProfileForOwner("tester-1", `2026-08-${day}`);
+    seenProfileIds.add(profile.id);
+  }
+
+  assert.equal(
+    getUnseenPrivateQaProfileForOwner("tester-1", "2026-08-23", seenProfileIds),
+    null,
+  );
 });
 
 test("private QA and demo matches do not consume the real match allowance", () => {

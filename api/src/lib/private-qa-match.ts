@@ -12,6 +12,7 @@ import {
 import { prisma } from "./prisma.js";
 import { sendPushNotificationOnce } from "./push-notifications.js";
 import {
+  PRIVATE_QA_EMAIL_SUFFIX,
   isPrivateQaAccountEmail,
   isSyntheticMatchingAccountEmail,
 } from "./synthetic-accounts.js";
@@ -207,6 +208,24 @@ export function getPrivateQaProfileForOwner(ownerUserId: string, rotationKey?: s
   ];
 }
 
+export function getUnseenPrivateQaProfileForOwner(
+  ownerUserId: string,
+  rotationKey: string,
+  previouslyMatchedProfileIds: ReadonlySet<string>,
+) {
+  const startIndex = (stableHash(ownerUserId) + getRotationOffset(rotationKey)) % PRIVATE_QA_PROFILES.length;
+
+  for (let offset = 0; offset < PRIVATE_QA_PROFILES.length; offset += 1) {
+    const template = PRIVATE_QA_PROFILES[(startIndex + offset) % PRIVATE_QA_PROFILES.length];
+
+    if (!previouslyMatchedProfileIds.has(template.id)) {
+      return template;
+    }
+  }
+
+  return null;
+}
+
 export function getPrivateQaPartnerEmail(ownerUserId: string, profileTemplateId?: string) {
   const safeOwnerId = ownerUserId.toLowerCase().replace(/[^a-z0-9_-]/g, "");
   const safeProfileId = profileTemplateId?.toLowerCase().replace(/[^a-z0-9_-]/g, "");
@@ -267,7 +286,45 @@ export async function getOrCreatePrivateQaPartner({
   now?: Date;
 }) {
   const owner = await loadEligiblePrivateQaOwner(ownerUserId);
-  const template = getPrivateQaProfileForOwner(owner.id, rotationKey);
+  const previousQaMatches = await prisma.match.findMany({
+    where: {
+      AND: [
+        { OR: [{ userAId: owner.id }, { userBId: owner.id }] },
+        {
+          OR: [
+            { userA: { email: { endsWith: PRIVATE_QA_EMAIL_SUFFIX } } },
+            { userB: { email: { endsWith: PRIVATE_QA_EMAIL_SUFFIX } } },
+          ],
+        },
+      ],
+    },
+    select: {
+      userAId: true,
+      userBId: true,
+      userA: { select: { email: true } },
+      userB: { select: { email: true } },
+    },
+  });
+  const previouslyMatchedProfileIds = new Set<string>();
+
+  for (const previousMatch of previousQaMatches) {
+    const partnerEmail = previousMatch.userAId === owner.id
+      ? previousMatch.userB.email
+      : previousMatch.userA.email;
+
+    for (const profile of PRIVATE_QA_PROFILES) {
+      if (partnerEmail === getPrivateQaPartnerEmail(owner.id, profile.id)) {
+        previouslyMatchedProfileIds.add(profile.id);
+      }
+    }
+  }
+
+  const template = getUnseenPrivateQaProfileForOwner(owner.id, rotationKey, previouslyMatchedProfileIds);
+
+  if (!template) {
+    throw new PrivateQaMatchError("NO_UNSEEN_PRIVATE_QA_PROFILE");
+  }
+
   const qaPartnerEmail = getPrivateQaPartnerEmail(owner.id, template.id);
   const qaPartnerAge = clampProfileAge(template.age, owner.profile.ageRangeMin, owner.profile.ageRangeMax);
   const ownerTarget = owner.profile.pronouns === "er/ihm"

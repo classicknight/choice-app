@@ -16,7 +16,7 @@ import {
   canRepeatPrivateQaMatch,
   parsePrivateQaRepeatConfig,
 } from "./private-qa-repeat.js";
-import { getOrCreatePrivateQaPartner } from "./private-qa-match.js";
+import { getOrCreatePrivateQaPartner, PrivateQaMatchError } from "./private-qa-match.js";
 import {
   canUserReceiveAnotherMatch,
   createMatchAccessReservation,
@@ -133,11 +133,46 @@ export type JourneyState = {
   phaseTwoPartnerName: string;
 };
 
+export type JourneyEncounter = {
+  id: string;
+  partner: {
+    userId: string | null;
+    firstName: string;
+    city: string | null;
+    avatarUrl: string | null;
+  };
+  scheduledFor: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMinutes: number;
+  phaseReached: 1 | 2 | 3 | 4 | 5;
+  status: MatchStatus;
+  outcome:
+    | "ACTIVE"
+    | "CHOICE_AWARD"
+    | "NEW_MATCH_SELECTED"
+    | "PHASE_ONE_NOT_STARTED"
+    | "PHASE_TWO_NOT_COMPLETED"
+    | "NOT_COMPATIBLE"
+    | "TIME_LIMIT"
+    | "MATCH_ENDED";
+  isCurrent: boolean;
+  isTestProfile: boolean;
+  isPartnerHidden: boolean;
+};
+
 type MatchWithRelations = Prisma.MatchGetPayload<{
   include: {
     userA: { include: { profile: true } };
     userB: { include: { profile: true } };
     chat: { include: { messages: { orderBy: { createdAt: "asc" } } } };
+  };
+}>;
+
+type EncounterMatchWithRelations = Prisma.MatchGetPayload<{
+  include: {
+    userA: { include: { profile: true } };
+    userB: { include: { profile: true } };
   };
 }>;
 
@@ -1794,53 +1829,62 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
         ownerUserId: user.id,
         rotationKey: getBerlinDateKey(scheduledFor),
         now,
-      });
-      const qaPartnerId = qaProfile.partner.id;
-      const [userAId, userBId] = [user.id, qaPartnerId].sort();
-      const ownerIsUserA = userAId === user.id;
-
-      try {
-        const repeatedMatch = await prisma.match.create({
-          data: {
-            scheduledFor,
-            status: MatchStatus.PENDING,
-            userAId,
-            userBId,
-            phaseOneStarterUserId: user.id,
-            userADecision: ownerIsUserA ? ParticipantDecision.UNDECIDED : ParticipantDecision.KEEP,
-            userBDecision: ownerIsUserA ? ParticipantDecision.KEEP : ParticipantDecision.UNDECIDED,
-            phaseThreeUserADecision: ownerIsUserA ? ParticipantDecision.UNDECIDED : ParticipantDecision.KEEP,
-            phaseThreeUserBDecision: ownerIsUserA ? ParticipantDecision.KEEP : ParticipantDecision.UNDECIDED,
-            compatibility: previousPrivateQaMatch.compatibility ?? 0.92,
-            rationale: {
-              generatedBy: "private-qa-match",
-              ownerUserId: user.id,
-              repeatUntilBerlinDate: repeatConfig.repeatUntilBerlinDate,
-              profileTemplateId: qaProfile.template.id,
-              testProfile: true,
-              sharedInterests: qaProfile.sharedInterests,
-            },
-          },
-        });
-
-        return repeatedMatch.id;
-      } catch (error) {
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
-          throw error;
+      }).catch((error: unknown) => {
+        if (error instanceof PrivateQaMatchError && error.code === "NO_UNSEEN_PRIVATE_QA_PROFILE") {
+          return null;
         }
 
-        const repeatedMatch = await prisma.match.findFirst({
-          where: {
-            scheduledFor,
-            OR: [
-              { userAId, userBId },
-              { userAId: userBId, userBId: userAId },
-            ],
-          },
-          select: { id: true },
-        });
+        throw error;
+      });
 
-        return repeatedMatch?.id ?? null;
+      if (qaProfile) {
+        const qaPartnerId = qaProfile.partner.id;
+        const [userAId, userBId] = [user.id, qaPartnerId].sort();
+        const ownerIsUserA = userAId === user.id;
+
+        try {
+          const repeatedMatch = await prisma.match.create({
+            data: {
+              scheduledFor,
+              status: MatchStatus.PENDING,
+              userAId,
+              userBId,
+              phaseOneStarterUserId: user.id,
+              userADecision: ownerIsUserA ? ParticipantDecision.UNDECIDED : ParticipantDecision.KEEP,
+              userBDecision: ownerIsUserA ? ParticipantDecision.KEEP : ParticipantDecision.UNDECIDED,
+              phaseThreeUserADecision: ownerIsUserA ? ParticipantDecision.UNDECIDED : ParticipantDecision.KEEP,
+              phaseThreeUserBDecision: ownerIsUserA ? ParticipantDecision.KEEP : ParticipantDecision.UNDECIDED,
+              compatibility: previousPrivateQaMatch.compatibility ?? 0.92,
+              rationale: {
+                generatedBy: "private-qa-match",
+                ownerUserId: user.id,
+                repeatUntilBerlinDate: repeatConfig.repeatUntilBerlinDate,
+                profileTemplateId: qaProfile.template.id,
+                testProfile: true,
+                sharedInterests: qaProfile.sharedInterests,
+              },
+            },
+          });
+
+          return repeatedMatch.id;
+        } catch (error) {
+          if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+            throw error;
+          }
+
+          const repeatedMatch = await prisma.match.findFirst({
+            where: {
+              scheduledFor,
+              OR: [
+                { userAId, userBId },
+                { userAId: userBId, userBId: userAId },
+              ],
+            },
+            select: { id: true },
+          });
+
+          return repeatedMatch?.id ?? null;
+        }
       }
     }
   }
@@ -2458,6 +2502,154 @@ function mapMessage(
     text: message.body,
     createdAt: message.createdAt.toISOString(),
   };
+}
+
+export function getJourneyEncounterPhaseReached(scheduledFor: Date, referenceAt: Date): 1 | 2 | 3 | 4 | 5 {
+  const schedule = buildPhaseSchedule(scheduledFor);
+
+  if (referenceAt >= schedule.phaseFiveStart) {
+    return 5;
+  }
+
+  if (referenceAt >= schedule.phaseFourStart) {
+    return 4;
+  }
+
+  if (referenceAt >= schedule.phaseThreeStart) {
+    return 3;
+  }
+
+  if (referenceAt >= schedule.phaseTwoStart) {
+    return 2;
+  }
+
+  return 1;
+}
+
+function getJourneyEncounterOutcome(
+  match: Pick<
+    EncounterMatchWithRelations,
+    | "status"
+    | "closedAt"
+    | "phaseOneStarterPenaltyAppliedAt"
+    | "phaseTwoPenaltyAppliedAt"
+    | "userADecision"
+    | "userBDecision"
+    | "phaseThreeUserADecision"
+    | "phaseThreeUserBDecision"
+    | "phaseTwoResults"
+  >,
+): JourneyEncounter["outcome"] {
+  if (!match.closedAt) {
+    return match.status === MatchStatus.KEPT ? "CHOICE_AWARD" : "ACTIVE";
+  }
+
+  if (match.phaseOneStarterPenaltyAppliedAt) {
+    return "PHASE_ONE_NOT_STARTED";
+  }
+
+  if (match.phaseTwoPenaltyAppliedAt) {
+    return "PHASE_TWO_NOT_COMPLETED";
+  }
+
+  if (
+    match.userADecision === ParticipantDecision.DISCARD
+    || match.userBDecision === ParticipantDecision.DISCARD
+    || match.phaseThreeUserADecision === ParticipantDecision.DISCARD
+    || match.phaseThreeUserBDecision === ParticipantDecision.DISCARD
+  ) {
+    return "NEW_MATCH_SELECTED";
+  }
+
+  const phaseTwoResults = parseJsonList<JourneyPhaseTwoRoundResult>(match.phaseTwoResults);
+
+  if (phaseTwoResults.length) {
+    const compatibility = phaseTwoResults.reduce((sum, entry) => sum + entry.compatibility, 0) / phaseTwoResults.length;
+
+    if (compatibility <= PHASE_THREE_THRESHOLD) {
+      return "NOT_COMPATIBLE";
+    }
+  }
+
+  if (match.status === MatchStatus.EXPIRED) {
+    return "TIME_LIMIT";
+  }
+
+  if (match.status === MatchStatus.KEPT) {
+    return "CHOICE_AWARD";
+  }
+
+  return "MATCH_ENDED";
+}
+
+export async function getJourneyEncountersForUser(userId: string): Promise<JourneyEncounter[]> {
+  const now = new Date();
+  const matches = await prisma.match.findMany({
+    where: {
+      AND: [
+        { OR: [{ userAId: userId }, { userBId: userId }] },
+        {
+          OR: [
+            { status: { not: MatchStatus.PENDING } },
+            { scheduledFor: { lte: now } },
+          ],
+        },
+      ],
+    },
+    orderBy: { scheduledFor: "desc" },
+    take: 24,
+    include: {
+      userA: { include: { profile: true } },
+      userB: { include: { profile: true } },
+    },
+  });
+  const partnerUserIds = matches.map((match) => match.userAId === userId ? match.userBId : match.userAId);
+  const blocks = partnerUserIds.length
+    ? await prisma.userBlock.findMany({
+        where: {
+          OR: [
+            { blockerUserId: userId, blockedUserId: { in: partnerUserIds } },
+            { blockerUserId: { in: partnerUserIds }, blockedUserId: userId },
+          ],
+        },
+        select: { blockerUserId: true, blockedUserId: true },
+      })
+    : [];
+  const hiddenPartnerUserIds = new Set(blocks.map((block) => (
+    block.blockerUserId === userId ? block.blockedUserId : block.blockerUserId
+  )));
+
+  return matches.map((match) => {
+    const partner = match.userAId === userId ? match.userB : match.userA;
+    const isPartnerHidden = hiddenPartnerUserIds.has(partner.id);
+    const referenceAt = match.closedAt ?? now;
+    const startedAt = match.activatedAt ?? (match.scheduledFor <= referenceAt ? match.scheduledFor : null);
+    const durationMinutes = startedAt
+      ? Math.max(0, Math.floor((referenceAt.getTime() - startedAt.getTime()) / 60_000))
+      : 0;
+
+    return {
+      id: match.id,
+      partner: {
+        userId: isPartnerHidden ? null : partner.id,
+        firstName: isPartnerHidden ? "Früheres Match" : partner.profile?.firstName?.trim() || "Früheres Match",
+        city: isPartnerHidden ? null : partner.profile?.city ?? null,
+        avatarUrl: isPartnerHidden
+          ? null
+          : partner.profile?.avatarUrl ?? partner.profile?.photoUrls[0] ?? null,
+      },
+      scheduledFor: match.scheduledFor.toISOString(),
+      startedAt: startedAt?.toISOString() ?? null,
+      endedAt: match.closedAt?.toISOString() ?? null,
+      durationMinutes,
+      phaseReached: getJourneyEncounterPhaseReached(match.scheduledFor, referenceAt),
+      status: match.status,
+      outcome: getJourneyEncounterOutcome(match),
+      isCurrent: !match.closedAt && (match.status === MatchStatus.ACTIVE || match.status === MatchStatus.KEPT),
+      isTestProfile: isPrivateQaAccountEmail(partner.email),
+      isPartnerHidden,
+    };
+  });
 }
 
 export async function getCurrentJourneyForUser(userId: string): Promise<JourneyState> {

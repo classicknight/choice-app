@@ -37,6 +37,7 @@ import {
   deleteRemoteAccount,
   fetchRemoteAccountState,
   fetchRemoteJourney,
+  fetchRemoteJourneyEncounters,
   fetchRemoteProfile,
   goBackRemotePhaseTwoQuestion,
   openRemotePrivateQaPartnerSession,
@@ -44,6 +45,7 @@ import {
   unregisterRemotePushToken,
   setApiAccessToken,
   type RemoteJourneyPartnerProfile,
+  type RemoteJourneyEncounter,
   type RemoteJourneyState,
   sendRemoteJourneyMessage,
   setRemotePhaseOneDecision,
@@ -750,6 +752,60 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatEncounterDate(value: string) {
+  return new Intl.DateTimeFormat("de-DE", {
+    day: "numeric",
+    month: "short",
+    year: new Date(value).getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  }).format(new Date(value));
+}
+
+function formatEncounterPeriod(encounter: RemoteJourneyEncounter) {
+  const startValue = encounter.startedAt ?? encounter.scheduledFor;
+  const start = new Date(startValue);
+
+  if (!encounter.endedAt) {
+    return `Seit ${formatEncounterDate(startValue)}`;
+  }
+
+  const end = new Date(encounter.endedAt);
+
+  if (start.toDateString() === end.toDateString()) {
+    return formatEncounterDate(startValue);
+  }
+
+  return `${formatEncounterDate(startValue)} – ${formatEncounterDate(encounter.endedAt)}`;
+}
+
+function formatEncounterDuration(durationMinutes: number) {
+  const safeMinutes = Math.max(1, durationMinutes);
+
+  if (safeMinutes < 60) {
+    return `${safeMinutes} Min.`;
+  }
+
+  if (safeMinutes < 24 * 60) {
+    const hours = Math.max(1, Math.round(safeMinutes / 60));
+    return `${hours} Std.`;
+  }
+
+  const days = Math.max(1, Math.round(safeMinutes / (24 * 60)));
+  return `${days} Tag${days === 1 ? "" : "e"}`;
+}
+
+function getEncounterOutcomeLabel(outcome: RemoteJourneyEncounter["outcome"]) {
+  return {
+    ACTIVE: "Aktuell",
+    CHOICE_AWARD: "Choice Award",
+    NEW_MATCH_SELECTED: "Nicht fortgesetzt",
+    PHASE_ONE_NOT_STARTED: "Chat nicht begonnen",
+    PHASE_TWO_NOT_COMPLETED: "Runde nicht beendet",
+    NOT_COMPATIBLE: "Nach Runde 2 beendet",
+    TIME_LIMIT: "Zeitfenster beendet",
+    MATCH_ENDED: "Abgeschlossen",
+  }[outcome];
 }
 
 function buildPenaltyEntryGroupKey(entry: {
@@ -2779,6 +2835,7 @@ function OverviewScreen({
   const [isJourneyHydrated, setIsJourneyHydrated] = useState(false);
   const [isAccountStateHydrated, setIsAccountStateHydrated] = useState(false);
   const [remoteJourney, setRemoteJourney] = useState<RemoteJourneyState | null>(null);
+  const [remoteJourneyEncounters, setRemoteJourneyEncounters] = useState<RemoteJourneyEncounter[] | null>(null);
   const [sharedChatMessages, setSharedChatMessages] = useState<SharedChatMessage[]>([]);
   const [journeyReleaseAt, setJourneyReleaseAt] = useState<string | null>(null);
   const [seenMatchReleaseAt, setSeenMatchReleaseAt] = useState<string | null>(null);
@@ -2943,8 +3000,16 @@ function OverviewScreen({
   }
 
   async function refreshJourneyState(userId: string) {
-    const journey = await fetchRemoteJourney(userId);
+    const [journey, encounters] = await Promise.all([
+      fetchRemoteJourney(userId),
+      fetchRemoteJourneyEncounters(userId).catch(() => null),
+    ]);
     applyRemoteJourneyState(journey);
+
+    if (encounters) {
+      setRemoteJourneyEncounters(encounters);
+    }
+
     return journey;
   }
 
@@ -5018,6 +5083,7 @@ function OverviewScreen({
       if (!journeyOwnerUserId) {
         if (!cancelled) {
           setRemoteJourney(null);
+          setRemoteJourneyEncounters([]);
           setJourneyReleaseAt(null);
           setSharedChatMessages([]);
           setLastSeenPartnerMessageId(null);
@@ -5090,6 +5156,7 @@ function OverviewScreen({
     }
 
     setIsJourneyHydrated(false);
+    setRemoteJourneyEncounters(null);
     void hydrateJourneyState();
 
     const intervalId = isServerJourneyMode
@@ -6626,6 +6693,77 @@ function OverviewScreen({
     );
   }
 
+  function renderEncounterHistory() {
+    return (
+      <View style={styles.encounterHistoryCard}>
+        <View style={styles.encounterHistoryHeader}>
+          <View style={styles.encounterHistoryTitleWrap}>
+            <Text style={styles.encounterHistoryEyebrow}>Deine Reise</Text>
+            <Text style={styles.encounterHistoryTitle}>Deine Begegnungen</Text>
+          </View>
+          {remoteJourneyEncounters?.length ? (
+            <View style={styles.encounterHistoryCountBadge}>
+              <Text style={styles.encounterHistoryCountText}>{remoteJourneyEncounters.length}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <Text style={styles.encounterHistoryIntro}>
+          Ein ruhiger Überblick darüber, wen du bei Choice kennengelernt hast und wie weit ihr gemeinsam gekommen seid. Alte Chats bleiben geschlossen.
+        </Text>
+
+        {remoteJourneyEncounters === null ? (
+          <View style={styles.encounterHistoryEmpty}>
+            <Text style={styles.encounterHistoryEmptyTitle}>Begegnungen werden geladen</Text>
+            <Text style={styles.encounterHistoryEmptyText}>Choice ordnet deine bisherigen Matches gerade ein.</Text>
+          </View>
+        ) : remoteJourneyEncounters.length ? (
+          <View style={styles.encounterHistoryList}>
+            {remoteJourneyEncounters.map((encounter) => (
+              <View key={encounter.id} style={styles.encounterHistoryItem}>
+                {encounter.partner.avatarUrl ? (
+                  <Image source={{ uri: encounter.partner.avatarUrl }} style={styles.encounterHistoryAvatar} />
+                ) : (
+                  <View style={styles.encounterHistoryAvatarFallback}>
+                    <Text style={styles.encounterHistoryAvatarInitial}>
+                      {encounter.partner.firstName.slice(0, 1).toLocaleUpperCase("de-DE")}
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.encounterHistoryCopy}>
+                  <View style={styles.encounterHistoryNameRow}>
+                    <Text style={styles.encounterHistoryName}>{encounter.partner.firstName}</Text>
+                    {encounter.isCurrent ? (
+                      <View style={styles.encounterHistoryCurrentBadge}>
+                        <Text style={styles.encounterHistoryCurrentText}>Aktuell</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                  <Text style={styles.encounterHistoryMeta}>
+                    {[encounter.partner.city, formatEncounterPeriod(encounter)].filter(Boolean).join(" · ")}
+                  </Text>
+                  <View style={styles.encounterHistoryDetailRow}>
+                    <Text style={styles.encounterHistoryPhase}>Phase {encounter.phaseReached}</Text>
+                    <Text style={styles.encounterHistoryDot}>•</Text>
+                    <Text style={styles.encounterHistoryDuration}>{formatEncounterDuration(encounter.durationMinutes)}</Text>
+                    <Text style={styles.encounterHistoryDot}>•</Text>
+                    <Text style={styles.encounterHistoryOutcome}>{getEncounterOutcomeLabel(encounter.outcome)}</Text>
+                  </View>
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={styles.encounterHistoryEmpty}>
+            <Text style={styles.encounterHistoryEmptyTitle}>Deine erste Begegnung kommt noch</Text>
+            <Text style={styles.encounterHistoryEmptyText}>Sobald dein erstes Match beginnt, entsteht hier deine persönliche Übersicht.</Text>
+          </View>
+        )}
+      </View>
+    );
+  }
+
   function renderFreshMatchNotice() {
     if (!showFreshMatchNotice) {
       return null;
@@ -7560,6 +7698,8 @@ function OverviewScreen({
             ) : null}
           </View>
           )}
+
+          {renderEncounterHistory()}
 
           {renderPenaltyCard()}
 
@@ -10490,6 +10630,172 @@ const styles = StyleSheet.create({
     color: "#fff7ff",
     fontSize: 24,
     fontWeight: "800",
+  },
+  encounterHistoryCard: {
+    padding: 18,
+    borderRadius: 26,
+    backgroundColor: "rgba(13, 18, 28, 0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(120, 214, 255, 0.20)",
+    gap: 14,
+    overflow: "hidden",
+  },
+  encounterHistoryHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  encounterHistoryTitleWrap: {
+    flex: 1,
+    gap: 4,
+  },
+  encounterHistoryEyebrow: {
+    color: "#8ddcff",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+    textTransform: "uppercase",
+  },
+  encounterHistoryTitle: {
+    color: "#fff7ff",
+    fontSize: 22,
+    lineHeight: 27,
+    fontWeight: "800",
+    letterSpacing: -0.5,
+  },
+  encounterHistoryCountBadge: {
+    minWidth: 38,
+    height: 38,
+    paddingHorizontal: 11,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(141, 220, 255, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(141, 220, 255, 0.22)",
+  },
+  encounterHistoryCountText: {
+    color: "#dff6ff",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  encounterHistoryIntro: {
+    color: "#b8b4c8",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  encounterHistoryList: {
+    gap: 10,
+  },
+  encounterHistoryItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.045)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.07)",
+  },
+  encounterHistoryAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+  },
+  encounterHistoryAvatarFallback: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(141, 220, 255, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(141, 220, 255, 0.20)",
+  },
+  encounterHistoryAvatarInitial: {
+    color: "#dff6ff",
+    fontSize: 20,
+    fontWeight: "800",
+  },
+  encounterHistoryCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  encounterHistoryNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  encounterHistoryName: {
+    color: "#fff7ff",
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: "800",
+  },
+  encounterHistoryCurrentBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: "rgba(82, 232, 163, 0.10)",
+    borderWidth: 1,
+    borderColor: "rgba(82, 232, 163, 0.20)",
+  },
+  encounterHistoryCurrentText: {
+    color: "#aef2cf",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
+  encounterHistoryMeta: {
+    color: "#a9a4bb",
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  encounterHistoryDetailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 5,
+  },
+  encounterHistoryPhase: {
+    color: "#bdeaff",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
+  encounterHistoryDot: {
+    color: "#5d5a6d",
+    fontSize: 10,
+  },
+  encounterHistoryDuration: {
+    color: "#d7cedf",
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  encounterHistoryOutcome: {
+    color: "#f0c8d8",
+    fontSize: 11,
+    lineHeight: 16,
+    fontWeight: "700",
+  },
+  encounterHistoryEmpty: {
+    padding: 14,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.035)",
+    gap: 4,
+  },
+  encounterHistoryEmptyTitle: {
+    color: "#f3edf6",
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: "700",
+  },
+  encounterHistoryEmptyText: {
+    color: "#9e98ad",
+    fontSize: 12,
+    lineHeight: 17,
   },
   penaltyCard: {
     padding: 18,

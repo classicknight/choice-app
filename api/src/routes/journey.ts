@@ -6,6 +6,7 @@ import {
   blockJourneyPartner,
   createJourneyMessage,
   getCurrentJourneyForUser,
+  getJourneyEncountersForUser,
   goBackPhaseTwoQuestionForUser,
   setPhaseOneDecision,
   setPhaseThreeDecision,
@@ -97,6 +98,24 @@ export const journeyRoutes: FastifyPluginAsync = async (app) => {
 
     const journey = await getCurrentJourneyForUser(parsedParams.data.userId);
     return reply.send({ ok: true, journey });
+  });
+
+  app.get("/journey/:userId/encounters", async (request, reply) => {
+    const parsedParams = paramsSchema.safeParse(request.params);
+
+    if (!parsedParams.success) {
+      return reply.status(400).send({
+        error: "INVALID_JOURNEY_PARAMS",
+        details: parsedParams.error.flatten(),
+      });
+    }
+
+    if (!requireMatchingAuthenticatedUser(request, reply, parsedParams.data.userId)) {
+      return;
+    }
+
+    const encounters = await getJourneyEncountersForUser(parsedParams.data.userId);
+    return reply.send({ ok: true, encounters });
   });
 
   app.post("/journey/:userId/private-qa-partner-session", async (request, reply) => {

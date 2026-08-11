@@ -250,9 +250,42 @@ export type RemoteJourneyState = {
   phaseTwoPartnerName: string;
 };
 
+export type RemoteJourneyEncounter = {
+  id: string;
+  partner: {
+    userId: string | null;
+    firstName: string;
+    city: string | null;
+    avatarUrl: string | null;
+  };
+  scheduledFor: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMinutes: number;
+  phaseReached: 1 | 2 | 3 | 4 | 5;
+  status: "PENDING" | "ACTIVE" | "DISCARDED" | "EXPIRED" | "KEPT";
+  outcome:
+    | "ACTIVE"
+    | "CHOICE_AWARD"
+    | "NEW_MATCH_SELECTED"
+    | "PHASE_ONE_NOT_STARTED"
+    | "PHASE_TWO_NOT_COMPLETED"
+    | "NOT_COMPATIBLE"
+    | "TIME_LIMIT"
+    | "MATCH_ENDED";
+  isCurrent: boolean;
+  isTestProfile: boolean;
+  isPartnerHidden: boolean;
+};
+
 type JourneyResponse = {
   ok: true;
   journey: RemoteJourneyState;
+};
+
+type JourneyEncountersResponse = {
+  ok: true;
+  encounters: RemoteJourneyEncounter[];
 };
 
 type PrivateQaPartnerSessionResult = {
@@ -791,6 +824,21 @@ export async function fetchRemoteJourney(userId: string, accessToken?: string | 
     accessToken,
   });
   return response.journey;
+}
+
+export async function fetchRemoteJourneyEncounters(
+  userId: string,
+  accessToken?: string | null,
+): Promise<RemoteJourneyEncounter[]> {
+  if (!apiBaseUrl) {
+    throw new Error("API_URL_MISSING");
+  }
+
+  const response = await fetchJson<JourneyEncountersResponse>(
+    `/journey/${encodeURIComponent(userId)}/encounters`,
+    { auth: true, accessToken },
+  );
+  return response.encounters;
 }
 
 export async function openRemotePrivateQaPartnerSession(input: {
