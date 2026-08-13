@@ -2907,6 +2907,7 @@ export async function createJourneyMessage(input: {
           ? `${body.slice(0, 117)}...`
           : body,
     channelId: "chat-messages",
+    badge: 1,
     data: {
       type: "chat-message",
       matchId: match.id,

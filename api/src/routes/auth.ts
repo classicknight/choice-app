@@ -7,6 +7,10 @@ import {
   ensureAppReviewDemoAccount,
 } from "../lib/app-review.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  getVerificationStartRetryAfterSeconds,
+  VERIFICATION_START_WINDOW_MS,
+} from "../lib/verification-rate-limit.js";
 import { generateOtpCode, hashOtpCode, normalizeEmail, normalizePhone } from "../services/verification.service.js";
 import {
   checkTwilioPhoneVerification,
@@ -158,34 +162,56 @@ async function getLatestPendingChallenge(target: string, channel: "EMAIL" | "PHO
   });
 }
 
-async function ensureChallengeCanBeStarted(target: string, channel: "EMAIL" | "PHONE") {
+async function ensureChallengeCanBeStarted(
+  target: string,
+  channel: "EMAIL" | "PHONE",
+  options?: { enforceStartRateLimit?: boolean },
+) {
   const latestChallenge = await getLatestPendingChallenge(target, channel);
 
-  if (!latestChallenge) {
-    return {
-      ok: true as const,
-    };
-  }
-
-  if (latestChallenge.expiresAt.getTime() < Date.now()) {
+  if (latestChallenge && latestChallenge.expiresAt.getTime() < Date.now()) {
     await prisma.verificationChallenge.update({
       where: { id: latestChallenge.id },
       data: { status: "EXPIRED" },
     });
-
-    return {
-      ok: true as const,
-    };
   }
 
-  const retryAfterMs = (latestChallenge.lastSentAt?.getTime() ?? latestChallenge.createdAt.getTime()) + VERIFICATION_RESEND_COOLDOWN_MS - Date.now();
+  if (latestChallenge && latestChallenge.expiresAt.getTime() >= Date.now()) {
+    const retryAfterMs = (latestChallenge.lastSentAt?.getTime() ?? latestChallenge.createdAt.getTime()) + VERIFICATION_RESEND_COOLDOWN_MS - Date.now();
 
-  if (retryAfterMs > 0) {
-    return {
-      ok: false as const,
-      reason: "CHALLENGE_COOLDOWN_ACTIVE",
-      retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
-    };
+    if (retryAfterMs > 0) {
+      return {
+        ok: false as const,
+        reason: "CHALLENGE_COOLDOWN_ACTIVE",
+        retryAfterSeconds: Math.ceil(retryAfterMs / 1000),
+      };
+    }
+  }
+
+  if (options?.enforceStartRateLimit) {
+    const recentChallenges = await prisma.verificationChallenge.findMany({
+      where: {
+        target,
+        channel,
+        createdAt: {
+          gte: new Date(Date.now() - VERIFICATION_START_WINDOW_MS),
+        },
+      },
+      select: {
+        createdAt: true,
+      },
+    });
+    const retryAfterSeconds = getVerificationStartRetryAfterSeconds(
+      recentChallenges.map((challenge) => challenge.createdAt),
+    );
+
+    if (retryAfterSeconds !== null) {
+      return {
+        ok: false as const,
+        reason: "CHALLENGE_RATE_LIMIT_ACTIVE",
+        retryAfterSeconds,
+      };
+    }
   }
 
   return {
@@ -388,7 +414,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const phoneNumber = normalizePhone(parsed.data.phoneNumber);
-    const allowed = await ensureChallengeCanBeStarted(phoneNumber, "PHONE");
+    const allowed = await ensureChallengeCanBeStarted(phoneNumber, "PHONE", {
+      enforceStartRateLimit: !isAppReviewPhone(phoneNumber),
+    });
 
     if (!allowed.ok) {
       return reply.status(429).send({

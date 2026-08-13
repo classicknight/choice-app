@@ -6,6 +6,7 @@ type PushPayload = {
   body: string;
   data?: Record<string, string | number | boolean | null>;
   channelId?: string;
+  badge?: number;
 };
 
 type ExpoPushTicket = {
@@ -117,6 +118,7 @@ export async function sendPushNotificationToUser(userId: string, payload: PushPa
     body: payload.body,
     data: payload.data ?? {},
     channelId: payload.channelId,
+    ...(typeof payload.badge === "number" ? { badge: payload.badge } : {}),
   }));
 
   try {

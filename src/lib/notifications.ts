@@ -12,7 +12,7 @@ Notifications.setNotificationHandler({
     shouldShowBanner: true,
     shouldShowList: true,
     shouldPlaySound: true,
-    shouldSetBadge: false,
+    shouldSetBadge: true,
   }),
 });
 
@@ -110,6 +110,14 @@ export async function ensureLocalNotificationPermission() {
   });
 
   return requested.granted || requested.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
+}
+
+export async function setAppIconBadgeCount(count: number) {
+  try {
+    return await Notifications.setBadgeCountAsync(Math.max(0, Math.floor(count)));
+  } catch {
+    return false;
+  }
 }
 
 export async function scheduleMatchReleaseNotification(releaseAt: Date, matchName?: string) {

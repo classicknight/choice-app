@@ -103,6 +103,7 @@ import {
   isExpoGoRuntime,
   cancelScheduledLocalNotification,
   scheduleMatchReleaseNotification,
+  setAppIconBadgeCount,
   syncJourneyLocalNotifications,
   type JourneyLocalNotificationPlan,
 } from "../lib/notifications";
@@ -2900,6 +2901,10 @@ function OverviewScreen({
   }
 
   function applyRemoteJourneyState(state: RemoteJourneyState) {
+    if (currentUserId && state.ownerUserId !== currentUserId) {
+      return;
+    }
+
     setRemoteJourney(state);
     setPhaseTwoSubmitPending(false);
     setJourneyReleaseAt(state.releaseAt);
@@ -3540,6 +3545,15 @@ function OverviewScreen({
 
     return Math.max(partnerMessages.length - seenIndex - 1, 0);
   }, [lastSeenPartnerMessageId, sharedChatMessages]);
+
+  useEffect(() => {
+    if (!isJourneyHydrated) {
+      return;
+    }
+
+    const chatIsVisible = currentTab === "chats" && chatOpen;
+    void setAppIconBadgeCount(chatIsVisible || unreadPartnerMessageCount === 0 ? 0 : 1);
+  }, [chatOpen, currentTab, isJourneyHydrated, unreadPartnerMessageCount]);
   const latestSharedChatMessage = sharedChatMessages[sharedChatMessages.length - 1];
   const latestSharedChatPreview = getSharedChatMessagePreview(latestSharedChatMessage);
   const phaseFiveViewerHasWritten = useMemo(
@@ -3557,7 +3571,10 @@ function OverviewScreen({
       : "Choice hat gerade noch kein Match für dich freigegeben.");
   const phaseTwoViewerUserId = currentUserId ?? "choice_local_viewer";
   const phaseTwoFallbackPartnerUserId = activePartnerUserId ?? "choice_partner_placeholder";
-  const phaseTwoAssignedStarterUserId = remoteJourney?.phaseTwoStarterUserId ?? chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId);
+  const phaseTwoAssignedStarterUserId = remoteJourney?.phaseTwoStarterUserId
+    ?? (remoteJourney?.partner?.phoneNumber === null
+      ? phaseTwoViewerUserId
+      : chooseStableStarterUserId(phaseTwoViewerUserId, phaseTwoFallbackPartnerUserId));
   const phaseTwoAssignedPartnerUserId =
     phaseTwoAssignedStarterUserId === phaseTwoViewerUserId ? phaseTwoFallbackPartnerUserId : phaseTwoViewerUserId;
   const phaseTwoAssignedStarterName =
@@ -7987,6 +8004,7 @@ export function ChoiceOnboarding() {
   const [rememberedSessions, setRememberedSessions] = useState<PersistedSession[]>([]);
   const [showAccountSwitcher, setShowAccountSwitcher] = useState(false);
   const [rememberedSessionMatchStates, setRememberedSessionMatchStates] = useState<Record<string, RememberedSessionMatchState>>({});
+  const accountSwitchRequestRef = useRef(0);
 
   const currentScreen = screens[screenIndex];
   const editingProfileScreenIndex =
@@ -8838,6 +8856,8 @@ export function ChoiceOnboarding() {
     session: Omit<PersistedSession, "savedAt"> | PersistedSession,
     options?: { preferredTab?: OverviewTabId },
   ) {
+    const requestId = accountSwitchRequestRef.current + 1;
+    accountSwitchRequestRef.current = requestId;
     setShowAccountSwitcher(false);
     setAccountActionMessage(null);
     setError(null);
@@ -8845,6 +8865,10 @@ export function ChoiceOnboarding() {
 
     try {
       const restoredSessionResult = await restoreLiveSession(session);
+
+      if (requestId !== accountSwitchRequestRef.current) {
+        return;
+      }
 
       if (restoredSessionResult.ok) {
         setSessionState(
@@ -8883,7 +8907,9 @@ export function ChoiceOnboarding() {
 
       startSignInForSession(session);
     } finally {
-      setIsSubmitting(false);
+      if (requestId === accountSwitchRequestRef.current) {
+        setIsSubmitting(false);
+      }
     }
   }
 
@@ -8894,6 +8920,9 @@ export function ChoiceOnboarding() {
       await switchToRememberedSession(rememberedPartnerSession, { preferredTab: "match" });
       return;
     }
+
+    const requestId = accountSwitchRequestRef.current + 1;
+    accountSwitchRequestRef.current = requestId;
 
     setShowAccountSwitcher(false);
     setAccountActionMessage(null);
@@ -8916,6 +8945,10 @@ export function ChoiceOnboarding() {
           fetchRemoteProfile(qaSession.userId, qaSession.accessToken),
           fetchRemoteAccountState(qaSession.userId, qaSession.accessToken),
         ]);
+
+        if (requestId !== accountSwitchRequestRef.current) {
+          return;
+        }
         const savedSession = await persistLocalSession({
           userId: qaSession.userId,
           accessToken: qaSession.accessToken,
@@ -8940,6 +8973,10 @@ export function ChoiceOnboarding() {
         introVideoDurationMs: null,
       });
 
+      if (requestId !== accountSwitchRequestRef.current) {
+        return;
+      }
+
       if (restoredPartnerSession.ok) {
         setSessionState(restoredPartnerSession.session, "match", restoredPartnerSession.accountState);
         return;
@@ -8963,7 +9000,9 @@ export function ChoiceOnboarding() {
     } catch {
       setAccountActionMessage(`Zu ${partner.firstName} konnte gerade nicht gewechselt werden.`);
     } finally {
-      setIsSubmitting(false);
+      if (requestId === accountSwitchRequestRef.current) {
+        setIsSubmitting(false);
+      }
     }
   }
 
@@ -9039,6 +9078,11 @@ export function ChoiceOnboarding() {
 
       if (message === "CHALLENGE_COOLDOWN_ACTIVE") {
         setError("Bitte kurz warten, bevor du einen neuen Code anforderst.");
+        return;
+      }
+
+      if (message === "CHALLENGE_RATE_LIMIT_ACTIVE") {
+        setError("Für diese Nummer wurden zu viele Codes angefordert. Bitte versuch es später erneut.");
         return;
       }
 
@@ -9923,6 +9967,7 @@ export function ChoiceOnboarding() {
     return (
       <>
         <OverviewScreen
+          key={verifiedUserId ?? "signed-out"}
           currentTab={overviewTab}
           onSelectTab={setOverviewTab}
           onOpenAccountSwitcher={() => setShowAccountSwitcher(true)}
