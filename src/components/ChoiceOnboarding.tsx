@@ -2857,6 +2857,7 @@ function OverviewScreen({
   const [reportDetails, setReportDetails] = useState("");
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
   const [reportActionPending, setReportActionPending] = useState<"report" | "block" | null>(null);
+  const [showBlockConfirmModal, setShowBlockConfirmModal] = useState(false);
   const photoViewerRef = useRef<ScrollView | null>(null);
   const pushRegistrationRef = useRef<string | null>(null);
   const phaseOneDecisionRequestRef = useRef(0);
@@ -5820,6 +5821,7 @@ function OverviewScreen({
     setReportDetails("");
     setReportFeedback(null);
     setReportActionPending(null);
+    setShowBlockConfirmModal(false);
     setShowReportModal(true);
   }
 
@@ -5912,6 +5914,8 @@ function OverviewScreen({
       setChatOpen(false);
       setPhaseTwoOpen(false);
       setShowChatDecisionModal(false);
+      setShowReportModal(false);
+      setShowBlockConfirmModal(false);
     }
   }, [currentTab]);
 
@@ -6579,7 +6583,8 @@ function OverviewScreen({
 
                   <Pressable
                     onPress={() => {
-                      void blockCurrentPartner();
+                      setShowReportModal(false);
+                      setShowBlockConfirmModal(true);
                     }}
                     disabled={!reportReason || reportActionPending !== null}
                     style={[
@@ -6601,6 +6606,48 @@ function OverviewScreen({
                 </View>
               </View>
             </ScrollView>
+          </View>
+        </Modal>
+        <Modal
+          transparent
+          visible={showBlockConfirmModal}
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => {
+            setShowBlockConfirmModal(false);
+            setShowReportModal(true);
+          }}
+        >
+          <View style={styles.chatDecisionOverlay}>
+            <View style={styles.chatDecisionCard}>
+              <Text style={styles.chatDecisionEyebrow}>Blockierung bestätigen</Text>
+              <Text style={styles.chatDecisionTitle}>Möchtest du wirklich blockieren?</Text>
+              <Text style={styles.chatDecisionText}>
+                Das Match mit {featuredProfile.firstName} endet sofort. Choice speichert gleichzeitig deine Meldung und schlägt euch nicht erneut füreinander vor.
+              </Text>
+              <View style={styles.blockConfirmActionRow}>
+                <Pressable
+                  onPress={() => {
+                    setShowBlockConfirmModal(false);
+                    setShowReportModal(true);
+                  }}
+                  style={styles.reportModalCancelButton}
+                  disabled={reportActionPending !== null}
+                >
+                  <Text style={styles.reportModalCancelButtonText}>Abbrechen</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setShowBlockConfirmModal(false);
+                    void blockCurrentPartner();
+                  }}
+                  style={styles.blockConfirmButton}
+                  disabled={reportActionPending !== null}
+                >
+                  <Text style={styles.blockConfirmButtonText}>Jetzt blockieren</Text>
+                </Pressable>
+              </View>
+            </View>
           </View>
         </Modal>
       </KeyboardAvoidingView>
@@ -13196,6 +13243,26 @@ const styles = StyleSheet.create({
     color: "#cba6b9",
     fontSize: 12,
     lineHeight: 17,
+  },
+  blockConfirmActionRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 6,
+  },
+  blockConfirmButton: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 18,
+    backgroundColor: "#9f2f58",
+    borderWidth: 1,
+    borderColor: "rgba(255, 151, 190, 0.46)",
+  },
+  blockConfirmButtonText: {
+    color: "#fff7fb",
+    fontSize: 14,
+    fontWeight: "700",
   },
   chatBubbleRow: {
     width: "100%",
