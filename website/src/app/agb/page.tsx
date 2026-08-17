@@ -63,10 +63,11 @@ export default function AgbPage() {
           <h2 className={styles.sectionTitle}>5. Meldungen, Blockierungen und Moderation</h2>
           <p className={styles.text}>
             Nutzer können Verhalten melden und andere Nutzer blockieren. Blockierungen beenden das betroffene Match sofort und
-            verhindern künftige Vorschläge zwischen denselben Konten. Choice kann gemeldete Inhalte und Verhaltensweisen
-            prüfen, Verwarnungen oder Strafpunkte vergeben, Inhalte zurückweisen, Konten zeitweise pausieren oder dauerhaft
-            sperren. Dasselbe gilt, wenn systemseitige Regeln des Produkts verletzt werden, etwa wenn notwendige Phasen nicht
-            gespielt oder festgelegte Startpflichten wiederholt ignoriert werden.
+            verhindern künftige Vorschläge zwischen denselben Konten. Jede Blockierung wird zugleich als Moderationsmeldung an
+            Choice übermittelt. Choice prüft Meldungen möglichst innerhalb von 24 Stunden und kann gemeldete Inhalte entfernen,
+            Verwarnungen oder Strafpunkte vergeben sowie Konten zeitweise pausieren oder dauerhaft sperren. Dasselbe gilt, wenn
+            systemseitige Regeln des Produkts verletzt werden, etwa wenn notwendige Phasen nicht gespielt oder festgelegte
+            Startpflichten wiederholt ignoriert werden.
           </p>
         </section>
 

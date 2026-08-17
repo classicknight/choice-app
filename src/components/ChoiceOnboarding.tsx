@@ -5856,31 +5856,28 @@ function OverviewScreen({
   }
 
   async function blockCurrentPartner() {
-    if (!currentUserId || !activePartnerUserId || reportActionPending) {
+    if (!currentUserId || !activePartnerUserId || !reportReason || reportActionPending) {
       return;
     }
 
     const latestMessagePreview = getSharedChatMessagePreview(sharedChatMessages[sharedChatMessages.length - 1]) ?? null;
-    const selectedReasonLabel = reportReason ? getOptionLabel(reportReasonOptions, reportReason) : null;
-    const shouldAlsoReport = Boolean(selectedReasonLabel);
+    const selectedReasonLabel = getOptionLabel(reportReasonOptions, reportReason);
     let reportSaved = false;
 
     setReportActionPending("block");
 
     try {
-      if (shouldAlsoReport && selectedReasonLabel) {
-        await createRemoteReport({
-          reporterUserId: currentUserId,
-          reportedUserId: activePartnerUserId,
-          matchId: remoteJourney?.matchId ?? undefined,
-          reporterName: displayName,
-          reportedName: featuredProfile.firstName,
-          reason: selectedReasonLabel,
-          details: reportDetails.trim(),
-          latestMessagePreview,
-        });
-        reportSaved = true;
-      }
+      await createRemoteReport({
+        reporterUserId: currentUserId,
+        reportedUserId: activePartnerUserId,
+        matchId: remoteJourney?.matchId ?? undefined,
+        reporterName: displayName,
+        reportedName: featuredProfile.firstName,
+        reason: selectedReasonLabel,
+        details: reportDetails.trim(),
+        latestMessagePreview,
+      });
+      reportSaved = true;
 
       const journey = await blockRemoteJourneyPartner({
         userId: currentUserId,
@@ -6584,23 +6581,21 @@ function OverviewScreen({
                     onPress={() => {
                       void blockCurrentPartner();
                     }}
-                    disabled={reportActionPending !== null}
+                    disabled={!reportReason || reportActionPending !== null}
                     style={[
                       styles.reportModalBlockButton,
-                      reportActionPending !== null && styles.reportModalBlockButtonDisabled,
+                      (!reportReason || reportActionPending !== null) && styles.reportModalBlockButtonDisabled,
                     ]}
                   >
                     <Text style={styles.reportModalBlockButtonText}>
                       {reportActionPending === "block"
                         ? "Wird gesichert ..."
-                        : reportReason
-                          ? "Melden und blockieren"
-                          : "Diese Person blockieren"}
+                        : "Melden und blockieren"}
                     </Text>
-                  <Text style={styles.reportModalBlockButtonMeta}>
+                    <Text style={styles.reportModalBlockButtonMeta}>
                       {reportReason
-                        ? "Die Meldung wird mitgespeichert und das Match sofort beendet."
-                        : "Ohne neue Meldung beenden und für künftige Matches ausblenden."}
+                        ? "Choice wird automatisch informiert. Das Match endet sofort und die Person wird ausgeblendet."
+                        : "Wähle zuerst einen Grund. Jede Blockierung wird als Moderationsmeldung gespeichert."}
                     </Text>
                   </Pressable>
                 </View>
@@ -7981,6 +7976,8 @@ export function ChoiceOnboarding() {
   const [overviewTab, setOverviewTab] = useState<OverviewTabId>("today");
   const [screenIndex, setScreenIndex] = useState(0);
   const [entryMode, setEntryMode] = useState<EntryMode>("signup");
+  const [pendingEntryMode, setPendingEntryMode] = useState<EntryMode | null>(null);
+  const [preAuthConsentAccepted, setPreAuthConsentAccepted] = useState(false);
   const [editingProfile, setEditingProfile] = useState(false);
   const [editingProfileScreenId, setEditingProfileScreenId] = useState<EditableProfileScreenId | null>(null);
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
@@ -8778,7 +8775,7 @@ export function ChoiceOnboarding() {
     setScreenIndex((current) => Math.max(current - 1, 0));
   }
 
-  function startEntry(mode: EntryMode) {
+  function startEntry(mode: EntryMode, options?: { consentAccepted?: boolean }) {
     setEditingProfile(false);
     setEditingProfileScreenId(null);
     setEntryMode(mode);
@@ -8786,7 +8783,10 @@ export function ChoiceOnboarding() {
     setError(null);
     setSuccess(null);
     setAccountActionMessage(null);
-    setProfile(initialRegistrationProfile);
+    setProfile({
+      ...initialRegistrationProfile,
+      consent: options?.consentAccepted ?? false,
+    });
     setPhoneNumber(phonePrefix);
     setOtpCode("");
     setPhotoUris([]);
@@ -8797,6 +8797,27 @@ export function ChoiceOnboarding() {
     setVerifiedUserId(null);
     setVerifiedAccessToken(null);
     setScreenIndex(1);
+  }
+
+  function requestEntry(mode: EntryMode) {
+    setPendingEntryMode(mode);
+    setPreAuthConsentAccepted(false);
+  }
+
+  function closePreAuthConsent() {
+    setPendingEntryMode(null);
+    setPreAuthConsentAccepted(false);
+  }
+
+  function acceptPreAuthConsent() {
+    if (!pendingEntryMode || !preAuthConsentAccepted) {
+      return;
+    }
+
+    const mode = pendingEntryMode;
+    setPendingEntryMode(null);
+    setPreAuthConsentAccepted(false);
+    startEntry(mode, { consentAccepted: true });
   }
 
   function startProfileEditing() {
@@ -10066,6 +10087,83 @@ export function ChoiceOnboarding() {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
+      <Modal
+        transparent
+        visible={pendingEntryMode !== null}
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={closePreAuthConsent}
+      >
+        <View style={styles.reportModalOverlay}>
+          <ScrollView
+            style={styles.reportModalScroll}
+            contentContainerStyle={[
+              styles.reportModalScrollContent,
+              {
+                paddingTop: insets.top + 24,
+                paddingBottom: insets.bottom + 24,
+              },
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.reportModalCard}>
+              <Text style={styles.chatDecisionEyebrow}>Vor dem Start</Text>
+              <Text style={styles.chatDecisionTitle}>Respekt ist bei Choice verbindlich.</Text>
+              <Text style={styles.chatDecisionText}>
+                Choice toleriert keine beleidigenden, diskriminierenden, sexualisierten, bedrohenden oder sonst anstößigen Inhalte und keine missbräuchlichen Nutzer. Solche Inhalte werden gefiltert; Meldungen werden möglichst innerhalb von 24 Stunden geprüft. Verstöße können zur Entfernung von Inhalten und zur Sperrung des Kontos führen.
+              </Text>
+
+              <View style={styles.legalLinksRow}>
+                <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.agb)} style={styles.legalLinkPill}>
+                  <Text style={styles.legalLinkPillText}>AGB öffnen</Text>
+                </Pressable>
+                <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.rechtliches)} style={styles.legalLinkPill}>
+                  <Text style={styles.legalLinkPillText}>Sicherheitsregeln</Text>
+                </Pressable>
+                <Pressable onPress={() => void openLegalDocument(LEGAL_URLS.datenschutz)} style={styles.legalLinkPill}>
+                  <Text style={styles.legalLinkPillText}>Datenschutz</Text>
+                </Pressable>
+              </View>
+
+              <Pressable
+                onPress={() => setPreAuthConsentAccepted((current) => !current)}
+                style={[
+                  styles.legalConsentToggle,
+                  preAuthConsentAccepted && styles.legalConsentToggleActive,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.legalConsentCheckbox,
+                    preAuthConsentAccepted && styles.legalConsentCheckboxActive,
+                  ]}
+                >
+                  {preAuthConsentAccepted ? <Text style={styles.legalConsentCheckmark}>✓</Text> : null}
+                </View>
+                <Text style={styles.legalConsentLabel}>
+                  Ich akzeptiere die AGB und die Null-Toleranz-Regeln gegen anstößige Inhalte und missbräuchliches Verhalten.
+                </Text>
+              </Pressable>
+
+              <View style={styles.decisionPreviewRow}>
+                <Pressable onPress={closePreAuthConsent} style={styles.decisionGhostButton}>
+                  <Text style={styles.decisionGhostText}>Zurück</Text>
+                </Pressable>
+                <Pressable
+                  onPress={acceptPreAuthConsent}
+                  disabled={!preAuthConsentAccepted}
+                  style={[
+                    styles.decisionSolidButton,
+                    !preAuthConsentAccepted && styles.decisionSolidButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.decisionSolidText}>Akzeptieren & weiter</Text>
+                </Pressable>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
         {currentScreen.kind === "intro" ? (
           <>
@@ -10073,7 +10171,7 @@ export function ChoiceOnboarding() {
             <View style={styles.introActionWrap}>
               <Pressable
                 onPress={() => {
-                  startEntry("signup");
+                  requestEntry("signup");
                 }}
                 style={styles.introButton}
               >
@@ -10081,7 +10179,7 @@ export function ChoiceOnboarding() {
               </Pressable>
               <Pressable
                 onPress={() => {
-                  startEntry("signin");
+                  requestEntry("signin");
                 }}
                 style={styles.introSecondaryButton}
               >

@@ -17,16 +17,16 @@ export default function RechtlichesPage() {
         <h1 className={styles.title}>Rechtliches</h1>
         <p className={styles.intro}>
           Auf dieser Seite stehen ergänzende rechtliche Hinweise zu Sicherheit, Moderation, Beschwerdewegen und Transparenz
-          bei Choice. Stand dieser Hinweise: 19. Juli 2026.
+          bei Choice. Stand dieser Hinweise: 17. August 2026.
         </p>
 
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>1. Community- und Sicherheitsgrundsätze</h2>
           <p className={styles.text}>
-            Choice ist als respektvoller, volljähriger Dating-Kontext gedacht. Nicht erlaubt sind insbesondere Bedrohungen,
-            sexualisierte Belästigung, Hass, Täuschung, Ausbeutung, Spam, Zwang, Doxxing, das Umgehen von Schutzmechanismen
-            oder sonst rechtswidrige Inhalte und Verhaltensweisen. Choice kann Inhalte automatisiert vorfiltern, Chats
-            zurückweisen, Matches schließen, Konten pausieren oder dauerhaft sperren.
+            Choice verfolgt eine Null-Toleranz-Regel gegen anstößige Inhalte und missbräuchliches Verhalten. Nicht erlaubt
+            sind insbesondere Bedrohungen, sexualisierte Belästigung, Hass, Täuschung, Ausbeutung, Spam, Zwang, Doxxing,
+            das Umgehen von Schutzmechanismen oder sonst rechtswidrige Inhalte und Verhaltensweisen. Choice kann Inhalte
+            automatisiert vorfiltern, Chats zurückweisen, Matches schließen, Konten pausieren oder dauerhaft sperren.
           </p>
         </section>
 
@@ -34,8 +34,10 @@ export default function RechtlichesPage() {
           <h2 className={styles.sectionTitle}>2. Meldungen und Blockierungen</h2>
           <p className={styles.text}>
             Nutzer können anderes Verhalten in der App melden. Meldungen werden zusammen mit relevanten Moderations- und
-            Kontextdaten geprüft. Zusätzlich können Nutzer andere Konten blockieren. Eine Blockierung beendet das betroffene
-            Match sofort und verhindert künftige Vorschläge zwischen denselben Konten.
+            Kontextdaten möglichst innerhalb von 24 Stunden geprüft. Zusätzlich können Nutzer andere Konten blockieren.
+            Jede Blockierung informiert Choice automatisch als Moderationsmeldung, beendet das betroffene Match sofort,
+            entfernt den gemeinsamen Chat aus der aktiven Ansicht und verhindert künftige Vorschläge zwischen denselben
+            Konten.
           </p>
         </section>
 
