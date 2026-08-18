@@ -12,9 +12,6 @@ import {
 const CANVAS_WIDTH = 1080;
 const CANVAS_HEIGHT = 1350;
 const CHOICE_BLUE = "#8EDDF4";
-const CHOICE_PINK = "#FF4C78";
-
-let choiceLogoPromise: Promise<HTMLImageElement> | null = null;
 
 type StoredDraft = {
   text: string;
@@ -41,37 +38,28 @@ function drawLetterSpacedText(
 }
 
 function drawBackground(context: CanvasRenderingContext2D, background: InstagramBackground) {
-  const base = context.createLinearGradient(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-  base.addColorStop(0, background === "warmth" ? "#160B13" : "#09080F");
-  base.addColorStop(0.58, background === "midnight" ? "#0B101B" : "#0C0912");
-  base.addColorStop(1, background === "warmth" ? "#12070E" : "#08070C");
-  context.fillStyle = base;
-  context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  const base = context.createRadialGradient(
+    CANVAS_WIDTH * 0.52,
+    CANVAS_HEIGHT * 0.46,
+    40,
+    CANVAS_WIDTH * 0.52,
+    CANVAS_HEIGHT * 0.46,
+    CANVAS_HEIGHT * 0.78,
+  );
 
-  const blueGlow = context.createRadialGradient(990, 85, 0, 990, 85, 620);
-  blueGlow.addColorStop(0, background === "warmth" ? "rgba(91, 205, 242, 0.12)" : "rgba(91, 205, 242, 0.27)");
-  blueGlow.addColorStop(1, "rgba(91, 205, 242, 0)");
-  context.fillStyle = blueGlow;
-  context.fillRect(0, 0, CANVAS_WIDTH, 760);
-
-  const pinkGlow = context.createRadialGradient(50, 1310, 0, 50, 1310, 610);
-  pinkGlow.addColorStop(0, background === "midnight" ? "rgba(255, 76, 120, 0.09)" : "rgba(255, 76, 120, 0.22)");
-  pinkGlow.addColorStop(1, "rgba(255, 76, 120, 0)");
-  context.fillStyle = pinkGlow;
-  context.fillRect(0, 720, CANVAS_WIDTH, 630);
-}
-
-function loadChoiceLogo() {
-  if (!choiceLogoPromise) {
-    choiceLogoPromise = new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = reject;
-      image.src = "/choice-logo.png";
-    });
+  if (background === "warmth") {
+    base.addColorStop(0, "#F4E5E8");
+    base.addColorStop(1, "#E8CFD5");
+  } else if (background === "midnight") {
+    base.addColorStop(0, "#141317");
+    base.addColorStop(1, "#050506");
+  } else {
+    base.addColorStop(0, "#F7F2E9");
+    base.addColorStop(1, "#E9DFD2");
   }
 
-  return choiceLogoPromise;
+  context.fillStyle = base;
+  context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 }
 
 function getWrappedLines(
@@ -109,7 +97,7 @@ function getWrappedLines(
   return lines;
 }
 
-async function drawPost(
+function drawPost(
   canvas: HTMLCanvasElement,
   text: string,
   background: InstagramBackground,
@@ -125,8 +113,9 @@ async function drawPost(
   drawBackground(context, background);
 
   const bodyFont = window.getComputedStyle(document.body).fontFamily || "Manrope, sans-serif";
-  const foreground = "#FFF4F7";
-  const secondary = "rgba(232, 219, 236, 0.58)";
+  const foreground = background === "midnight" ? "#F3EEE7" : "#171616";
+  const secondary = background === "midnight" ? "rgba(243, 238, 231, 0.58)" : "rgba(23, 22, 22, 0.58)";
+  const wordmarkColor = background === "encounter" ? "#171616" : CHOICE_BLUE;
   let fontSize = 76;
   const maxWidth = 820;
   let lines: string[] = [];
@@ -150,13 +139,8 @@ async function drawPost(
 
   context.save();
   context.font = `800 31px ${bodyFont}`;
-  context.fillStyle = CHOICE_BLUE;
+  context.fillStyle = wordmarkColor;
   drawLetterSpacedText(context, "CHOICE", 84, 110, 10);
-  context.restore();
-
-  context.save();
-  context.fillStyle = CHOICE_PINK;
-  context.fillRect(84, 154, 58, 5);
   context.restore();
 
   context.save();
@@ -181,16 +165,6 @@ async function drawPost(
   context.fillStyle = secondary;
   drawLetterSpacedText(context, "EVERYDAY A MATCH.", 84, 1247, 4.2);
   context.restore();
-
-  try {
-    const logo = await loadChoiceLogo();
-    context.save();
-    context.globalAlpha = 0.95;
-    context.drawImage(logo, 108, 52, 552, 486, 878, 1164, 128, 113);
-    context.restore();
-  } catch {
-    // The post remains exportable if the decorative logo asset cannot load.
-  }
 }
 
 export default function InstagramStudioPage() {
@@ -241,7 +215,7 @@ export default function InstagramStudioPage() {
       return;
     }
 
-    const render = () => void drawPost(canvas, draft.text, draft.background);
+    const render = () => drawPost(canvas, draft.text, draft.background);
     render();
     void document.fonts?.ready.then(render);
   }, [draft.background, draft.text]);
@@ -308,7 +282,7 @@ export default function InstagramStudioPage() {
           <div>
             <span className={styles.guideLabel}>Schrift</span>
             <strong>Söhne / Manrope</strong>
-            <p>Zitat 650 · blauer Choice-Schriftzug 800 mit weitem Zeichenabstand</p>
+            <p>Zitat 650 · Choice-Schriftzug 800: blau, auf Creme kontrastreich dunkel</p>
           </div>
           <div>
             <span className={styles.guideLabel}>Rhythmus</span>
