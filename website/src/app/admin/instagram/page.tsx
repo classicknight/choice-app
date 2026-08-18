@@ -37,44 +37,42 @@ function drawLetterSpacedText(
 }
 
 function drawBackground(context: CanvasRenderingContext2D, background: InstagramBackground) {
-  const base = context.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
+  const base = context.createRadialGradient(
+    CANVAS_WIDTH * 0.52,
+    CANVAS_HEIGHT * 0.46,
+    40,
+    CANVAS_WIDTH * 0.52,
+    CANVAS_HEIGHT * 0.46,
+    CANVAS_HEIGHT * 0.78,
+  );
 
   if (background === "warmth") {
-    base.addColorStop(0, "#11090e");
-    base.addColorStop(1, "#1d0b13");
+    base.addColorStop(0, "#f4e5e8");
+    base.addColorStop(1, "#e8cfd5");
   } else if (background === "midnight") {
-    base.addColorStop(0, "#060a10");
-    base.addColorStop(1, "#0b0a12");
+    base.addColorStop(0, "#141317");
+    base.addColorStop(1, "#050506");
   } else {
-    base.addColorStop(0, "#0a080f");
-    base.addColorStop(1, "#140a12");
+    base.addColorStop(0, "#f7f2e9");
+    base.addColorStop(1, "#e9dfd2");
   }
 
   context.fillStyle = base;
   context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+}
 
-  const lowerGlow = context.createRadialGradient(90, 1260, 20, 90, 1260, 580);
-  lowerGlow.addColorStop(
-    0,
-    background === "warmth" ? "rgba(242, 126, 101, 0.20)" : "rgba(86, 201, 231, 0.18)",
-  );
-  lowerGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
-  context.fillStyle = lowerGlow;
-  context.fillRect(0, 650, 700, 700);
-
-  const upperGlow = context.createRadialGradient(1040, 10, 20, 1040, 10, 610);
-  upperGlow.addColorStop(
-    0,
-    background === "midnight" ? "rgba(84, 157, 211, 0.16)" : "rgba(218, 73, 126, 0.18)",
-  );
-  upperGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
-  context.fillStyle = upperGlow;
-  context.fillRect(380, 0, 700, 650);
-
+function drawHeart(context: CanvasRenderingContext2D, x: number, y: number, color: string) {
   context.save();
-  context.strokeStyle = "rgba(255, 255, 255, 0.08)";
-  context.lineWidth = 2;
-  context.strokeRect(52, 52, CANVAS_WIDTH - 104, CANVAS_HEIGHT - 104);
+  context.translate(x, y);
+  context.strokeStyle = color;
+  context.lineWidth = 4;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.beginPath();
+  context.moveTo(0, 15);
+  context.bezierCurveTo(-42, -28, -82, 28, 0, 96);
+  context.bezierCurveTo(82, 28, 42, -28, 0, 15);
+  context.stroke();
   context.restore();
 }
 
@@ -117,8 +115,6 @@ function drawPost(
   canvas: HTMLCanvasElement,
   text: string,
   background: InstagramBackground,
-  day: number,
-  theme: string,
 ) {
   const context = canvas.getContext("2d");
 
@@ -131,40 +127,37 @@ function drawPost(
   drawBackground(context, background);
 
   const bodyFont = window.getComputedStyle(document.body).fontFamily || "Manrope, sans-serif";
-  let fontSize = 70;
-  const maxWidth = 820;
+  const editorialFont = window
+    .getComputedStyle(document.documentElement)
+    .getPropertyValue("--font-editorial")
+    .trim() || "Georgia, serif";
+  const foreground = background === "midnight" ? "#f3eee7" : "#171616";
+  const secondary = background === "midnight" ? "rgba(243, 238, 231, 0.62)" : "rgba(23, 22, 22, 0.62)";
+  let fontSize = 82;
+  const maxWidth = 760;
   let lines: string[] = [];
 
-  while (fontSize >= 48) {
-    context.font = `600 ${fontSize}px ${bodyFont}`;
+  while (fontSize >= 56) {
+    context.font = `500 ${fontSize}px ${editorialFont}`;
     lines = getWrappedLines(context, text, maxWidth);
-    const estimatedHeight = lines.reduce((height, line) => height + (line ? fontSize * 1.24 : fontSize * 0.7), 0);
+    const estimatedHeight = lines.reduce((height, line) => height + (line ? fontSize * 1.12 : fontSize * 0.72), 0);
 
-    if (estimatedHeight <= 600) {
+    if (estimatedHeight <= 610) {
       break;
     }
 
     fontSize -= 2;
   }
 
-  context.save();
-  context.font = `800 24px ${bodyFont}`;
-  context.fillStyle = "#8eddf4";
-  context.textBaseline = "alphabetic";
-  drawLetterSpacedText(context, `${theme.toUpperCase()} · ${String(day).padStart(2, "0")}`, 106, 142, 4.2);
-  context.restore();
-
-  const lineHeight = fontSize * 1.24;
-  const blankHeight = fontSize * 0.7;
+  const lineHeight = fontSize * 1.12;
+  const blankHeight = fontSize * 0.72;
   const totalHeight = lines.reduce((height, line) => height + (line ? lineHeight : blankHeight), 0);
-  let y = Math.max(315, (CANVAS_HEIGHT - totalHeight) * 0.46);
+  let y = Math.max(335, (CANVAS_HEIGHT - totalHeight) * 0.43);
 
   context.save();
-  context.font = `600 ${fontSize}px ${bodyFont}`;
-  context.fillStyle = "#fff3ee";
+  context.font = `500 ${fontSize}px ${editorialFont}`;
+  context.fillStyle = foreground;
   context.textBaseline = "top";
-  context.shadowColor = "rgba(0, 0, 0, 0.32)";
-  context.shadowBlur = 24;
 
   for (const line of lines) {
     if (!line) {
@@ -179,16 +172,18 @@ function drawPost(
   context.restore();
 
   context.save();
-  context.font = `800 28px ${bodyFont}`;
-  context.fillStyle = "#8eddf4";
-  drawLetterSpacedText(context, "CHOICE", 106, 1225, 11);
+  context.font = `700 26px ${bodyFont}`;
+  context.fillStyle = foreground;
+  drawLetterSpacedText(context, "CHOICE", 82, 1219, 12);
   context.restore();
 
   context.save();
-  context.fillStyle = "rgba(255, 255, 255, 0.34)";
-  context.font = `500 21px ${bodyFont}`;
-  context.fillText("Bewusst gewählt statt endlos geswipt.", 106, 1272);
+  context.fillStyle = secondary;
+  context.font = `500 18px ${bodyFont}`;
+  context.fillText("everyday a match.", 82, 1262);
   context.restore();
+
+  drawHeart(context, 937, 1180, foreground);
 }
 
 export default function InstagramStudioPage() {
@@ -239,10 +234,10 @@ export default function InstagramStudioPage() {
       return;
     }
 
-    const render = () => drawPost(canvas, draft.text, draft.background, activeDay, basePost.theme);
+    const render = () => drawPost(canvas, draft.text, draft.background);
     render();
     void document.fonts?.ready.then(render);
-  }, [activeDay, basePost.theme, draft.background, draft.text]);
+  }, [draft.background, draft.text]);
 
   function updateDraft(update: Partial<StoredDraft>) {
     setDrafts((current) => ({
@@ -305,8 +300,8 @@ export default function InstagramStudioPage() {
         <section className={styles.brandGuide}>
           <div>
             <span className={styles.guideLabel}>Schrift</span>
-            <strong>Manrope SemiBold</strong>
-            <p>Posts 600 · Choice-Schriftzug 800 mit weitem Zeichenabstand</p>
+            <strong>Cormorant Garamond Medium</strong>
+            <p>Zitat 500 · Choice-Schriftzug Manrope 700 mit weitem Zeichenabstand</p>
           </div>
           <div>
             <span className={styles.guideLabel}>Rhythmus</span>
