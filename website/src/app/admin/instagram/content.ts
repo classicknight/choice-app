@@ -266,7 +266,7 @@ export const INSTAGRAM_POSTS: InstagramPost[] = [
 ];
 
 export const BACKGROUND_LABELS: Record<InstagramBackground, string> = {
-  encounter: "Editorial Creme",
-  midnight: "Editorial Schwarz",
-  warmth: "Editorial Rosé",
+  encounter: "Choice Nacht",
+  midnight: "Choice Blau",
+  warmth: "Choice Rosé",
 };
