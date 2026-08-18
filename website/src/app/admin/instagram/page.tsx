@@ -36,100 +36,46 @@ function drawLetterSpacedText(
   }
 }
 
-function seededRandom(seed: number) {
-  let value = seed % 2147483647;
-
-  return () => {
-    value = (value * 16807) % 2147483647;
-    return (value - 1) / 2147483646;
-  };
-}
-
-function drawGrain(context: CanvasRenderingContext2D) {
-  const random = seededRandom(47);
-  context.save();
-  context.globalAlpha = 0.08;
-
-  for (let index = 0; index < 2300; index += 1) {
-    const x = random() * CANVAS_WIDTH;
-    const y = random() * CANVAS_HEIGHT;
-    const radius = random() * 1.15 + 0.15;
-    context.fillStyle = random() > 0.5 ? "#ffffff" : "#70d7f5";
-    context.beginPath();
-    context.arc(x, y, radius, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  context.restore();
-}
-
 function drawBackground(context: CanvasRenderingContext2D, background: InstagramBackground) {
-  const base = context.createLinearGradient(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  const base = context.createLinearGradient(0, 0, 0, CANVAS_HEIGHT);
 
   if (background === "warmth") {
-    base.addColorStop(0, "#0c080e");
-    base.addColorStop(0.55, "#160a11");
-    base.addColorStop(1, "#2d0d1b");
+    base.addColorStop(0, "#11090e");
+    base.addColorStop(1, "#1d0b13");
   } else if (background === "midnight") {
-    base.addColorStop(0, "#050b12");
-    base.addColorStop(0.55, "#080a12");
-    base.addColorStop(1, "#100815");
+    base.addColorStop(0, "#060a10");
+    base.addColorStop(1, "#0b0a12");
   } else {
-    base.addColorStop(0, "#09070f");
-    base.addColorStop(0.52, "#0b0912");
-    base.addColorStop(1, "#170913");
+    base.addColorStop(0, "#0a080f");
+    base.addColorStop(1, "#140a12");
   }
 
   context.fillStyle = base;
   context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-  const teal = context.createRadialGradient(110, 1180, 60, 220, 1110, 620);
-  teal.addColorStop(0, background === "warmth" ? "rgba(244, 128, 101, 0.50)" : "rgba(53, 184, 216, 0.48)");
-  teal.addColorStop(0.58, background === "warmth" ? "rgba(146, 50, 73, 0.24)" : "rgba(25, 92, 123, 0.22)");
-  teal.addColorStop(1, "rgba(6, 15, 24, 0)");
+  const lowerGlow = context.createRadialGradient(90, 1260, 20, 90, 1260, 580);
+  lowerGlow.addColorStop(
+    0,
+    background === "warmth" ? "rgba(242, 126, 101, 0.20)" : "rgba(86, 201, 231, 0.18)",
+  );
+  lowerGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  context.fillStyle = lowerGlow;
+  context.fillRect(0, 650, 700, 700);
 
-  context.fillStyle = teal;
-  context.beginPath();
-  context.moveTo(0, 790);
-  context.bezierCurveTo(220, 1020, 590, 1010, 750, 1350);
-  context.lineTo(0, 1350);
-  context.closePath();
-  context.fill();
-
-  context.save();
-  context.strokeStyle = background === "warmth" ? "rgba(255, 190, 139, 0.62)" : "rgba(113, 220, 245, 0.56)";
-  context.lineWidth = 2;
-  context.beginPath();
-  context.moveTo(-20, 785);
-  context.bezierCurveTo(220, 1010, 600, 1000, 760, 1370);
-  context.stroke();
-  context.restore();
-
-  const berry = context.createRadialGradient(1010, 160, 40, 940, 340, 670);
-  berry.addColorStop(0, background === "midnight" ? "rgba(66, 131, 189, 0.35)" : "rgba(207, 67, 122, 0.48)");
-  berry.addColorStop(0.62, background === "midnight" ? "rgba(42, 63, 106, 0.18)" : "rgba(108, 29, 70, 0.22)");
-  berry.addColorStop(1, "rgba(22, 8, 20, 0)");
-
-  context.fillStyle = berry;
-  context.beginPath();
-  context.moveTo(780, -30);
-  context.bezierCurveTo(760, 310, 1040, 420, 865, 760);
-  context.bezierCurveTo(790, 910, 890, 1040, 1080, 1110);
-  context.lineTo(1080, -30);
-  context.closePath();
-  context.fill();
+  const upperGlow = context.createRadialGradient(1040, 10, 20, 1040, 10, 610);
+  upperGlow.addColorStop(
+    0,
+    background === "midnight" ? "rgba(84, 157, 211, 0.16)" : "rgba(218, 73, 126, 0.18)",
+  );
+  upperGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  context.fillStyle = upperGlow;
+  context.fillRect(380, 0, 700, 650);
 
   context.save();
-  context.strokeStyle = background === "midnight" ? "rgba(120, 199, 244, 0.38)" : "rgba(255, 130, 174, 0.58)";
+  context.strokeStyle = "rgba(255, 255, 255, 0.08)";
   context.lineWidth = 2;
-  context.beginPath();
-  context.moveTo(780, -30);
-  context.bezierCurveTo(760, 310, 1040, 420, 865, 760);
-  context.bezierCurveTo(790, 910, 890, 1040, 1090, 1110);
-  context.stroke();
+  context.strokeRect(52, 52, CANVAS_WIDTH - 104, CANVAS_HEIGHT - 104);
   context.restore();
-
-  drawGrain(context);
 }
 
 function getWrappedLines(
