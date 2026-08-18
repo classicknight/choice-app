@@ -541,9 +541,14 @@ export default function AdminPage() {
               Accounts pausiert oder gelöscht werden sollen.
             </p>
           </div>
-          <Link href="/" className={styles.backLink}>
-            Zur Website
-          </Link>
+          <div className={styles.headerActions}>
+            <Link href="/admin/instagram" className={styles.studioLink}>
+              Instagram Studio
+            </Link>
+            <Link href="/" className={styles.backLink}>
+              Zur Website
+            </Link>
+          </div>
         </header>
 
         <section className={styles.authCard}>

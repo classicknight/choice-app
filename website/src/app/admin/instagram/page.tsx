@@ -1,0 +1,485 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import styles from "./page.module.css";
+import {
+  BACKGROUND_LABELS,
+  INSTAGRAM_POSTS,
+  type InstagramBackground,
+} from "./content";
+
+const CANVAS_WIDTH = 1080;
+const CANVAS_HEIGHT = 1350;
+
+type StoredDraft = {
+  text: string;
+  caption: string;
+  background: InstagramBackground;
+  published: boolean;
+};
+
+type DraftMap = Record<number, StoredDraft>;
+
+function drawLetterSpacedText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  spacing: number,
+) {
+  let cursor = x;
+
+  for (const character of text) {
+    context.fillText(character, cursor, y);
+    cursor += context.measureText(character).width + spacing;
+  }
+}
+
+function seededRandom(seed: number) {
+  let value = seed % 2147483647;
+
+  return () => {
+    value = (value * 16807) % 2147483647;
+    return (value - 1) / 2147483646;
+  };
+}
+
+function drawGrain(context: CanvasRenderingContext2D) {
+  const random = seededRandom(47);
+  context.save();
+  context.globalAlpha = 0.08;
+
+  for (let index = 0; index < 2300; index += 1) {
+    const x = random() * CANVAS_WIDTH;
+    const y = random() * CANVAS_HEIGHT;
+    const radius = random() * 1.15 + 0.15;
+    context.fillStyle = random() > 0.5 ? "#ffffff" : "#70d7f5";
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  context.restore();
+}
+
+function drawBackground(context: CanvasRenderingContext2D, background: InstagramBackground) {
+  const base = context.createLinearGradient(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  if (background === "warmth") {
+    base.addColorStop(0, "#0c080e");
+    base.addColorStop(0.55, "#160a11");
+    base.addColorStop(1, "#2d0d1b");
+  } else if (background === "midnight") {
+    base.addColorStop(0, "#050b12");
+    base.addColorStop(0.55, "#080a12");
+    base.addColorStop(1, "#100815");
+  } else {
+    base.addColorStop(0, "#09070f");
+    base.addColorStop(0.52, "#0b0912");
+    base.addColorStop(1, "#170913");
+  }
+
+  context.fillStyle = base;
+  context.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+  const teal = context.createRadialGradient(110, 1180, 60, 220, 1110, 620);
+  teal.addColorStop(0, background === "warmth" ? "rgba(244, 128, 101, 0.50)" : "rgba(53, 184, 216, 0.48)");
+  teal.addColorStop(0.58, background === "warmth" ? "rgba(146, 50, 73, 0.24)" : "rgba(25, 92, 123, 0.22)");
+  teal.addColorStop(1, "rgba(6, 15, 24, 0)");
+
+  context.fillStyle = teal;
+  context.beginPath();
+  context.moveTo(0, 790);
+  context.bezierCurveTo(220, 1020, 590, 1010, 750, 1350);
+  context.lineTo(0, 1350);
+  context.closePath();
+  context.fill();
+
+  context.save();
+  context.strokeStyle = background === "warmth" ? "rgba(255, 190, 139, 0.62)" : "rgba(113, 220, 245, 0.56)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(-20, 785);
+  context.bezierCurveTo(220, 1010, 600, 1000, 760, 1370);
+  context.stroke();
+  context.restore();
+
+  const berry = context.createRadialGradient(1010, 160, 40, 940, 340, 670);
+  berry.addColorStop(0, background === "midnight" ? "rgba(66, 131, 189, 0.35)" : "rgba(207, 67, 122, 0.48)");
+  berry.addColorStop(0.62, background === "midnight" ? "rgba(42, 63, 106, 0.18)" : "rgba(108, 29, 70, 0.22)");
+  berry.addColorStop(1, "rgba(22, 8, 20, 0)");
+
+  context.fillStyle = berry;
+  context.beginPath();
+  context.moveTo(780, -30);
+  context.bezierCurveTo(760, 310, 1040, 420, 865, 760);
+  context.bezierCurveTo(790, 910, 890, 1040, 1080, 1110);
+  context.lineTo(1080, -30);
+  context.closePath();
+  context.fill();
+
+  context.save();
+  context.strokeStyle = background === "midnight" ? "rgba(120, 199, 244, 0.38)" : "rgba(255, 130, 174, 0.58)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(780, -30);
+  context.bezierCurveTo(760, 310, 1040, 420, 865, 760);
+  context.bezierCurveTo(790, 910, 890, 1040, 1090, 1110);
+  context.stroke();
+  context.restore();
+
+  drawGrain(context);
+}
+
+function getWrappedLines(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+) {
+  const lines: string[] = [];
+
+  for (const paragraph of text.split("\n")) {
+    if (!paragraph.trim()) {
+      lines.push("");
+      continue;
+    }
+
+    const words = paragraph.trim().split(/\s+/);
+    let line = "";
+
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+
+      if (context.measureText(candidate).width > maxWidth && line) {
+        lines.push(line);
+        line = word;
+      } else {
+        line = candidate;
+      }
+    }
+
+    if (line) {
+      lines.push(line);
+    }
+  }
+
+  return lines;
+}
+
+function drawPost(
+  canvas: HTMLCanvasElement,
+  text: string,
+  background: InstagramBackground,
+  day: number,
+  theme: string,
+) {
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    return;
+  }
+
+  canvas.width = CANVAS_WIDTH;
+  canvas.height = CANVAS_HEIGHT;
+  drawBackground(context, background);
+
+  const bodyFont = window.getComputedStyle(document.body).fontFamily || "Manrope, sans-serif";
+  let fontSize = 70;
+  const maxWidth = 820;
+  let lines: string[] = [];
+
+  while (fontSize >= 48) {
+    context.font = `600 ${fontSize}px ${bodyFont}`;
+    lines = getWrappedLines(context, text, maxWidth);
+    const estimatedHeight = lines.reduce((height, line) => height + (line ? fontSize * 1.24 : fontSize * 0.7), 0);
+
+    if (estimatedHeight <= 600) {
+      break;
+    }
+
+    fontSize -= 2;
+  }
+
+  context.save();
+  context.font = `800 24px ${bodyFont}`;
+  context.fillStyle = "#8eddf4";
+  context.textBaseline = "alphabetic";
+  drawLetterSpacedText(context, `${theme.toUpperCase()} · ${String(day).padStart(2, "0")}`, 106, 142, 4.2);
+  context.restore();
+
+  const lineHeight = fontSize * 1.24;
+  const blankHeight = fontSize * 0.7;
+  const totalHeight = lines.reduce((height, line) => height + (line ? lineHeight : blankHeight), 0);
+  let y = Math.max(315, (CANVAS_HEIGHT - totalHeight) * 0.46);
+
+  context.save();
+  context.font = `600 ${fontSize}px ${bodyFont}`;
+  context.fillStyle = "#fff3ee";
+  context.textBaseline = "top";
+  context.shadowColor = "rgba(0, 0, 0, 0.32)";
+  context.shadowBlur = 24;
+
+  for (const line of lines) {
+    if (!line) {
+      y += blankHeight;
+      continue;
+    }
+
+    context.fillText(line, 106, y);
+    y += lineHeight;
+  }
+
+  context.restore();
+
+  context.save();
+  context.font = `800 28px ${bodyFont}`;
+  context.fillStyle = "#8eddf4";
+  drawLetterSpacedText(context, "CHOICE", 106, 1225, 11);
+  context.restore();
+
+  context.save();
+  context.fillStyle = "rgba(255, 255, 255, 0.34)";
+  context.font = `500 21px ${bodyFont}`;
+  context.fillText("Bewusst gewählt statt endlos geswipt.", 106, 1272);
+  context.restore();
+}
+
+export default function InstagramStudioPage() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hasLoadedDrafts = useRef(false);
+  const [activeDay, setActiveDay] = useState(1);
+  const [drafts, setDrafts] = useState<DraftMap>({});
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
+
+  const basePost = INSTAGRAM_POSTS[activeDay - 1];
+  const draft = drafts[activeDay] ?? {
+    text: basePost.text,
+    caption: basePost.caption,
+    background: basePost.background,
+    published: false,
+  };
+
+  useEffect(() => {
+    const loadDrafts = window.setTimeout(() => {
+      const storedDrafts = window.localStorage.getItem("choice-instagram-drafts-v1");
+
+      if (storedDrafts) {
+        try {
+          setDrafts(JSON.parse(storedDrafts) as DraftMap);
+        } catch {
+          window.localStorage.removeItem("choice-instagram-drafts-v1");
+        }
+      }
+
+      hasLoadedDrafts.current = true;
+    }, 0);
+
+    return () => window.clearTimeout(loadDrafts);
+  }, []);
+
+  useEffect(() => {
+    if (!hasLoadedDrafts.current) {
+      return;
+    }
+
+    window.localStorage.setItem("choice-instagram-drafts-v1", JSON.stringify(drafts));
+  }, [drafts]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    const render = () => drawPost(canvas, draft.text, draft.background, activeDay, basePost.theme);
+    render();
+    void document.fonts?.ready.then(render);
+  }, [activeDay, basePost.theme, draft.background, draft.text]);
+
+  function updateDraft(update: Partial<StoredDraft>) {
+    setDrafts((current) => ({
+      ...current,
+      [activeDay]: {
+        ...draft,
+        ...update,
+      },
+    }));
+  }
+
+  function selectDay(day: number) {
+    setActiveDay(day);
+    setCopyNotice(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function resetDraft() {
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[activeDay];
+      return next;
+    });
+  }
+
+  function downloadPost() {
+    const canvas = canvasRef.current;
+
+    if (!canvas) {
+      return;
+    }
+
+    const link = document.createElement("a");
+    link.download = `choice-instagram-${String(activeDay).padStart(2, "0")}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+  }
+
+  async function copyCaption() {
+    await navigator.clipboard.writeText(draft.caption);
+    setCopyNotice("Caption kopiert");
+    window.setTimeout(() => setCopyNotice(null), 1800);
+  }
+
+  return (
+    <main className={styles.page}>
+      <div className={styles.shell}>
+        <header className={styles.header}>
+          <div>
+            <p className={styles.eyebrow}>Choice Content Studio</p>
+            <h1 className={styles.title}>Ein Monat Content, ohne jeden Tag neu anzufangen.</h1>
+            <p className={styles.lead}>
+              Fester Choice-Look, editierbare Texte und direkter PNG-Export für Instagram. Deine Änderungen und der
+              Veröffentlichungsstatus bleiben in diesem Browser gespeichert.
+            </p>
+          </div>
+          <Link href="/admin" className={styles.backLink}>Zum Adminbereich</Link>
+        </header>
+
+        <section className={styles.brandGuide}>
+          <div>
+            <span className={styles.guideLabel}>Schrift</span>
+            <strong>Manrope SemiBold</strong>
+            <p>Posts 600 · Choice-Schriftzug 800 mit weitem Zeichenabstand</p>
+          </div>
+          <div>
+            <span className={styles.guideLabel}>Rhythmus</span>
+            <strong>7 Formate pro Woche</strong>
+            <p>Haltung · Frage · Nähe · Klarheit · Mut · Leichtigkeit · Reflexion</p>
+          </div>
+          <div>
+            <span className={styles.guideLabel}>Format</span>
+            <strong>1080 × 1350 PNG</strong>
+            <p>Instagram 4:5 · genügend Rand für die Feed-Vorschau</p>
+          </div>
+        </section>
+
+        <section className={styles.workspace}>
+          <div className={styles.previewPanel}>
+            <div className={styles.previewMeta}>
+              <div>
+                <span>Tag {activeDay} · {basePost.weekday}</span>
+                <strong>{basePost.purpose}</strong>
+              </div>
+              <span className={styles.resolution}>1080 × 1350</span>
+            </div>
+            <canvas ref={canvasRef} className={styles.canvas} aria-label="Instagram-Beitragsvorschau" />
+          </div>
+
+          <div className={styles.controls}>
+            <div className={styles.controlHeader}>
+              <div>
+                <p className={styles.controlEyebrow}>{basePost.theme}</p>
+                <h2>Beitrag bearbeiten</h2>
+              </div>
+              <button type="button" className={styles.resetButton} onClick={resetDraft}>Zurücksetzen</button>
+            </div>
+
+            <label className={styles.field}>
+              <span>Text im Bild</span>
+              <textarea
+                value={draft.text}
+                onChange={(event) => updateDraft({ text: event.target.value })}
+                rows={7}
+                maxLength={230}
+              />
+              <small>{draft.text.length}/230 Zeichen</small>
+            </label>
+
+            <label className={styles.field}>
+              <span>Choice-Hintergrund</span>
+              <select
+                value={draft.background}
+                onChange={(event) => updateDraft({ background: event.target.value as InstagramBackground })}
+              >
+                {(Object.keys(BACKGROUND_LABELS) as InstagramBackground[]).map((key) => (
+                  <option key={key} value={key}>{BACKGROUND_LABELS[key]}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className={styles.field}>
+              <span>Caption</span>
+              <textarea
+                value={draft.caption}
+                onChange={(event) => updateDraft({ caption: event.target.value })}
+                rows={8}
+              />
+            </label>
+
+            <div className={styles.actions}>
+              <button type="button" className={styles.primaryButton} onClick={downloadPost}>PNG herunterladen</button>
+              <button type="button" className={styles.secondaryButton} onClick={() => void copyCaption()}>
+                {copyNotice ?? "Caption kopieren"}
+              </button>
+            </div>
+
+            <label className={styles.publishToggle}>
+              <input
+                type="checkbox"
+                checked={draft.published}
+                onChange={(event) => updateDraft({ published: event.target.checked })}
+              />
+              <span>Als veröffentlicht markieren</span>
+            </label>
+          </div>
+        </section>
+
+        <section className={styles.planSection}>
+          <div className={styles.planHeader}>
+            <div>
+              <p className={styles.eyebrow}>28-Tage-Plan</p>
+              <h2>Ein klarer Rhythmus statt 28 beliebiger Zitate.</h2>
+            </div>
+            <p>Die Themen wiederholen sich wöchentlich, die Aussagen nicht. So wirkt der Feed zusammenhängend, aber nicht monoton.</p>
+          </div>
+
+          <div className={styles.planGrid}>
+            {INSTAGRAM_POSTS.map((post) => {
+              const postDraft = drafts[post.day];
+              const published = postDraft?.published ?? false;
+
+              return (
+                <button
+                  key={post.day}
+                  type="button"
+                  className={[
+                    styles.planCard,
+                    activeDay === post.day ? styles.planCardActive : "",
+                    published ? styles.planCardPublished : "",
+                  ].join(" ")}
+                  onClick={() => selectDay(post.day)}
+                >
+                  <span className={styles.planDay}>{String(post.day).padStart(2, "0")}</span>
+                  <span className={styles.planTheme}>{post.weekday} · {post.theme}</span>
+                  <strong>{postDraft?.text || post.text}</strong>
+                  <span className={styles.planStatus}>{published ? "Veröffentlicht" : "Öffnen"}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}

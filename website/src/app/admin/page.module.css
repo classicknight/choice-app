@@ -51,6 +51,22 @@
   font-size: 0.92rem;
 }
 
+.headerActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.studioLink {
+  padding: 14px 18px;
+  border: 1px solid rgba(154, 215, 255, 0.28);
+  border-radius: 999px;
+  color: #dff6ff;
+  background: rgba(84, 184, 225, 0.1);
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
 .authCard,
 .section {
   padding: 24px;
@@ -530,8 +546,14 @@
   }
 
   .backLink,
+  .studioLink,
   .primaryButton {
     width: 100%;
     text-align: center;
+  }
+
+  .headerActions {
+    width: 100%;
+    flex-direction: column;
   }
 }
