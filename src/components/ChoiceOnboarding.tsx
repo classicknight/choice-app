@@ -567,13 +567,24 @@ function getDigits(value: string) {
   return value.replace(/\D/g, "");
 }
 
+function getGermanPhoneLocalDigits(value: string) {
+  let digits = getDigits(value);
+
+  if (digits.startsWith("0049")) {
+    digits = digits.slice(4);
+  } else if (digits.startsWith("49")) {
+    digits = digits.slice(2);
+  }
+
+  return digits.startsWith("0") ? digits.slice(1) : digits;
+}
+
 function getLocalPhonePart(value: string) {
-  const digits = getDigits(value);
-  return digits.startsWith("49") ? digits.slice(2) : digits;
+  return getGermanPhoneLocalDigits(value);
 }
 
 function formatPhoneForStorage(localPart: string) {
-  const digits = getDigits(localPart);
+  const digits = getGermanPhoneLocalDigits(localPart);
   return digits.length ? `${phonePrefix} ${digits}` : phonePrefix;
 }
 
@@ -9628,7 +9639,7 @@ export function ChoiceOnboarding() {
               keyboardType="phone-pad"
               autoFocus
               autoCapitalize="none"
-              maxLength={13}
+              maxLength={16}
               style={[styles.input, styles.phoneLocalInput]}
             />
           </View>
