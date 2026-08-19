@@ -13,6 +13,10 @@ api/.env
 website/.env*
 *.log
 
+# Local Apple signing credentials downloaded from EAS.
+/credentials.json
+/credentials/
+
 # App Store marketing sources are not runtime app assets.
 /assets/
 /tmp/

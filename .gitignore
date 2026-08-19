@@ -11,3 +11,7 @@ api/dist/
 .env
 api/.env
 *.log
+
+# Local Apple signing credentials downloaded from EAS.
+/credentials.json
+/credentials/
