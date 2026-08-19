@@ -115,7 +115,7 @@ function drawPost(
   const bodyFont = window.getComputedStyle(document.body).fontFamily || "Manrope, sans-serif";
   const foreground = background === "midnight" ? "#F3EEE7" : "#171616";
   const secondary = background === "midnight" ? "rgba(243, 238, 231, 0.58)" : "rgba(23, 22, 22, 0.58)";
-  const wordmarkColor = background === "encounter" ? "#171616" : CHOICE_BLUE;
+  const wordmarkColor = background === "midnight" ? CHOICE_BLUE : "#171616";
   let fontSize = 76;
   const maxWidth = 820;
   let lines: string[] = [];
@@ -269,7 +269,7 @@ export default function InstagramStudioPage() {
         <header className={styles.header}>
           <div>
             <p className={styles.eyebrow}>Choice Content Studio</p>
-            <h1 className={styles.title}>Ein Monat Content, ohne jeden Tag neu anzufangen.</h1>
+            <h1 className={styles.title}>Sechs Wochen Content, ohne jeden Tag neu anzufangen.</h1>
             <p className={styles.lead}>
               Fester Choice-Look, editierbare Texte und direkter PNG-Export für Instagram. Deine Änderungen und der
               Veröffentlichungsstatus bleiben in diesem Browser gespeichert.
