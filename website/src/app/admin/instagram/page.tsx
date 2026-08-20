@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import ReelStudio from "./ReelStudio";
 import styles from "./page.module.css";
 import {
   BACKGROUND_LABELS,
@@ -269,10 +270,10 @@ export default function InstagramStudioPage() {
         <header className={styles.header}>
           <div>
             <p className={styles.eyebrow}>Choice Content Studio</p>
-            <h1 className={styles.title}>Sechs Wochen Content, ohne jeden Tag neu anzufangen.</h1>
+            <h1 className={styles.title}>Posts und Reels, ohne jedes Mal neu anzufangen.</h1>
             <p className={styles.lead}>
-              Fester Choice-Look, editierbare Texte und direkter PNG-Export für Instagram. Deine Änderungen und der
-              Veröffentlichungsstatus bleiben in diesem Browser gespeichert.
+              Fester Choice-Look, editierbare Texte und direkte Exporte für Instagram. Deine Änderungen und der
+              Veröffentlichungsstatus bleiben lokal in diesem Browser gespeichert.
             </p>
           </div>
           <Link href="/admin" className={styles.backLink}>Zum Adminbereich</Link>
@@ -291,12 +292,27 @@ export default function InstagramStudioPage() {
           </div>
           <div>
             <span className={styles.guideLabel}>Format</span>
-            <strong>1080 × 1350 PNG</strong>
-            <p>Instagram 4:5 · genügend Rand für die Feed-Vorschau</p>
+            <strong>Feed 4:5 · Reels 9:16</strong>
+            <p>PNG für Posts · komplettes Schnittpaket für Chat-Reels</p>
           </div>
         </section>
 
-        <section className={styles.workspace}>
+        <nav className={styles.studioNav} aria-label="Content-Werkzeuge">
+          <a href="#reel-studio">
+            <span>01</span>
+            <strong>Reel-Werkstatt</strong>
+            <small>Chat-Szenen und Schnittpaket</small>
+          </a>
+          <a href="#post-studio">
+            <span>02</span>
+            <strong>Post-Studio</strong>
+            <small>Zitate, Captions und PNG</small>
+          </a>
+        </nav>
+
+        <ReelStudio />
+
+        <section id="post-studio" className={styles.workspace}>
           <div className={styles.previewPanel}>
             <div className={styles.previewMeta}>
               <div>

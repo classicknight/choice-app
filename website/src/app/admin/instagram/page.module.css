@@ -92,11 +92,265 @@
   line-height: 1.55;
 }
 
+.studioNav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.studioNav a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 14px;
+  align-items: center;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  color: #fff4f7;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(67, 181, 219, 0.12), transparent 48%),
+    rgba(15, 11, 21, 0.88);
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.studioNav a:hover {
+  transform: translateY(-2px);
+  border-color: rgba(142, 221, 244, 0.3);
+}
+
+.studioNav span {
+  grid-row: 1 / span 2;
+  color: #8eddf4;
+  font-size: 1.6rem;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+}
+
+.studioNav strong {
+  font-size: 0.95rem;
+}
+
+.studioNav small {
+  margin-top: 3px;
+  color: rgba(229, 218, 234, 0.52);
+  font-size: 0.75rem;
+}
+
+.reelSection {
+  scroll-margin-top: 24px;
+  padding: 26px;
+  border: 1px solid rgba(142, 221, 244, 0.11);
+  border-radius: 34px;
+  background:
+    radial-gradient(circle at 6% 0%, rgba(45, 159, 198, 0.12), transparent 33%),
+    radial-gradient(circle at 100% 100%, rgba(205, 45, 107, 0.1), transparent 38%),
+    rgba(13, 9, 19, 0.9);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(18px);
+}
+
+.reelHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.reelHeader h2 {
+  max-width: 850px;
+  color: #fff4f7;
+  font-size: clamp(1.8rem, 3.5vw, 3rem);
+  line-height: 1.04;
+  letter-spacing: -0.05em;
+}
+
+.reelHeader p:not(.eyebrow) {
+  max-width: 760px;
+  margin-top: 12px;
+  color: rgba(232, 220, 237, 0.62);
+  font-size: 0.9rem;
+  line-height: 1.65;
+}
+
+.reelBadge {
+  flex-shrink: 0;
+  padding: 9px 13px;
+  border: 1px solid rgba(142, 221, 244, 0.18);
+  border-radius: 999px;
+  color: #dff8ff;
+  background: rgba(83, 190, 226, 0.08);
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.reelWorkspace {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.75fr) minmax(430px, 1.1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.reelPreviewPanel,
+.reelControls {
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 26px;
+  background: rgba(10, 7, 15, 0.88);
+}
+
+.reelPreviewPanel {
+  max-width: 620px;
+  padding: 16px;
+}
+
+.reelControls {
+  position: sticky;
+  top: 20px;
+  padding: 24px;
+}
+
+.reelCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 9 / 16;
+  border-radius: 22px;
+  background: #08060d;
+  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.35);
+}
+
+.reelTransport {
+  display: grid;
+  grid-template-columns: 48px 1fr 48px;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.transportButton,
+.playButton {
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  color: #fff5f8;
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.transportButton {
+  font-size: 1.55rem;
+  line-height: 1;
+}
+
+.transportButton:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.playButton {
+  border-color: rgba(142, 221, 244, 0.22);
+  color: #dff8ff;
+  background: rgba(83, 190, 226, 0.09);
+  font-size: 0.8rem;
+}
+
+.sceneRail {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 13px;
+}
+
+.sceneDot,
+.sceneDotActive {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  transition: width 160ms ease, background 160ms ease;
+}
+
+.sceneDotActive {
+  width: 24px;
+  background: #8eddf4;
+}
+
+.stylePicker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.styleOption,
+.styleOptionActive {
+  min-height: 98px;
+  padding: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.025);
+  text-align: left;
+  cursor: pointer;
+}
+
+.styleOptionActive {
+  border-color: rgba(142, 221, 244, 0.42);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(64, 177, 215, 0.15), transparent 58%),
+    rgba(54, 159, 195, 0.07);
+}
+
+.styleOption strong,
+.styleOptionActive strong {
+  display: block;
+  color: #fff4f7;
+  font-size: 0.82rem;
+}
+
+.styleOption span,
+.styleOptionActive span {
+  display: block;
+  margin-top: 6px;
+  color: rgba(226, 213, 232, 0.48);
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.reelFieldGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.exportHint {
+  margin-top: 14px;
+  color: rgba(229, 216, 234, 0.48);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.exportStatus {
+  margin-top: 10px;
+  padding: 11px 13px;
+  border: 1px solid rgba(130, 225, 179, 0.18);
+  border-radius: 13px;
+  color: #a5ebc3;
+  background: rgba(130, 225, 179, 0.07);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 0.9fr) minmax(380px, 0.62fr);
   gap: 24px;
   align-items: start;
+  scroll-margin-top: 24px;
 }
 
 .previewPanel,
@@ -192,6 +446,7 @@
 }
 
 .field textarea,
+.field input,
 .field select {
   width: 100%;
   padding: 14px 15px;
@@ -209,6 +464,7 @@
 }
 
 .field textarea:focus,
+.field input:focus,
 .field select:focus {
   outline: none;
   border-color: rgba(142, 221, 244, 0.5);
@@ -378,6 +634,10 @@
     grid-template-columns: minmax(0, 1fr) minmax(330px, 0.75fr);
   }
 
+  .reelWorkspace {
+    grid-template-columns: minmax(320px, 0.68fr) minmax(380px, 1fr);
+  }
+
   .planGrid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -389,6 +649,7 @@
   }
 
   .header,
+  .reelHeader,
   .planHeader {
     align-items: flex-start;
     flex-direction: column;
@@ -400,12 +661,20 @@
   }
 
   .brandGuide,
+  .reelWorkspace,
   .workspace {
     grid-template-columns: 1fr;
   }
 
-  .controls {
+  .controls,
+  .reelControls {
     position: static;
+  }
+
+  .reelPreviewPanel {
+    width: min(560px, 100%);
+    max-width: none;
+    margin: 0 auto;
   }
 
   .planGrid {
@@ -419,8 +688,28 @@
   }
 
   .actions,
+  .reelFieldGrid,
+  .studioNav,
   .planGrid {
     grid-template-columns: 1fr;
+  }
+
+  .reelSection {
+    padding: 15px;
+    border-radius: 26px;
+  }
+
+  .reelControls {
+    padding: 18px;
+  }
+
+  .stylePicker {
+    grid-template-columns: 1fr;
+  }
+
+  .styleOption,
+  .styleOptionActive {
+    min-height: auto;
   }
 
   .planCard {
