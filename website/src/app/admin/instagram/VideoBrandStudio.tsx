@@ -40,7 +40,7 @@ function drawChoiceWordmark(
 ) {
   const fontSize = Math.max(28, Math.round(width * 0.033));
   const x = Math.round(width * 0.065);
-  const y = Math.round(height * 0.086);
+  const y = Math.round(height * 0.11);
 
   context.save();
   context.font = `800 ${fontSize}px ${bodyFont}`;
