@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import ReelStudio from "./ReelStudio";
+import VideoBrandStudio from "./VideoBrandStudio";
 import styles from "./page.module.css";
 import {
   BACKGROUND_LABELS,
@@ -293,15 +293,15 @@ export default function InstagramStudioPage() {
           <div>
             <span className={styles.guideLabel}>Format</span>
             <strong>Feed 4:5 · Reels 9:16</strong>
-            <p>PNG für Posts · komplettes Schnittpaket für Chat-Reels</p>
+            <p>PNG für Posts · gebrandete Videos mit festem Choice-Schriftzug</p>
           </div>
         </section>
 
         <nav className={styles.studioNav} aria-label="Content-Werkzeuge">
-          <a href="#reel-studio">
+          <a href="#video-branding">
             <span>01</span>
-            <strong>Reel-Werkstatt</strong>
-            <small>Chat-Szenen und Schnittpaket</small>
+            <strong>Video branden</strong>
+            <small>Clip hochladen und Choice einbrennen</small>
           </a>
           <a href="#post-studio">
             <span>02</span>
@@ -310,7 +310,7 @@ export default function InstagramStudioPage() {
           </a>
         </nav>
 
-        <ReelStudio />
+        <VideoBrandStudio />
 
         <section id="post-studio" className={styles.workspace}>
           <div className={styles.previewPanel}>
