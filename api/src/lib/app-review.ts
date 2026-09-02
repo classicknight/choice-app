@@ -226,17 +226,6 @@ export async function ensureAppReviewDemoAccount(userId: string, phoneNumber: st
   });
 
   const [userAId, userBId] = [reviewUser.id, reviewPartner.id].sort();
-  const existingMatch = await prisma.match.findFirst({
-    where: {
-      OR: [
-        { userAId, userBId },
-        { userAId: userBId, userBId: userAId },
-      ],
-      status: MatchStatus.KEPT,
-      closedAt: null,
-    },
-  });
-
   const matchData = {
     scheduledFor,
     activatedAt: scheduledFor,
@@ -262,9 +251,17 @@ export async function ensureAppReviewDemoAccount(userId: string, phoneNumber: st
     },
   } satisfies Prisma.MatchUncheckedCreateInput;
 
-  const reviewMatch = existingMatch
-    ? await prisma.match.update({ where: { id: existingMatch.id }, data: matchData })
-    : await prisma.match.create({ data: matchData });
+  const reviewMatch = await prisma.match.upsert({
+    where: {
+      scheduledFor_userAId_userBId: {
+        scheduledFor,
+        userAId,
+        userBId,
+      },
+    },
+    create: matchData,
+    update: matchData,
+  });
 
   const chat = await prisma.chat.upsert({
     where: { matchId: reviewMatch.id },
