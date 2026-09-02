@@ -225,6 +225,17 @@ export async function ensureAppReviewDemoAccount(userId: string, phoneNumber: st
     },
   });
 
+  // Reviewers may exercise the block flow. Reset only the isolated demo pair so
+  // the next sign-in always starts from a reviewable state.
+  await prisma.userBlock.deleteMany({
+    where: {
+      OR: [
+        { blockerUserId: reviewUser.id, blockedUserId: reviewPartner.id },
+        { blockerUserId: reviewPartner.id, blockedUserId: reviewUser.id },
+      ],
+    },
+  });
+
   const [userAId, userBId] = [reviewUser.id, reviewPartner.id].sort();
   const matchData = {
     scheduledFor,
@@ -262,6 +273,37 @@ export async function ensureAppReviewDemoAccount(userId: string, phoneNumber: st
     create: matchData,
     update: matchData,
   });
+
+  const staleReviewMatches = await prisma.match.findMany({
+    where: {
+      id: { not: reviewMatch.id },
+      OR: [
+        { userAId: reviewUser.id },
+        { userBId: reviewUser.id },
+        { userAId: reviewPartner.id },
+        { userBId: reviewPartner.id },
+      ],
+      closedAt: null,
+    },
+    select: { id: true },
+  });
+
+  if (staleReviewMatches.length > 0) {
+    const staleReviewMatchIds = staleReviewMatches.map((match) => match.id);
+    await prisma.$transaction([
+      prisma.match.updateMany({
+        where: { id: { in: staleReviewMatchIds } },
+        data: {
+          status: MatchStatus.DISCARDED,
+          closedAt: now,
+        },
+      }),
+      prisma.chat.updateMany({
+        where: { matchId: { in: staleReviewMatchIds } },
+        data: { archivedAt: now },
+      }),
+    ]);
+  }
 
   const chat = await prisma.chat.upsert({
     where: { matchId: reviewMatch.id },
