@@ -704,6 +704,40 @@ async function sendJourneyNotificationToUser(input: {
   });
 }
 
+export function getMatchPreparedNotificationCopy(scheduledFor: Date, now = new Date()) {
+  const releaseDayLabel = getBerlinDateKey(scheduledFor) === getBerlinDateKey(now) ? "heute" : "morgen";
+
+  return {
+    title: `Für ${releaseDayLabel} wurde ein Match für dich gefunden`,
+    body: `Wer es ist, bleibt bis ${releaseDayLabel} um 09:00 Uhr verborgen.`,
+  };
+}
+
+async function sendMatchPreparedNotification(input: {
+  userId: string;
+  matchId: string;
+  scheduledFor: Date;
+  now: Date;
+  kind?: string;
+}) {
+  const copy = getMatchPreparedNotificationCopy(input.scheduledFor, input.now);
+
+  await sendJourneyNotificationToUser({
+    userId: input.userId,
+    matchId: input.matchId,
+    kind: input.kind ?? "match-prepared",
+    contextKey: `${input.kind ?? "match-prepared"}:${input.matchId}:${input.userId}`,
+    title: copy.title,
+    body: copy.body,
+    channelId: "match-releases",
+    data: {
+      type: input.kind ?? "match-prepared",
+      matchId: input.matchId,
+      scheduledFor: input.scheduledFor.toISOString(),
+    },
+  });
+}
+
 export type JourneyClosureReason =
   | "phase-one-not-started"
   | "phase-one-new-match"
@@ -1735,9 +1769,11 @@ async function activatePendingMatch(match: MatchWithRelations, now: Date) {
 export function resolveNextJourneyReleaseAt(now: Date, latestClosedAt: Date | null) {
   const currentCycleRelease = getCurrentCycleReleaseAt(now);
   const currentCycleSchedule = buildPhaseSchedule(currentCycleRelease);
-  const earliestUsableRelease = now < currentCycleSchedule.decisionDeadline
-    ? currentCycleRelease
-    : getNextMatchReleaseAt(now);
+  const earliestUsableRelease = getJourneyTestScheduleConfig(now)
+    ? now < currentCycleSchedule.decisionDeadline
+      ? currentCycleRelease
+      : getNextMatchReleaseAt(now)
+    : addBerlinCalendarDaysAtTime(now, 1, MATCH_RELEASE_HOUR, 0);
   const requestedRelease = latestClosedAt
     ? addBerlinCalendarDaysAtTime(latestClosedAt, 1, MATCH_RELEASE_HOUR, 0)
     : null;
@@ -1866,6 +1902,16 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
             },
           });
 
+          await Promise.allSettled([
+            sendMatchPreparedNotification({
+              userId: user.id,
+              matchId: repeatedMatch.id,
+              scheduledFor,
+              now,
+              kind: "private-qa-match-prepared",
+            }),
+          ]);
+
           return repeatedMatch.id;
         } catch (error) {
           if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
@@ -1882,6 +1928,18 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
             },
             select: { id: true },
           });
+
+          if (repeatedMatch) {
+            await Promise.allSettled([
+              sendMatchPreparedNotification({
+                userId: user.id,
+                matchId: repeatedMatch.id,
+                scheduledFor,
+                now,
+                kind: "private-qa-match-prepared",
+              }),
+            ]);
+          }
 
           return repeatedMatch?.id ?? null;
         }
@@ -1978,6 +2036,15 @@ async function maybeCreateUpcomingMatch(userId: string, now: Date) {
     return null;
   }
 
+  await Promise.allSettled(
+    [userAId, userBId].map((recipientUserId) => sendMatchPreparedNotification({
+      userId: recipientUserId,
+      matchId: match.id,
+      scheduledFor,
+      now,
+    })),
+  );
+
   return match.id;
 }
 
@@ -2015,6 +2082,24 @@ async function findJourneyMatchForUser(userId: string, now: Date): Promise<Match
   });
 
   if (pending) {
+    if (!getJourneyTestScheduleConfig(now)) {
+      const earliestReleaseAfterCreation = addBerlinCalendarDaysAtTime(
+        pending.createdAt,
+        1,
+        MATCH_RELEASE_HOUR,
+        0,
+      );
+
+      if (pending.scheduledFor < earliestReleaseAfterCreation) {
+        await prisma.match.update({
+          where: { id: pending.id },
+          data: { scheduledFor: earliestReleaseAfterCreation },
+        });
+
+        return getMatchById(pending.id);
+      }
+    }
+
     if (pending.scheduledFor.getTime() <= now.getTime()) {
       return activatePendingMatch(pending, now);
     }
@@ -2853,8 +2938,10 @@ export async function createJourneyMessage(input: {
         && phaseOneCanAdvanceToPhaseTwo(match, phaseOneChatStarted)
       )
     );
+  const phaseTwoRoundInProgress = Boolean(match.phaseTwoStage) && !phaseTwoReady;
   const canWrite =
     !viewerSelectedNewMatch
+    && !phaseTwoRoundInProgress
     && (
       phaseFiveChatUnlocked
       || phaseTwoChatUnlocked
@@ -3124,65 +3211,16 @@ export async function submitPhaseTwoAnswer(input: {
     const nextRoundIndex = input.roundIndex >= rounds.length - 1 ? 0 : input.roundIndex + 1;
     const nextStage = input.roundIndex >= rounds.length - 1 ? PhaseTwoStage.PARTNER : PhaseTwoStage.STARTER;
 
-    const privateQaUserId = getPrivateQaUserId(match);
-    const shouldAutoCompletePrivateQaTurn =
-      nextStage === PhaseTwoStage.PARTNER
-      && privateQaUserId === phaseTwoPartnerUserId;
+    await prisma.match.update({
+      where: { id: match.id },
+      data: {
+        phaseTwoResults: nextResults as Prisma.InputJsonValue,
+        phaseTwoRoundIndex: nextRoundIndex,
+        phaseTwoStage: nextStage,
+      },
+    });
 
-    if (shouldAutoCompletePrivateQaTurn) {
-      const automatedResults = nextResults.map((result) => {
-        const closestOption = result.followUpOptions.reduce((bestOption, option) => {
-          return Math.abs(option.score - result.personAScore) < Math.abs(bestOption.score - result.personAScore)
-            ? option
-            : bestOption;
-        }, result.followUpOptions[0]);
-
-        if (!closestOption) {
-          return result;
-        }
-
-        return {
-          ...result,
-          personBLabel: closestOption.label,
-          personBScore: closestOption.score,
-          compatibility: getCompatibilityPoints(result.personAScore, closestOption.score),
-        };
-      });
-
-      await prisma.match.update({
-        where: { id: match.id },
-        data: {
-          phaseTwoResults: automatedResults as Prisma.InputJsonValue,
-          phaseTwoRoundIndex: Math.max(rounds.length - 1, 0),
-          phaseTwoStage: PhaseTwoStage.RESULT,
-        },
-      });
-
-      await sendJourneyNotificationToUser({
-        userId: phaseTwoStarterUserId,
-        matchId: match.id,
-        kind: "phase-two-result-ready",
-        contextKey: `phase-two-result-ready:${match.id}:${phaseTwoStarterUserId}`,
-        title: "Eure Phase-2-Auswertung ist da",
-        body: `${getParticipantProfileName(match, phaseTwoPartnerUserId)} hat die Choice-Runde abgeschlossen. Die ausführliche Auswertung ist jetzt da.`,
-        channelId: "phase-updates",
-        data: {
-          type: "phase-two-result-ready",
-          matchId: match.id,
-        },
-      });
-    } else {
-      await prisma.match.update({
-        where: { id: match.id },
-        data: {
-          phaseTwoResults: nextResults as Prisma.InputJsonValue,
-          phaseTwoRoundIndex: nextRoundIndex,
-          phaseTwoStage: nextStage,
-        },
-      });
-    }
-
-    if (nextStage === PhaseTwoStage.PARTNER && !shouldAutoCompletePrivateQaTurn) {
+    if (nextStage === PhaseTwoStage.PARTNER) {
       await Promise.allSettled([
         sendJourneyNotificationToUser({
           userId: phaseTwoPartnerUserId,
